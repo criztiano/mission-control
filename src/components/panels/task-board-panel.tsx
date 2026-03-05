@@ -515,6 +515,7 @@ export function TaskBoardPanel() {
                   options={assigneeOptions}
                   onSelect={(v) => { fetch(`/api/tasks/${task.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ assigned_to: v || null }) }).then(() => fetchData()) }}
                   searchable
+                  align="right"
                   placeholder={<span className="flex items-center gap-1 text-muted-foreground/40"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="8" r="4"/><path d="M5 20c0-4 3.5-7 7-7s7 3 7 7"/></svg></span>}
                 />
                 {task.tags?.slice(0, 2).map((tag, i) => (
@@ -673,6 +674,7 @@ export function TaskBoardPanel() {
                               options={assigneeOptions}
                               onSelect={(v) => { fetch(`/api/tasks/${task.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ assigned_to: v || null }) }).then(() => fetchData()) }}
                               searchable
+                              align="right"
                               placeholder={<span className="flex items-center gap-1 text-muted-foreground/40"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="8" r="4"/><path d="M5 20c0-4 3.5-7 7-7s7 3 7 7"/></svg></span>}
                             />
                           </div>

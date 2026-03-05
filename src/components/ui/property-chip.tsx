@@ -23,6 +23,7 @@ interface PropertyChipProps {
   colorFn?: (value: string) => string
   label?: string
   placeholder?: ReactNode
+  align?: 'left' | 'right'
 }
 
 // --- PropertyChip ---
@@ -36,6 +37,7 @@ export function PropertyChip({
   colorFn,
   label,
   placeholder,
+  align = 'left',
 }: PropertyChipProps) {
   const [open, setOpen] = useState(false)
   const [search, setSearch] = useState('')
@@ -108,7 +110,7 @@ export function PropertyChip({
 
       {/* Dropdown */}
       {open && (
-        <div className="absolute top-full left-0 mt-1 z-50 min-w-48 bg-card border border-border rounded-lg shadow-xl overflow-hidden">
+        <div className={`absolute top-full mt-1 z-50 min-w-48 bg-card border border-border rounded-lg shadow-xl overflow-hidden ${align === 'right' ? 'right-0' : 'left-0'}`}>
           {searchable && (
             <div className="p-2 border-b border-border">
               <input
