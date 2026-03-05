@@ -91,9 +91,10 @@ export function TaskBoardPanel() {
   const dragCounter = useRef(0)
 
   // Fetch tasks and agents
-  const fetchData = useCallback(async () => {
+  const fetchData = useCallback(async (silent?: boolean | React.MouseEvent) => {
+    const isSilent = typeof silent === 'boolean' ? silent : false
     try {
-      setLoading(true)
+      if (!isSilent) setLoading(true)
       setError(null)
 
       const [tasksResponse, agentsResponse] = await Promise.all([
@@ -130,13 +131,19 @@ export function TaskBoardPanel() {
         }
       }
 
-      setTasks(
-        tasksList.map((task: Task) => ({
-          ...task,
-          aegisApproved: Boolean(aegisMap[task.id])
-        }))
-      )
+      const updatedTasks = tasksList.map((task: Task) => ({
+        ...task,
+        aegisApproved: Boolean(aegisMap[task.id])
+      }))
+      setTasks(updatedTasks)
       setAgents(agentsData.agents || [])
+
+      // Keep selectedTask in sync with fresh data
+      setSelectedTask((prev: Task | null) => {
+        if (!prev) return null
+        const fresh = updatedTasks.find((t: Task) => t.id === prev.id)
+        return fresh || null
+      })
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred')
     } finally {
@@ -699,7 +706,7 @@ export function TaskBoardPanel() {
           agents={agents}
           allTasks={tasks}
           onClose={() => setSelectedTask(null)}
-          onUpdate={fetchData}
+          onUpdate={() => fetchData(true)}
           onNavigate={(task) => setSelectedTask(task)}
         />
       )}
