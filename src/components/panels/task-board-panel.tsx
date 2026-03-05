@@ -1,8 +1,15 @@
 'use client'
 
 import { useState, useEffect, useCallback, useRef } from 'react'
+import {
+  Circle, HalfMoon, CheckCircle, Prohibition, WarningTriangle,
+  NavArrowUp, Minus, NavArrowDown, Eye,
+} from 'iconoir-react'
 import { useMissionControl } from '@/store'
 import { useSmartPoll } from '@/lib/use-smart-poll'
+import { PropertyChip, type PropertyOption } from '@/components/ui/property-chip'
+import { AgentAvatar } from '@/components/ui/agent-avatar'
+import { BlockEditor } from '@/components/ui/block-editor'
 
 interface Task {
   id: number
@@ -70,6 +77,16 @@ export function TaskBoardPanel() {
   const [selectedTask, setSelectedTask] = useState<Task | null>(null)
   const [draggedTask, setDraggedTask] = useState<Task | null>(null)
   const [showCreateModal, setShowCreateModal] = useState(false)
+  const [viewMode, setViewMode] = useState<'kanban' | 'list'>(() => {
+    if (typeof window !== 'undefined') {
+      return (localStorage.getItem('mc-task-view') as 'kanban' | 'list') || 'list'
+    }
+    return 'list'
+  })
+  const [focusedIndex, setFocusedIndex] = useState<{ col: number; row: number } | null>(null)
+  const [focusedListIndex, setFocusedListIndex] = useState<number | null>(null)
+  const cardRefs = useRef<Map<string, HTMLDivElement>>(new Map())
+  const listRowRefs = useRef<(HTMLDivElement | null)[]>([])
   const dragCounter = useRef(0)
 
   // Fetch tasks and agents
@@ -130,11 +147,128 @@ export function TaskBoardPanel() {
     fetchData()
   }, [fetchData])
 
+  // Persist view mode
+  useEffect(() => {
+    localStorage.setItem('mc-task-view', viewMode)
+  }, [viewMode])
+
+  // Flat task list for list view
+  const allTasks = tasks
+
+  // Keyboard navigation
+  useEffect(() => {
+    const modalOpen = selectedTask !== null || showCreateModal
+    function handleKey(e: KeyboardEvent) {
+      // Escape closes modal from anywhere
+      if (e.key === 'Escape' && modalOpen) {
+        e.preventDefault()
+        if (selectedTask) setSelectedTask(null)
+        else if (showCreateModal) setShowCreateModal(false)
+        return
+      }
+      if (modalOpen) return
+      const t = e.target as HTMLElement
+      if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t instanceof HTMLSelectElement || t?.isContentEditable) return
+
+      // L to toggle view mode
+      if (e.key === 'l' || e.key === 'L') {
+        e.preventDefault()
+        setViewMode(prev => prev === 'kanban' ? 'list' : 'kanban')
+        setFocusedIndex(null)
+        setFocusedListIndex(null)
+        return
+      }
+
+      if (viewMode === 'kanban') {
+        const tbs = tasksByStatusRef.current
+        // Build nav columns: 0=inbox, 1=in_progress (if non-empty), then assigned, done
+        const cols = [
+          tbs['inbox'] || [],
+          ...(tbs['in_progress']?.length ? [tbs['in_progress']] : []),
+          tbs['assigned'] || [],
+          tbs['done'] || [],
+        ]
+        if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter', 'Escape'].includes(e.key)) return
+        e.preventDefault()
+
+        if (e.key === 'Escape') { setFocusedIndex(null); return }
+
+        if (e.key === 'Enter' && focusedIndex) {
+          const col = cols[focusedIndex.col]
+          if (col && col[focusedIndex.row]) setSelectedTask(col[focusedIndex.row])
+          return
+        }
+
+        if (!focusedIndex) {
+          for (let c = 0; c < cols.length; c++) {
+            if (cols[c].length > 0) { setFocusedIndex({ col: c, row: 0 }); return }
+          }
+          return
+        }
+
+        let { col, row } = focusedIndex
+        if (e.key === 'ArrowDown') {
+          row = Math.min(row + 1, (cols[col]?.length || 1) - 1)
+        } else if (e.key === 'ArrowUp') {
+          row = Math.max(row - 1, 0)
+        } else if (e.key === 'ArrowRight') {
+          col = Math.min(col + 1, cols.length - 1)
+          row = Math.min(row, (cols[col]?.length || 1) - 1)
+        } else if (e.key === 'ArrowLeft') {
+          col = Math.max(col - 1, 0)
+          row = Math.min(row, (cols[col]?.length || 1) - 1)
+        }
+        setFocusedIndex({ col, row })
+      } else {
+        // List mode
+        if (!['ArrowUp', 'ArrowDown', 'Enter', 'Escape'].includes(e.key)) return
+        e.preventDefault()
+
+        if (e.key === 'Escape') { setFocusedListIndex(null); return }
+
+        if (e.key === 'Enter' && focusedListIndex !== null) {
+          if (allTasks[focusedListIndex]) setSelectedTask(allTasks[focusedListIndex])
+          return
+        }
+
+        if (focusedListIndex === null) { setFocusedListIndex(0); return }
+
+        if (e.key === 'ArrowDown') {
+          setFocusedListIndex(Math.min(focusedListIndex + 1, allTasks.length - 1))
+        } else if (e.key === 'ArrowUp') {
+          setFocusedListIndex(Math.max(focusedListIndex - 1, 0))
+        }
+      }
+    }
+    window.addEventListener('keydown', handleKey)
+    return () => window.removeEventListener('keydown', handleKey)
+  }, [viewMode, focusedIndex, focusedListIndex, selectedTask, showCreateModal, allTasks])
+
+  // Scroll focused card into view (kanban)
+  useEffect(() => {
+    if (focusedIndex) {
+      const key = `${focusedIndex.col}-${focusedIndex.row}`
+      const el = cardRefs.current.get(key)
+      el?.scrollIntoView({ block: 'nearest' })
+    }
+  }, [focusedIndex])
+
+  // Scroll focused row into view (list)
+  useEffect(() => {
+    if (focusedListIndex !== null) {
+      listRowRefs.current[focusedListIndex]?.scrollIntoView({ block: 'nearest' })
+    }
+  }, [focusedListIndex])
+
+  // Keep a ref to tasksByStatus for keyboard handler (avoids stale closure)
+  const tasksByStatusRef = useRef<Record<string, Task[]>>({})
+
   // Group tasks by status
   const tasksByStatus = statusColumns.reduce((acc, column) => {
-    acc[column.key] = tasks.filter(task => task.status === column.key)
+    acc[column.key] = tasks.filter(task => (task as any).column === column.key || task.status === column.key)
     return acc
   }, {} as Record<string, Task[]>)
+  tasksByStatusRef.current = tasksByStatus
 
   // Drag and drop handlers
   const handleDragStart = (e: React.DragEvent, task: Task) => {
@@ -263,6 +397,15 @@ export function TaskBoardPanel() {
     return agent?.name || sessionKey || 'Unassigned'
   }
 
+  // Assignee options for PropertyChip
+  const assigneeOptions: PropertyOption[] = [
+    { value: '', label: 'Unassigned' },
+    { value: 'cri', label: 'Cri', icon: <AgentAvatar agent="cri" size="sm" /> },
+    ...agents.filter(a => a.name.toLowerCase() !== 'cri').map(a => ({
+      value: a.name, label: a.name, icon: <AgentAvatar agent={a.name} size="sm" /> as React.ReactNode,
+    })),
+  ]
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -278,6 +421,21 @@ export function TaskBoardPanel() {
       <div className="flex justify-between items-center p-4 border-b border-border flex-shrink-0">
         <h2 className="text-xl font-bold text-foreground">Task Board</h2>
         <div className="flex gap-2">
+          {/* View toggle */}
+          <div className="flex rounded-md border border-border overflow-hidden">
+            <button
+              onClick={() => { setViewMode('kanban'); setFocusedListIndex(null) }}
+              className={`px-3 py-1.5 text-xs font-medium transition-colors ${viewMode === 'kanban' ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:text-foreground'}`}
+            >
+              Board
+            </button>
+            <button
+              onClick={() => { setViewMode('list'); setFocusedIndex(null) }}
+              className={`px-3 py-1.5 text-xs font-medium transition-colors ${viewMode === 'list' ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:text-foreground'}`}
+            >
+              List
+            </button>
+          </div>
           <button
             onClick={() => setShowCreateModal(true)}
             className="px-4 py-2 bg-primary text-primary-foreground rounded-md hover:bg-primary/90 transition-smooth text-sm font-medium"
@@ -307,113 +465,220 @@ export function TaskBoardPanel() {
       )}
 
       {/* Kanban Board */}
-      <div className="flex-1 flex gap-4 p-4 overflow-x-auto">
-        {statusColumns.map(column => (
+      {viewMode === 'kanban' && (() => {
+        // Build columns: inbox (double width), then in_progress stacked on assigned, then done
+        const inboxTasks = tasksByStatus['inbox'] || []
+        const assignedTasks = tasksByStatus['assigned'] || []
+        const inProgressTasks = tasksByStatus['in_progress'] || []
+        const doneTasks = tasksByStatus['done'] || []
+
+        // Keyboard nav column indices must match the cols array in the handler:
+        // cols = [inbox, ...(in_progress if non-empty), assigned, done]
+        const hasInProgress = inProgressTasks.length > 0
+        const COL_INBOX = 0
+        const COL_IN_PROGRESS = hasInProgress ? 1 : -1  // -1 = not rendered
+        const COL_ASSIGNED = hasInProgress ? 2 : 1
+        const COL_DONE = hasInProgress ? 3 : 2
+
+        const renderCard = (task: Task, colIdx: number, rowIdx: number) => {
+          const isFocused = focusedIndex?.col === colIdx && focusedIndex?.row === rowIdx
+          return (
+            <div
+              key={task.id}
+              ref={(el) => { if (el) cardRefs.current.set(`${colIdx}-${rowIdx}`, el) }}
+              draggable
+              onDragStart={(e) => handleDragStart(e, task)}
+              onClick={() => setSelectedTask(task)}
+              className={`${isFocused ? 'bg-zinc-800' : 'bg-zinc-900'} border border-zinc-800/50 rounded-lg p-3 cursor-pointer hover:bg-zinc-800 transition-colors ${
+                draggedTask?.id === task.id ? 'opacity-50' : ''
+              }`}
+            >
+              <h4 className="text-foreground font-medium text-sm leading-tight">
+                {task.title}
+              </h4>
+              {/* Chips row */}
+              <div className="flex flex-wrap gap-1.5 mt-2" onClick={e => e.stopPropagation()}>
+                <PropertyChip
+                  value={task.status}
+                  options={STATUS_OPTIONS}
+                  onSelect={(v) => { fetch(`/api/tasks/${task.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: v }) }).then(() => fetchData()) }}
+                  colorFn={statusColor}
+                />
+                <PropertyChip
+                  value={task.priority}
+                  options={PRIORITY_OPTIONS}
+                  onSelect={(v) => { fetch(`/api/tasks/${task.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ priority: v }) }).then(() => fetchData()) }}
+                  colorFn={priorityColor}
+                />
+                {task.assigned_to && (
+                  <AgentAvatar agent={task.assigned_to} size="sm" />
+                )}
+                {task.tags?.slice(0, 2).map((tag, i) => (
+                  <span key={i} className={`text-[10px] px-1.5 py-0.5 rounded-full border font-medium ${getTagColor(tag)}`}>{tag}</span>
+                ))}
+                {(task.tags?.length || 0) > 2 && (
+                  <span className="text-[10px] text-muted-foreground">+{task.tags!.length - 2}</span>
+                )}
+              </div>
+            </div>
+          )
+        }
+
+        const renderColumnHeader = (title: string, count: number) => (
+          <div className="py-2 flex justify-between items-center">
+            <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">{title}</h3>
+            <span className="text-xs text-muted-foreground/50">{count}</span>
+          </div>
+        )
+
+        return (
+        <div className="flex-1 flex gap-4 p-4 overflow-x-auto">
+          {/* Inbox — double width */}
           <div
-            key={column.key}
-            className="flex-1 min-w-80 bg-card border border-border rounded-lg flex flex-col"
-            onDragEnter={(e) => handleDragEnter(e, column.key)}
+            className="flex-[2] min-w-80 flex flex-col"
+            onDragEnter={(e) => handleDragEnter(e, 'inbox')}
             onDragLeave={handleDragLeave}
             onDragOver={handleDragOver}
-            onDrop={(e) => handleDrop(e, column.key)}
+            onDrop={(e) => handleDrop(e, 'inbox')}
           >
-            {/* Column Header */}
-            <div className={`${column.color} p-3 rounded-t-lg flex justify-between items-center`}>
-              <h3 className="font-semibold">{column.title}</h3>
-              <span className="text-sm bg-black/20 px-2 py-1 rounded">
-                {tasksByStatus[column.key]?.length || 0}
-              </span>
-            </div>
-
-            {/* Column Body */}
-            <div className="flex-1 p-3 space-y-3 min-h-32">
-              {tasksByStatus[column.key]?.map(task => (
-                <div
-                  key={task.id}
-                  draggable
-                  onDragStart={(e) => handleDragStart(e, task)}
-                  onClick={() => setSelectedTask(task)}
-                  className={`bg-surface-1 rounded-lg p-3 cursor-pointer hover:bg-surface-2 transition-smooth border-l-4 ${priorityColors[task.priority]} ${
-                    draggedTask?.id === task.id ? 'opacity-50' : ''
-                  }`}
-                >
-                  <div className="flex justify-between items-start mb-2">
-                    <h4 className="text-foreground font-medium text-sm leading-tight">
-                      {task.title}
-                    </h4>
-                    <div className="flex items-center gap-2">
-                      {task.aegisApproved && (
-                        <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-700 text-emerald-100">
-                          Aegis Approved
-                        </span>
-                      )}
-                      <span className={`text-xs px-2 py-1 rounded font-medium ${
-                        task.priority === 'urgent' ? 'bg-red-500/20 text-red-400' :
-                        task.priority === 'high' ? 'bg-orange-500/20 text-orange-400' :
-                        task.priority === 'medium' ? 'bg-yellow-500/20 text-yellow-400' :
-                        'bg-green-500/20 text-green-400'
-                      }`}>
-                        {task.priority}
-                      </span>
-                    </div>
-                  </div>
-                  
-                  {task.description && (
-                    <p className="text-foreground/80 text-xs mb-2 line-clamp-2">
-                      {task.description}
-                    </p>
-                  )}
-
-                  <div className="flex justify-between items-center text-xs text-muted-foreground">
-                    <span>{getAgentName(task.assigned_to)}</span>
-                    <span className="font-medium">{formatTaskTimestamp(task.created_at)}</span>
-                  </div>
-
-                  {task.tags && task.tags.length > 0 && (
-                    <div className="flex flex-wrap gap-1 mt-2">
-                      {task.tags.slice(0, 3).map((tag, index) => (
-                        <span
-                          key={index}
-                          className={`text-xs px-2 py-0.5 rounded-full border font-medium ${getTagColor(tag)}`}
-                        >
-                          {tag}
-                        </span>
-                      ))}
-                      {task.tags.length > 3 && (
-                        <span className="text-muted-foreground text-xs font-medium">+{task.tags.length - 3}</span>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Enhanced timestamp display */}
-                  {task.updated_at && task.updated_at !== task.created_at && (
-                    <div className="text-xs text-muted-foreground/70 mt-1">
-                      Updated {formatTaskTimestamp(task.updated_at)}
-                    </div>
-                  )}
-
-                  {task.due_date && (
-                    <div className="mt-2 text-xs">
-                      <span className={`${
-                        task.due_date * 1000 < Date.now() ? 'text-red-400' : 'text-yellow-400'
-                      }`}>
-                        Due: {formatTaskTimestamp(task.due_date)}
-                      </span>
-                    </div>
-                  )}
-                </div>
-              ))}
-
-              {/* Empty State */}
-              {tasksByStatus[column.key]?.length === 0 && (
-                <div className="text-center text-muted-foreground/50 py-8 text-sm">
-                  No tasks in {column.title.toLowerCase()}
-                </div>
+            {renderColumnHeader('Inbox', inboxTasks.length)}
+            <div className="flex-1 space-y-2 min-h-32 overflow-y-auto">
+              {inboxTasks.map((task, rowIdx) => renderCard(task, COL_INBOX, rowIdx))}
+              {inboxTasks.length === 0 && (
+                <div className="text-center text-muted-foreground/50 py-8 text-sm">No tasks in inbox</div>
               )}
             </div>
           </div>
-        ))}
-      </div>
+
+          {/* Middle stack: In Progress (conditional) + Assigned */}
+          <div className="flex-1 min-w-72 flex flex-col gap-4">
+            {/* In Progress — only shown when non-empty */}
+            {inProgressTasks.length > 0 && (
+              <div
+                className="flex flex-col"
+                onDragEnter={(e) => handleDragEnter(e, 'in_progress')}
+                onDragLeave={handleDragLeave}
+                onDragOver={handleDragOver}
+                onDrop={(e) => handleDrop(e, 'in_progress')}
+              >
+                {renderColumnHeader('In Progress', inProgressTasks.length)}
+                <div className="space-y-2">
+                  {inProgressTasks.map((task, rowIdx) => renderCard(task, COL_IN_PROGRESS, rowIdx))}
+                </div>
+              </div>
+            )}
+
+            {/* Assigned */}
+            <div
+              className="flex-1 flex flex-col"
+              onDragEnter={(e) => handleDragEnter(e, 'assigned')}
+              onDragLeave={handleDragLeave}
+              onDragOver={handleDragOver}
+              onDrop={(e) => handleDrop(e, 'assigned')}
+            >
+              {renderColumnHeader('Assigned', assignedTasks.length)}
+              <div className="flex-1 space-y-2 min-h-32 overflow-y-auto">
+                {assignedTasks.map((task, rowIdx) => renderCard(task, COL_ASSIGNED, rowIdx))}
+                {assignedTasks.length === 0 && (
+                  <div className="text-center text-muted-foreground/50 py-8 text-sm">No assigned tasks</div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Done */}
+          <div
+            className="flex-1 min-w-72 flex flex-col"
+            onDragEnter={(e) => handleDragEnter(e, 'done')}
+            onDragLeave={handleDragLeave}
+            onDragOver={handleDragOver}
+            onDrop={(e) => handleDrop(e, 'done')}
+          >
+            {renderColumnHeader('Done', doneTasks.length)}
+            <div className="flex-1 space-y-2 min-h-32 overflow-y-auto">
+              {doneTasks.map((task, rowIdx) => renderCard(task, COL_DONE, rowIdx))}
+              {doneTasks.length === 0 && (
+                <div className="text-center text-muted-foreground/50 py-8 text-sm">No done tasks</div>
+              )}
+            </div>
+          </div>
+        </div>
+        )
+      })()
+      }
+
+      {/* List View */}
+      {viewMode === 'list' && (() => {
+        const listSections = [
+          { key: 'inbox', label: 'Inbox', tasks: tasksByStatus['inbox'] || [] },
+          { key: 'assigned', label: 'Assigned', tasks: tasksByStatus['assigned'] || [] },
+          { key: 'in_progress', label: 'In Progress', tasks: tasksByStatus['in_progress'] || [] },
+          { key: 'done', label: 'Done', tasks: tasksByStatus['done'] || [] },
+        ].filter(s => s.tasks.length > 0)
+
+        // Build flat index → task mapping for keyboard nav
+        let flatIdx = 0
+        const flatMap: { task: Task; idx: number }[] = []
+        listSections.forEach(section => {
+          section.tasks.forEach(task => {
+            flatMap.push({ task, idx: flatIdx++ })
+          })
+        })
+
+        return (
+        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+          {flatMap.length === 0 ? (
+            <div className="text-center text-muted-foreground/50 py-8 text-sm">No tasks</div>
+          ) : (
+            listSections.map(section => {
+              return (
+                <div key={section.key}>
+                  <div className="flex items-center gap-2 mb-2 px-1">
+                    <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">{section.label}</span>
+                    <span className="text-[10px] text-muted-foreground/50">{section.tasks.length}</span>
+                  </div>
+                  <div className="bg-card border border-border rounded-lg overflow-hidden">
+                    {section.tasks.map(task => {
+                      const globalIdx = flatMap.find(f => f.task.id === task.id)?.idx ?? -1
+                      const isFocused = focusedListIndex === globalIdx
+                      return (
+                        <div
+                          key={task.id}
+                          ref={(el) => { listRowRefs.current[globalIdx] = el }}
+                          onClick={() => setSelectedTask(task)}
+                          className={`flex items-center justify-between gap-4 px-4 py-2.5 border-b border-zinc-800/50 last:border-b-0 cursor-pointer hover:bg-zinc-800 transition-colors ${
+                            isFocused ? 'bg-zinc-800' : ''
+                          }`}
+                        >
+                          <span className="flex-1 text-sm font-medium text-foreground truncate min-w-0">{task.title}</span>
+                          <div className="flex items-center gap-1.5 shrink-0" onClick={e => e.stopPropagation()}>
+                            <PropertyChip
+                              value={task.status}
+                              options={STATUS_OPTIONS}
+                              onSelect={(v) => { fetch(`/api/tasks/${task.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: v }) }).then(() => fetchData()) }}
+                              colorFn={statusColor}
+                            />
+                            <PropertyChip
+                              value={task.priority}
+                              options={PRIORITY_OPTIONS}
+                              onSelect={(v) => { fetch(`/api/tasks/${task.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ priority: v }) }).then(() => fetchData()) }}
+                              colorFn={priorityColor}
+                            />
+                            {task.assigned_to && (
+                              <AgentAvatar agent={task.assigned_to} size="sm" />
+                            )}
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              )
+            })
+          )}
+        </div>
+        )
+      })()}
 
       {/* Task Detail Modal */}
       {selectedTask && (
@@ -437,42 +702,122 @@ export function TaskBoardPanel() {
   )
 }
 
-// Task Detail Modal Component (placeholder - would be implemented separately)
-function TaskDetailModal({ 
-  task, 
-  agents, 
-  onClose, 
-  onUpdate 
-}: { 
+// --- Status / Priority option configs ---
+
+const STATUS_OPTIONS: PropertyOption[] = [
+  { value: 'open', label: 'Open', icon: <Circle width={14} height={14} /> },
+  { value: 'in_progress', label: 'In Progress', icon: <HalfMoon width={14} height={14} /> },
+  { value: 'review', label: 'Review', icon: <Eye width={14} height={14} /> },
+  { value: 'blocked', label: 'Blocked', icon: <Prohibition width={14} height={14} /> },
+  { value: 'done', label: 'Done', icon: <CheckCircle width={14} height={14} /> },
+]
+
+const PRIORITY_OPTIONS: PropertyOption[] = [
+  { value: 'urgent', label: 'Urgent', icon: <WarningTriangle width={14} height={14} /> },
+  { value: 'high', label: 'High', icon: <NavArrowUp width={14} height={14} /> },
+  { value: 'medium', label: 'Normal', icon: <Minus width={14} height={14} /> },
+  { value: 'low', label: 'Low', icon: <NavArrowDown width={14} height={14} /> },
+]
+
+function statusColor(value: string): string {
+  switch (value) {
+    case 'done': return 'bg-green-500/15 text-green-400'
+    case 'in_progress': return 'bg-yellow-500/15 text-yellow-400'
+    case 'review': return 'bg-purple-500/15 text-purple-400'
+    case 'blocked': return 'bg-red-500/15 text-red-400'
+    default: return 'bg-surface-1 text-muted-foreground'
+  }
+}
+
+function priorityColor(value: string): string {
+  switch (value) {
+    case 'urgent': return 'bg-orange-500/15 text-orange-400'
+    case 'high': return 'bg-red-500/15 text-red-400'
+    case 'medium': return 'bg-yellow-500/15 text-yellow-400'
+    case 'low': return 'bg-green-500/15 text-green-400'
+    default: return 'bg-surface-1 text-muted-foreground'
+  }
+}
+
+// --- Task Detail Modal ---
+
+function TaskDetailModal({
+  task,
+  agents,
+  onClose,
+  onUpdate
+}: {
   task: Task
   agents: Agent[]
   onClose: () => void
   onUpdate: () => void
 }) {
+  const [title, setTitle] = useState(task.title)
+  const [editingTitle, setEditingTitle] = useState(false)
+  const [description, setDescription] = useState(task.description || '')
+  const [status, setStatus] = useState(task.status)
+  const [priority, setPriority] = useState(task.priority)
+  const [assignee, setAssignee] = useState(task.assigned_to || '')
+  const [creator, setCreator] = useState((task as any).creator || '')
+
   const [comments, setComments] = useState<Comment[]>([])
   const [loadingComments, setLoadingComments] = useState(false)
   const [commentText, setCommentText] = useState('')
-  const [commentAuthor, setCommentAuthor] = useState('system')
   const [commentError, setCommentError] = useState<string | null>(null)
   const [broadcastMessage, setBroadcastMessage] = useState('')
   const [broadcastStatus, setBroadcastStatus] = useState<string | null>(null)
-  const [reviews, setReviews] = useState<any[]>([])
-  const [reviewStatus, setReviewStatus] = useState<'approved' | 'rejected'>('approved')
-  const [reviewNotes, setReviewNotes] = useState('')
-  const [reviewError, setReviewError] = useState<string | null>(null)
-  const [activeTab, setActiveTab] = useState<'details' | 'comments' | 'quality'>('details')
-  const [reviewer, setReviewer] = useState('aegis')
+  const [saving, setSaving] = useState(false)
 
-  const fetchReviews = useCallback(async () => {
+  const titleInputRef = useRef<HTMLInputElement>(null)
+
+  // --- Save a single field ---
+  const saveField = async (field: string, value: string) => {
+    setSaving(true)
     try {
-      const response = await fetch(`/api/quality-review?taskId=${task.id}`)
-      if (!response.ok) throw new Error('Failed to fetch reviews')
-      const data = await response.json()
-      setReviews(data.reviews || [])
-    } catch (error) {
-      setReviewError('Failed to load quality reviews')
+      await fetch(`/api/tasks/${task.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ [field]: value }),
+      })
+    } catch {} finally { setSaving(false) }
+  }
+
+  const handleStatusChange = (v: string) => { setStatus(v as any); saveField('status', v) }
+  const handlePriorityChange = (v: string) => { setPriority(v as any); saveField('priority', v) }
+  const handleAssigneeChange = (v: string) => { setAssignee(v); saveField('assigned_to', v) }
+  const handleCreatorChange = (v: string) => { setCreator(v); saveField('creator', v) }
+
+  const handleTitleBlur = () => {
+    setEditingTitle(false)
+    if (title.trim() && title !== task.title) saveField('title', title.trim())
+    else if (!title.trim()) setTitle(task.title)
+  }
+
+  const handleDescriptionSave = (markdown: string) => {
+    const trimmed = markdown.trim()
+    if (trimmed !== (task.description || '').trim()) {
+      setDescription(trimmed)
+      saveField('description', trimmed)
     }
-  }, [task.id])
+  }
+
+  const handleClose = () => { onUpdate(); onClose() }
+
+  // Build assignee options
+  const assigneeOptions: PropertyOption[] = [
+    { value: '', label: 'No assignee', icon: '—' },
+    { value: 'cri', label: 'Cri', icon: <AgentAvatar agent="cri" size="sm" /> as React.ReactNode, group: 'Humans' },
+    ...agents.filter(a => a.name.toLowerCase() !== 'cri').map(a => ({
+      value: a.name, label: a.name, icon: <AgentAvatar agent={a.name} size="sm" /> as React.ReactNode, group: 'Agents',
+    })),
+  ]
+  const creatorOptions: PropertyOption[] = [
+    { value: '', label: 'Not assigned', icon: '—' },
+    { value: 'cri', label: 'Cri', icon: <AgentAvatar agent="cri" size="sm" /> as React.ReactNode },
+    ...agents.filter(a => a.name.toLowerCase() !== 'cri').map(a => ({
+      value: a.name, label: a.name, icon: <AgentAvatar agent={a.name} size="sm" /> as React.ReactNode,
+    })),
+  ]
 
   const fetchComments = useCallback(async () => {
     try {
@@ -488,83 +833,41 @@ function TaskDetailModal({
     }
   }, [task.id])
 
-  useEffect(() => {
-    fetchComments()
-  }, [fetchComments])
-  useEffect(() => {
-    fetchReviews()
-  }, [fetchReviews])
-  
+  useEffect(() => { fetchComments() }, [fetchComments])
   useSmartPoll(fetchComments, 15000)
 
   const handleAddComment = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!commentText.trim()) return
-
     try {
       setCommentError(null)
       const response = await fetch(`/api/tasks/${task.id}/comments`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          author: commentAuthor || 'system',
-          content: commentText
-        })
+        body: JSON.stringify({ author: 'cri', content: commentText })
       })
       if (!response.ok) throw new Error('Failed to add comment')
       setCommentText('')
       await fetchComments()
       onUpdate()
-    } catch (error) {
-      setCommentError('Failed to add comment')
-    }
+    } catch { setCommentError('Failed to add comment') }
   }
 
   const handleBroadcast = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!broadcastMessage.trim()) return
-
     try {
       setBroadcastStatus(null)
       const response = await fetch(`/api/tasks/${task.id}/broadcast`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          author: commentAuthor || 'system',
-          message: broadcastMessage
-        })
+        body: JSON.stringify({ author: 'cri', message: broadcastMessage })
       })
       const data = await response.json()
       if (!response.ok) throw new Error(data.error || 'Broadcast failed')
       setBroadcastMessage('')
       setBroadcastStatus(`Sent to ${data.sent || 0} subscribers`)
-    } catch (error) {
-      setBroadcastStatus('Failed to broadcast')
-    }
-  }
-
-  const handleSubmitReview = async (e: React.FormEvent) => {
-    e.preventDefault()
-    try {
-      setReviewError(null)
-      const response = await fetch('/api/quality-review', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          taskId: task.id,
-          reviewer,
-          status: reviewStatus,
-          notes: reviewNotes
-        })
-      })
-      const data = await response.json()
-      if (!response.ok) throw new Error(data.error || 'Failed to submit review')
-      setReviewNotes('')
-      await fetchReviews()
-      onUpdate()
-    } catch (error) {
-      setReviewError('Failed to submit review')
-    }
+    } catch { setBroadcastStatus('Failed to broadcast') }
   }
 
   const renderComment = (comment: Comment, depth: number = 0) => (
@@ -583,192 +886,105 @@ function TaskDetailModal({
   )
 
   return (
-    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-      <div className="bg-card border border-border rounded-lg max-w-2xl w-full max-h-[90vh] overflow-y-auto">
+    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4" onClick={handleClose}>
+      <div className="bg-card border border-border rounded-lg max-w-2xl w-full max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
         <div className="p-6">
-          <div className="flex justify-between items-start mb-4">
-            <h3 className="text-xl font-bold text-foreground">{task.title}</h3>
-            <button
-              onClick={onClose}
-              className="text-muted-foreground hover:text-foreground text-2xl transition-smooth"
-            >
-              ×
-            </button>
-          </div>
-          <p className="text-foreground/80 mb-4">{task.description || 'No description'}</p>
-          <div className="flex gap-2 mt-4">
-            {(['details', 'comments', 'quality'] as const).map(tab => (
-              <button
-                key={tab}
-                onClick={() => setActiveTab(tab)}
-                className={`px-3 py-2 text-sm rounded-md transition-smooth ${
-                  activeTab === tab ? 'bg-primary text-primary-foreground' : 'bg-secondary text-muted-foreground hover:bg-surface-2'
-                }`}
-              >
-                {tab === 'details' ? 'Details' : tab === 'comments' ? 'Comments' : 'Quality Review'}
-              </button>
-            ))}
+          {/* Header */}
+          <div className="flex justify-between items-center mb-3">
+            <div className="flex items-center gap-2">
+              {saving && <span className="text-[10px] text-muted-foreground/50">Saving...</span>}
+              <span className="text-[10px] text-muted-foreground/40">{new Date(task.created_at * 1000).toLocaleDateString()}</span>
+            </div>
+            <button onClick={handleClose} className="text-muted-foreground hover:text-foreground text-xl transition-smooth leading-none">×</button>
           </div>
 
-          {activeTab === 'details' && (
-            <div className="grid grid-cols-2 gap-4 text-sm mt-4">
-              <div>
-                <span className="text-muted-foreground">Status:</span>
-                <span className="text-foreground ml-2">{task.status}</span>
-              </div>
-              <div>
-                <span className="text-muted-foreground">Priority:</span>
-                <span className="text-foreground ml-2">{task.priority}</span>
-              </div>
-              <div>
-                <span className="text-muted-foreground">Assigned to:</span>
-                <span className="text-foreground ml-2">{task.assigned_to || 'Unassigned'}</span>
-              </div>
-              <div>
-                <span className="text-muted-foreground">Created:</span>
-                <span className="text-foreground ml-2">{new Date(task.created_at * 1000).toLocaleDateString()}</span>
-              </div>
-            </div>
+          {/* Editable Title */}
+          {editingTitle ? (
+            <input
+              ref={titleInputRef}
+              type="text"
+              value={title}
+              onChange={e => setTitle(e.target.value)}
+              onBlur={handleTitleBlur}
+              onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handleTitleBlur() } if (e.key === 'Escape') { setTitle(task.title); setEditingTitle(false) } }}
+              className="w-full text-xl font-bold text-foreground bg-transparent border-b border-primary/30 focus:border-primary focus:outline-none pb-1 mb-2"
+              autoFocus
+            />
+          ) : (
+            <h3
+              className="text-xl font-bold text-foreground cursor-text hover:bg-surface-1/50 rounded px-1 -mx-1 py-0.5 mb-2 transition-colors"
+              onClick={() => setEditingTitle(true)}
+            >{title}</h3>
           )}
 
-          {activeTab === 'comments' && (
-            <div className="mt-6">
+          {/* Description — BlockNote */}
+          <div className="mb-4 -mx-1">
+            <BlockEditor
+              initialMarkdown={description}
+              onBlur={handleDescriptionSave}
+              placeholder="Add a description..."
+              compact
+            />
+          </div>
+
+          {/* Property Chips */}
+          <div className="flex flex-wrap gap-2 mb-6">
+            <PropertyChip value={status} options={STATUS_OPTIONS} onSelect={handleStatusChange} colorFn={statusColor} />
+            <PropertyChip value={priority} options={PRIORITY_OPTIONS} onSelect={handlePriorityChange} colorFn={priorityColor} />
+            <PropertyChip value={assignee} options={assigneeOptions} onSelect={handleAssigneeChange} searchable />
+            <PropertyChip value={creator} options={creatorOptions} onSelect={handleCreatorChange} searchable />
+          </div>
+
+          {/* Comments */}
+          <div className="border-t border-border pt-4">
             <div className="flex items-center justify-between mb-3">
-              <h4 className="text-lg font-semibold text-foreground">Comments</h4>
-              <button
-                onClick={fetchComments}
-                className="text-xs text-blue-400 hover:text-blue-300"
-              >
-                Refresh
-              </button>
+              <h4 className="text-sm font-semibold text-foreground">Comments</h4>
+              <button onClick={fetchComments} className="text-[10px] text-muted-foreground/40 hover:text-muted-foreground">Refresh</button>
             </div>
 
             {commentError && (
-              <div className="bg-red-500/10 border border-red-500/20 text-red-400 p-2 rounded-md text-sm mb-3">
-                {commentError}
-              </div>
+              <div className="bg-red-500/10 border border-red-500/20 text-red-400 p-2 rounded-md text-xs mb-3">{commentError}</div>
             )}
 
             {loadingComments ? (
-              <div className="text-muted-foreground text-sm">Loading comments...</div>
+              <div className="text-muted-foreground text-xs py-2">Loading comments...</div>
             ) : comments.length === 0 ? (
-              <div className="text-muted-foreground/50 text-sm">No comments yet.</div>
+              <div className="text-muted-foreground/40 text-xs py-2">No comments yet.</div>
             ) : (
-              <div className="space-y-4">
+              <div className="space-y-3 mb-3">
                 {comments.map(comment => renderComment(comment))}
               </div>
             )}
 
-            <form onSubmit={handleAddComment} className="mt-4 space-y-3">
-              <div>
-                <label className="block text-xs text-muted-foreground mb-1">Author</label>
+            <form onSubmit={handleAddComment} className="mt-2">
+              <div className="flex gap-2">
                 <input
                   type="text"
-                  value={commentAuthor}
-                  onChange={(e) => setCommentAuthor(e.target.value)}
-                  className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary/50"
-                />
-              </div>
-              <div>
-                <label className="block text-xs text-muted-foreground mb-1">New Comment</label>
-                <textarea
                   value={commentText}
-                  onChange={(e) => setCommentText(e.target.value)}
-                  className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary/50"
-                  rows={3}
+                  onChange={e => setCommentText(e.target.value)}
+                  placeholder="Write a comment..."
+                  className="flex-1 bg-surface-1 text-foreground text-sm border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/50"
+                  onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleAddComment(e) } }}
                 />
-              </div>
-              <div className="flex justify-end">
-                <button
-                  type="submit"
-                  className="px-4 py-2 bg-primary text-primary-foreground rounded-md hover:bg-primary/90 transition-smooth text-sm"
-                >
-                  Add Comment
-                </button>
+                <button type="submit" className="px-3 py-2 bg-primary text-primary-foreground rounded-md hover:bg-primary/90 transition-smooth text-xs font-medium">Send</button>
               </div>
             </form>
 
-            <div className="mt-6 border-t border-border pt-4">
-              <h5 className="text-sm font-medium text-foreground mb-2">Broadcast to Subscribers</h5>
-              {broadcastStatus && (
-                <div className="text-xs text-muted-foreground mb-2">{broadcastStatus}</div>
-              )}
-              <form onSubmit={handleBroadcast} className="space-y-2">
-                <textarea
+            {/* Broadcast */}
+            <div className="mt-3">
+              {broadcastStatus && <div className="text-[10px] text-muted-foreground mb-1">{broadcastStatus}</div>}
+              <form onSubmit={handleBroadcast} className="flex gap-2">
+                <input
+                  type="text"
                   value={broadcastMessage}
-                  onChange={(e) => setBroadcastMessage(e.target.value)}
-                  className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary/50"
-                  rows={2}
-                  placeholder="Send a message to all task subscribers..."
+                  onChange={e => setBroadcastMessage(e.target.value)}
+                  placeholder="Broadcast to subscribers..."
+                  className="flex-1 bg-surface-1 text-foreground text-xs border border-border/50 rounded-md px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-purple-500/30"
                 />
-                <div className="flex justify-end">
-                  <button
-                    type="submit"
-                    className="px-3 py-2 bg-purple-500/20 text-purple-400 border border-purple-500/30 rounded-md hover:bg-purple-500/30 transition-smooth text-xs"
-                  >
-                    Broadcast
-                  </button>
-                </div>
+                <button type="submit" className="px-2.5 py-1.5 bg-purple-500/15 text-purple-400 border border-purple-500/20 rounded-md hover:bg-purple-500/25 transition-smooth text-[10px] font-medium">Broadcast</button>
               </form>
             </div>
           </div>
-          )}
-
-          {activeTab === 'quality' && (
-            <div className="mt-6">
-              <h5 className="text-sm font-medium text-foreground mb-2">Aegis Quality Review</h5>
-              {reviewError && (
-                <div className="text-xs text-red-400 mb-2">{reviewError}</div>
-              )}
-              {reviews.length > 0 ? (
-                <div className="space-y-2 mb-3">
-                  {reviews.map((review) => (
-                    <div key={review.id} className="text-xs text-foreground/80 bg-surface-1/40 rounded p-2">
-                      <div className="flex justify-between">
-                        <span>{review.reviewer} — {review.status}</span>
-                        <span>{new Date(review.created_at * 1000).toLocaleString()}</span>
-                      </div>
-                      {review.notes && <div className="mt-1">{review.notes}</div>}
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <div className="text-xs text-muted-foreground mb-3">No reviews yet.</div>
-              )}
-              <form onSubmit={handleSubmitReview} className="space-y-2">
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={reviewer}
-                    onChange={(e) => setReviewer(e.target.value)}
-                    className="bg-surface-1 text-foreground border border-border rounded-md px-2 py-1 text-xs"
-                    placeholder="Reviewer (e.g., aegis)"
-                  />
-                  <select
-                    value={reviewStatus}
-                    onChange={(e) => setReviewStatus(e.target.value as 'approved' | 'rejected')}
-                    className="bg-surface-1 text-foreground border border-border rounded-md px-2 py-1 text-xs"
-                  >
-                    <option value="approved">approved</option>
-                    <option value="rejected">rejected</option>
-                  </select>
-                  <input
-                    type="text"
-                    value={reviewNotes}
-                    onChange={(e) => setReviewNotes(e.target.value)}
-                    className="flex-1 bg-surface-1 text-foreground border border-border rounded-md px-2 py-1 text-xs"
-                    placeholder="Review notes (required)"
-                  />
-                  <button
-                    type="submit"
-                    className="px-3 py-1 bg-green-500/20 text-green-400 border border-green-500/30 rounded-md text-xs"
-                  >
-                    Submit
-                  </button>
-                </div>
-              </form>
-            </div>
-          )}
         </div>
       </div>
     </div>
