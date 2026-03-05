@@ -932,10 +932,19 @@ function TaskDetailModal({
     } catch { setBroadcastStatus('Failed to broadcast') }
   }
 
+  const authorColor = (name: string) => {
+    const n = name.toLowerCase()
+    if (n === 'cri' || n === 'cristiano') return 'text-pink-400'
+    if (n === 'cseno' || n === 'userboy' || n === 'bot') return 'text-lime-400'
+    if (n === 'cody') return 'text-blue-400'
+    if (n === 'bookworm') return 'text-purple-400'
+    return 'text-foreground/80'
+  }
+
   const renderComment = (comment: Comment, depth: number = 0) => (
     <div key={comment.id} className={`border-l-2 border-border pl-3 ${depth > 0 ? 'ml-4' : ''}`}>
       <div className="flex items-center justify-between text-xs text-muted-foreground">
-        <span className="font-medium text-foreground/80">{comment.author}</span>
+        <span className={`font-semibold ${authorColor(comment.author)}`}>{comment.author}</span>
         <span>{new Date(comment.created_at * 1000).toLocaleString()}</span>
       </div>
       <div className="text-sm text-foreground/90 mt-1 whitespace-pre-wrap">{comment.content}</div>
