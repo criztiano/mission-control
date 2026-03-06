@@ -179,6 +179,14 @@ export function MyPanel() {
 - **`class-variance-authority`** — used for Button variants
 - **`cn()`** (`src/lib/utils.ts`) — clsx + tailwind-merge utility
 
+## ⚠️ Tailwind Version
+This project uses **Tailwind CSS v3.4**, NOT v4. Key differences:
+- CSS variable syntax: use `h-[var(--my-var)]` NOT `h-(--my-var)`
+- Arbitrary values always use square brackets: `w-[100px]`, `translate-x-[var(--offset)]`
+- Negative z-index: use `z-[-1]` NOT `-z-1` (v4 syntax)
+- Negative arbitrary values: always use `prefix-[-value]` bracket notation
+- Do NOT use Tailwind v4 parentheses syntax or shorthand negatives
+
 ## Don'ts
 
 - Don't use Notion API for tasks — everything is in SQLite (CC DB)

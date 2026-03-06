@@ -1,168 +1,171 @@
-# Implementation Plan
+# Implementation Plan: Projects UI Integration
 
-## CreateTaskModal Alignment — Gap Analysis Complete
+## Gap Analysis Summary
 
-**Reference:** TaskDetailModal (lines 777-1092)
-**Target:** CreateTaskModal (lines 1095-1219)
-**File:** `src/components/panels/task-board-panel.tsx`
+**GOOD NEWS:** Most backend functionality already exists:
+- ✅ Database schema: `issues.project_id` FK to `projects` table
+- ✅ API endpoints: `GET /api/projects`, `POST /api/projects/generate`
+- ✅ Task API already handles `project_id` updates (`PUT /api/tasks/[id]`)
+- ✅ Tasks already include `project_id` and `project_title` in response
+- ✅ PropertyChip component exists and is used for status/priority/assignee
+
+**GAPS IDENTIFIED:**
+- ❌ Task interface in task-board-panel.tsx is missing `project_id` and `project_title` fields
+- ❌ No project filtering in board header
+- ❌ No project PropertyChip in TaskDetailModal
+- ❌ No project PropertyChip in CreateTaskModal
+- ❌ No project chips on task cards (kanban/list views)
+- ❌ No projects state/fetching in TaskBoardPanel component
+
+## Implementation Tasks (Prioritized)
+
+### 1. **Update Task Interface** ✅
+   - [x] Add `project_id?: string` field to Task interface (line 15-30)
+   - [x] Add `project_title?: string` field to Task interface
+   - [x] This enables TypeScript to recognize project fields from API
+
+### 2. **Add Projects State to TaskBoardPanel**
+   - Add `projects` state: `useState<Project[]>([])`
+   - Add `selectedProjectFilter` state: `useState<string | null>(null)`
+     - `null` = "All Projects", `''` = "Unassigned", otherwise project.id
+   - Fetch projects on mount: `GET /api/projects` in `fetchData()`
+   - Cache projects in state (don't re-fetch per modal open)
+
+### 3. **Add Project Filter to Board Header**
+   - Position: after view toggle buttons, before "New Task" button (line 453)
+   - Component: `<select>` styled as Button variant="outline" size="sm"
+   - Options structure:
+     - "All Projects" (default, value=null)
+     - "Unassigned" (value='', shows tasks with no project)
+     - Separator
+     - List all projects: `{emoji} {title}` (value=project.id)
+   - On change: update `selectedProjectFilter` state
+   - Responsive: show icon only on mobile
+
+### 4. **Implement Project Filtering Logic**
+   - Create `filteredTasks` computed array before grouping by status
+   - Filter logic:
+     - If `selectedProjectFilter === null`: show all tasks
+     - If `selectedProjectFilter === ''`: show only tasks where `!task.project_id`
+     - Otherwise: show only tasks where `task.project_id === selectedProjectFilter`
+   - Use `filteredTasks` instead of `tasks` for kanban/list views
+
+### 5. **Add Project PropertyChip to TaskDetailModal**
+   - Position: in chips row after Assignee, before Creator (line 1030-1035)
+   - Build project options array:
+     ```typescript
+     const projectOptions: PropertyOption[] = [
+       { value: '', label: 'No project', icon: '—' },
+       ...projects.map(p => ({
+         value: p.id,
+         label: p.title,
+         icon: p.emoji,
+       })),
+       { value: '✨-new', label: '✨ New', icon: '✨' },
+     ]
+     ```
+   - Add `projectLoading` state for spinner during generation
+   - Handle selection:
+     - If existing project: call `PUT /api/tasks/${task.id}` with `{ project_id: value }`
+     - If '✨-new':
+       - Set `projectLoading = true`
+       - Call `POST /api/projects/generate` with `{ taskId: task.id }`
+       - On success: update task state, set `projectLoading = false`
+       - On error: show project name from fallback, set `projectLoading = false`
+   - Show loading spinner on chip when `projectLoading === true`
+   - Placeholder: "No project" (muted)
+
+### 6. **Add Project PropertyChip to CreateTaskModal**
+   - Position: in chips row after Assignee (line 1178-1193)
+   - Add `projectId` to formData state
+   - Same project options as TaskDetailModal
+   - Handle selection:
+     - If existing project: store `project_id` in formData
+     - If '✨-new':
+       - Set `projectLoading = true`
+       - Create task first (to get taskId)
+       - Then call `POST /api/projects/generate` with new taskId
+       - Update task with project_id
+   - **Alternative simpler approach:** For create modal, don't allow "✨ New" option
+     - Only show existing projects + "No project"
+     - User can add new project from detail modal after creation
+   - Pass `project_id` in POST /api/tasks body if selected
+
+### 7. **Add Project Chips to Kanban Cards**
+   - Location: in `renderCard()` function, after title, before chips row (line 516-519)
+   - Only render if `task.project_id` exists (don't show "No project")
+   - Component: simple styled div, NOT PropertyChip
+   - Styling: `text-xs text-muted-foreground flex items-center gap-1 mt-1.5`
+   - Content: `{task.project_title && <span>{projectEmoji} {task.project_title}</span>}`
+   - Need to get emoji from projects array by matching project_id
+   - Keep it subtle: no background, muted text
+
+### 8. **Add Project to List View Rows**
+   - Location: in list row rendering, after assignee chip (line 679-700)
+   - Same approach as kanban cards: only show if project exists
+   - Display: small chip with emoji + name
+   - Styling: same as kanban, subtle and muted
+
+### 9. **Handle Project Updates from API**
+   - Ensure `fetchData()` updates keep selectedTask in sync
+   - When project is assigned via generate API, task should reflect it
+   - Consider optimistic updates for better UX
+
+### 10. **Polish & Edge Cases**
+   - Loading states: spinner on project chip during generation
+   - Error handling: fallback project name if generation fails
+   - Dark mode: verify all project UI elements look correct
+   - Accessibility: ensure dropdown has proper ARIA labels
+   - Keyboard navigation: ensure filter dropdown is keyboard-accessible
+   - Empty states: "No tasks in this project" when filter has no results
+
+## Technical Notes
+
+### API Contracts
+- `GET /api/projects`: returns `{ projects: [{ id, title, description, emoji }] }`
+- `POST /api/projects/generate`: accepts `{ taskId }`, returns `{ id, name, emoji, description, fallback? }`
+- `PUT /api/tasks/[id]`: accepts `{ project_id }` (null/undefined to unassign)
+- Tasks already include `project_id` and `project_title` in response
+
+### Component Architecture
+- All work happens in `src/components/panels/task-board-panel.tsx`
+- PropertyChip component already exists and works well
+- No new files needed
+- Follow existing patterns for chips and dropdowns
+
+### Styling Guidelines
+- Use Tailwind v3.4 bracket syntax: `h-[var(--x)]` not `h-(--x)`
+- Match existing chip styling for consistency
+- Keep project chips on cards subtle (muted, no background)
+- Use Button component for filter dropdown
+- Respect dark mode throughout
+
+### Performance Considerations
+- Fetch projects once on mount, cache in state
+- Don't re-fetch projects on every modal open
+- Use optimistic updates where appropriate
+- Filter tasks efficiently with simple array filter
+
+## Validation Checklist
+
+Before marking complete, verify:
+- [ ] `npx next build` passes without errors
+- [ ] Task detail modal: Project chip shows current project
+- [ ] Task detail modal: Can change project from dropdown
+- [ ] Task detail modal: "✨ New" creates project via AI
+- [ ] Task detail modal: Loading spinner shows during generation
+- [ ] Create task modal: Project chip allows selection
+- [ ] Board header: Project filter dropdown renders correctly
+- [ ] Board header: "All Projects" shows everything
+- [ ] Board header: "Unassigned" shows only tasks with no project
+- [ ] Board header: Selecting project filters tasks correctly
+- [ ] Kanban cards: Project chip shows emoji + name when assigned
+- [ ] Kanban cards: No chip when no project (clean)
+- [ ] List view: Project visible on each row
+- [ ] Dark mode: All project UI looks correct
+- [ ] No TypeScript errors
+- [ ] No raw `<select>` or `<button>` elements (use components)
 
 ---
 
-## Prioritized Implementation Items
-
-### 1. **Modal Width**
-- [x] Change `max-w-md` to `max-w-2xl` (line 1137)
-- Current: `<div className="... max-w-md w-full">`
-- Target: `<div className="... max-w-2xl w-full max-h-[90vh] flex flex-col">`
-
-### 2. **Replace Title Input**
-- [x] Remove label "Title" (line 1143)
-- [x] Replace bordered input with borderless, large input (lines 1144-1150)
-- Current: `<label>` + `<input className="w-full bg-surface-1 ... border border-border ..."/>`
-- Target: `<input className="w-full text-xl font-bold text-foreground bg-transparent focus:outline-none" placeholder="Task title..." autoFocus />`
-- [x] Update state handler to maintain `formData.title`
-
-### 3. **Replace Description Textarea with BlockEditor**
-- [x] Remove label "Description" (line 1154)
-- [x] Remove `<textarea>` (lines 1155-1160)
-- [x] Add `BlockEditor` component with:
-  - `initialMarkdown=""` (new task)
-  - `onBlur={(md) => setFormData(prev => ({ ...prev, description: md }))}`
-  - `placeholder="Add description..."`
-  - `compact` prop
-- [x] Update state to store markdown string from BlockEditor
-
-### 4. **Replace Priority Select with PropertyChip**
-- [x] Remove label "Priority" (line 1165)
-- [x] Remove `<select>` (lines 1166-1175)
-- [x] Add `PropertyChip` component:
-  - `value={formData.priority}`
-  - `options={PRIORITY_OPTIONS}` (already defined at line 748)
-  - `onSelect={(v) => setFormData(prev => ({ ...prev, priority: v as Task['priority'] }))}`
-  - `colorFn={priorityColor}` (already defined at line 765)
-
-### 5. **Replace Assignee Select with PropertyChip**
-- [x] Remove label "Assign to" (line 1179)
-- [x] Remove `<select>` with agent options (lines 1180-1192)
-- [x] Build grouped assignee options similar to detailAssigneeOptions (line 889-895):
-  ```typescript
-  const createAssigneeOptions: PropertyOption[] = [
-    { value: '', label: 'Unassigned' },
-    { value: 'cri', label: 'Cri', icon: <AgentAvatar agent="cri" size="sm" /> as React.ReactNode, group: 'Humans' },
-    ...agents.filter(a => a.name.toLowerCase() !== 'cri').map(a => ({
-      value: a.name, label: a.name, icon: <AgentAvatar agent={a.name} size="sm" /> as React.ReactNode, group: 'Agents',
-    })),
-  ]
-  ```
-- [x] Add `PropertyChip` component:
-  - `value={formData.assigned_to}`
-  - `options={createAssigneeOptions}`
-  - `onSelect={(v) => setFormData(prev => ({ ...prev, assigned_to: v }))}`
-  - `searchable`
-  - `placeholder={<span className="flex items-center gap-1 text-muted-foreground/40"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="8" r="4"/><path d="M5 20c0-4 3.5-7 7-7s7 3 7 7"/></svg></span>}`
-
-### 6. **Remove Tags Field**
-- [x] Delete tags input div (lines 1195-1204)
-- [x] Remove `tags` from `formData` state (line 1109)
-- [x] Remove tags processing in submit handler (line 1121)
-
-### 7. **Restructure Layout**
-- [x] Move form `className` from "p-6" to structured layout:
-  - Header area with title input
-  - Chips row with `flex flex-wrap gap-2` containing Priority + Assignee
-  - Body area with BlockEditor
-  - Footer with buttons
-- [x] Match detail modal structure:
-  ```tsx
-  {/* Header */}
-  <div className="shrink-0 px-4 pt-3 pb-3 border-b border-border">
-    <input {/* title */} />
-    <div className="flex flex-wrap gap-2">
-      <PropertyChip {/* priority */} />
-      <PropertyChip {/* assignee */} />
-    </div>
-  </div>
-
-  {/* Body */}
-  <div className="flex-1 overflow-y-auto px-4 pt-4 pb-2">
-    <div className="-mx-1">
-      <BlockEditor {/* description */} />
-    </div>
-  </div>
-
-  {/* Footer */}
-  <div className="shrink-0 px-4 py-3 border-t border-border">
-    <div className="flex gap-2">
-      <Button type="submit">Create Task</Button>
-      <Button variant="outline" onClick={onClose}>Cancel</Button>
-    </div>
-  </div>
-  ```
-
-### 8. **Update Button Styles**
-- [x] Change button layout from `flex-1` to natural sizing
-- [x] Ensure "Create Task" uses default variant (currently correct)
-- [x] Ensure "Cancel" uses outline variant (currently correct)
-- [x] Remove `flex-1` class from buttons
-
-### 9. **Update Submit Handler**
-- [x] Ensure `status` is set to `'open'` by default (not in form, just in submit)
-- [x] Update API payload to exclude tags
-- [x] Keep title required validation
-
-### 10. **Add Keyboard Shortcuts**
-- [x] Verify Escape closes modal (already handled at parent level, line 171-176)
-- [x] Add Cmd+Enter submit via `onKeyDown` handler on form or modal wrapper
-
-### 11. **Disable Submit When Title Empty**
-- [x] Add `disabled={!formData.title.trim()}` to Create Task button
-
-### 12. **Modal Backdrop Click Handler**
-- [x] Verify backdrop click closes modal (already present at line 1136)
-
----
-
-## Implementation Notes
-
-- All required components are already imported: `PropertyChip`, `BlockEditor`, `Button`, `AgentAvatar` (line 10-13)
-- All option constants are already defined: `PRIORITY_OPTIONS` (line 748), `priorityColor` (line 765), `statusColor` (line 755)
-- AgentAvatar supports "cri" and agent names
-- BlockEditor `onBlur` pattern is used in detail modal (line 1044)
-- Tailwind v3.4 syntax applies (use `h-[var(--x)]` not `h-(--x)`)
-- Dark mode is primary — all changes must look correct in dark theme
-- Modal is already inside backdrop with `z-50` (line 1136)
-
----
-
-## Acceptance Criteria Checklist
-
-- [x] Build passes (`npx next build`)
-- [x] Title input: borderless, auto-focused, placeholder "Task title...", `text-xl font-bold`
-- [x] Description: uses BlockEditor with `placeholder="Add description..."` and `compact` prop
-- [x] Priority: uses PropertyChip with PRIORITY_OPTIONS and priorityColor
-- [x] Assignee: uses PropertyChip with searchable, agent avatars, grouped options (Humans/Agents)
-- [x] No raw `<select>`, `<textarea>`, or labeled inputs (except title `<input>`)
-- [x] Modal width is `max-w-2xl`
-- [x] Footer has "Create Task" (default) + "Cancel" (outline) buttons
-- [x] Escape closes modal (via parent handler)
-- [x] Cmd+Enter submits form
-- [x] Submit disabled when title is empty
-- [x] Dark mode looks correct
-- [x] Tags field removed
-- [x] No status chip (defaults to `open` in API call)
-
----
-
-STATUS: COMPLETE
-
-All items implemented successfully. CreateTaskModal now matches TaskDetailModal design with:
-- Modal width changed to `max-w-2xl`
-- Borderless title input with auto-focus
-- BlockEditor for description (replacing textarea)
-- PropertyChip components for Priority and Assignee (replacing selects)
-- Grouped assignee options (Humans/Agents) with avatars and searchable
-- Tags field removed
-- Restructured layout matching detail modal (header/body/footer)
-- Keyboard shortcuts: Escape closes, Cmd+Enter submits
-- Submit button disabled when title is empty
-- Build validation passed with zero errors
+STATUS: PLANNING_COMPLETE

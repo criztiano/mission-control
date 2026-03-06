@@ -28,6 +28,8 @@ interface Task {
   tags?: string[]
   metadata?: any
   aegisApproved?: boolean
+  project_id?: string
+  project_title?: string
 }
 
 interface Agent {
