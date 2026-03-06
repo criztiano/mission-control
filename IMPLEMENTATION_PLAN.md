@@ -24,12 +24,13 @@
    - [x] Add `project_title?: string` field to Task interface
    - [x] This enables TypeScript to recognize project fields from API
 
-### 2. **Add Projects State to TaskBoardPanel**
-   - Add `projects` state: `useState<Project[]>([])`
-   - Add `selectedProjectFilter` state: `useState<string | null>(null)`
+### 2. **Add Projects State to TaskBoardPanel** ✅
+   - [x] Add `projects` state: `useState<Project[]>([])`
+   - [x] Add `selectedProjectFilter` state: `useState<string | null>(null)`
      - `null` = "All Projects", `''` = "Unassigned", otherwise project.id
-   - Fetch projects on mount: `GET /api/projects` in `fetchData()`
-   - Cache projects in state (don't re-fetch per modal open)
+   - [x] Fetch projects on mount: `GET /api/projects` in `fetchData()`
+   - [x] Cache projects in state (don't re-fetch per modal open)
+   - [x] Add Project interface to task-board-panel.tsx
 
 ### 3. **Add Project Filter to Board Header**
    - Position: after view toggle buttons, before "New Task" button (line 453)

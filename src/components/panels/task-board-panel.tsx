@@ -56,6 +56,13 @@ interface Comment {
   replies?: Comment[]
 }
 
+interface Project {
+  id: string
+  title: string
+  description?: string
+  emoji: string
+}
+
 const statusColumns = [
   { key: 'inbox', title: 'Inbox', color: 'bg-secondary text-foreground' },
   { key: 'assigned', title: 'Assigned', color: 'bg-blue-500/20 text-blue-400' },
@@ -75,6 +82,8 @@ const priorityColors = {
 export function TaskBoardPanel() {
   const [tasks, setTasks] = useState<Task[]>([])
   const [agents, setAgents] = useState<Agent[]>([])
+  const [projects, setProjects] = useState<Project[]>([])
+  const [selectedProjectFilter, setSelectedProjectFilter] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [selectedTask, setSelectedTask] = useState<Task | null>(null)
@@ -99,17 +108,19 @@ export function TaskBoardPanel() {
       if (!isSilent) setLoading(true)
       setError(null)
 
-      const [tasksResponse, agentsResponse] = await Promise.all([
+      const [tasksResponse, agentsResponse, projectsResponse] = await Promise.all([
         fetch('/api/tasks'),
-        fetch('/api/agents')
+        fetch('/api/agents'),
+        fetch('/api/projects')
       ])
 
-      if (!tasksResponse.ok || !agentsResponse.ok) {
+      if (!tasksResponse.ok || !agentsResponse.ok || !projectsResponse.ok) {
         throw new Error('Failed to fetch data')
       }
 
       const tasksData = await tasksResponse.json()
       const agentsData = await agentsResponse.json()
+      const projectsData = await projectsResponse.json()
 
       const tasksList = tasksData.tasks || []
       const taskIds = tasksList.map((task: Task) => task.id)
@@ -139,6 +150,7 @@ export function TaskBoardPanel() {
       }))
       setTasks(updatedTasks)
       setAgents(agentsData.agents || [])
+      setProjects(projectsData.projects || [])
 
       // Keep selectedTask in sync with fresh data
       setSelectedTask((prev: Task | null) => {
