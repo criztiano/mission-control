@@ -28,24 +28,24 @@ Redesign the X Feed panel to show only quality tweets by default, display rich c
 
 ### Phase 2: Component Updates (UI Primitives)
 
-#### Task 3: Replace FilterSelect with PropertyChip imports
+#### Task 3: Replace FilterSelect with PropertyChip imports ✅
 **File:** `src/components/panels/xfeed-panel.tsx`
-- [ ] Import PropertyChip: `import { PropertyChip } from '@/components/ui/property-chip'`
-- [ ] Import Button: `import { Button } from '@/components/ui/button'`
-- [ ] Import Tabs: `import { Tabs, TabsList, TabsTab, TabsPanel } from '@/components/ui/tabs'`
-- [ ] Import Lightbox: `import { Lightbox } from '@/components/ui/lightbox'`
-- [ ] Remove the local FilterSelect component definition entirely
+- [x] Import PropertyChip: `import { PropertyChip } from '@/components/ui/property-chip'`
+- [x] Import Button: `import { Button } from '@/components/ui/button'`
+- [x] Import Tabs: `import { Tabs, TabsList, TabsTab, TabsPanel } from '@/components/ui/tabs'`
+- [x] Import Lightbox: `import { Lightbox } from '@/components/ui/lightbox'`
+- [x] Remove the local FilterSelect component definition entirely
 
-#### Task 4: Replace rating buttons with Button component
+#### Task 4: Replace rating buttons with Button component ✅
 **File:** `src/components/panels/xfeed-panel.tsx`
-- [ ] Update RatingButton to use `<Button variant="ghost" size="xs">`
-- [ ] Keep emoji content, remove raw `<button>` element
-- [ ] Ensure active state styling works with Button component
-- [ ] Test: clicking rating buttons should still update and visual feedback should work
+- [x] Update RatingButton to use `<Button variant="ghost" size="xs">`
+- [x] Keep emoji content, remove raw `<button>` element
+- [x] Ensure active state styling works with Button component
+- [x] Test: clicking rating buttons should still update and visual feedback should work
 
-#### Task 5: Replace FilterSelect with PropertyChip in filter bar
+#### Task 5: Replace FilterSelect with PropertyChip in filter bar ✅
 **File:** `src/components/panels/xfeed-panel.tsx`
-- [ ] Replace theme FilterSelect with PropertyChip:
+- [x] Replace theme FilterSelect with PropertyChip:
   ```tsx
   <PropertyChip
     value={themeFilter}
@@ -54,29 +54,29 @@ Redesign the X Feed panel to show only quality tweets by default, display rich c
     placeholder="All Themes"
   />
   ```
-- [ ] Replace rating FilterSelect with PropertyChip (keep emoji icons in labels)
-- [ ] Replace digest FilterSelect with PropertyChip
-- [ ] Remove empty value option — PropertyChip handles this automatically
+- [x] Replace rating FilterSelect with PropertyChip (keep emoji icons in labels)
+- [x] Replace digest FilterSelect with PropertyChip
+- [x] Remove empty value option — PropertyChip handles this automatically
 
-#### Task 6: Replace "Load more" button with Button component
+#### Task 6: Replace "Load more" button with Button component ✅
 **File:** `src/components/panels/xfeed-panel.tsx`
-- [ ] Find the "Load more" `<button>` element
-- [ ] Replace with: `<Button variant="outline" size="sm" onClick={handleLoadMore}>Load more ({tweets.length} of {total})</Button>`
+- [x] Find the "Load more" `<button>` element
+- [x] Replace with: `<Button variant="outline" size="sm" onClick={handleLoadMore}>Load more ({tweets.length} of {total})</Button>`
 
 ### Phase 3: Curated Mode & State Management
 
-#### Task 7: Add curated/all mode toggle state
+#### Task 7: Add curated/all mode toggle state ✅
 **File:** `src/components/panels/xfeed-panel.tsx`
-- [ ] Add state: `const [mode, setMode] = useState<'curated' | 'all'>('curated')`
-- [ ] Update fetchTweets to pass verdict filter:
+- [x] Add state: `const [mode, setMode] = useState<'curated' | 'all'>('curated')`
+- [x] Update fetchTweets to pass verdict filter:
   ```tsx
   if (mode === 'curated') params.set('verdict', 'curated')
   ```
-- [ ] Add mode to fetchTweets dependencies: `[themeFilter, ratingFilter, digestFilter, search, mode]`
+- [x] Add mode to fetchTweets dependencies: `[themeFilter, ratingFilter, digestFilter, search, mode]`
 
-#### Task 8: Add Curated/All tabs UI
+#### Task 8: Add Curated/All tabs UI ✅
 **File:** `src/components/panels/xfeed-panel.tsx`
-- [ ] Add tabs above filter bar (in header section):
+- [x] Add tabs above filter bar (in header section):
   ```tsx
   <Tabs value={mode} onValueChange={(v) => setMode(v as 'curated' | 'all')}>
     <TabsList>
@@ -85,7 +85,7 @@ Redesign the X Feed panel to show only quality tweets by default, display rich c
     </TabsList>
   </Tabs>
   ```
-- [ ] Test: switching tabs should trigger refetch with correct verdict filter
+- [x] Test: switching tabs should trigger refetch with correct verdict filter
 
 ### Phase 4: Card Redesign (Always Expanded)
 

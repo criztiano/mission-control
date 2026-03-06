@@ -1,6 +1,10 @@
 'use client'
 
 import { useState, useEffect, useCallback, useRef } from 'react'
+import { Button } from '@/components/ui/button'
+import { PropertyChip } from '@/components/ui/property-chip'
+import { Tabs, TabsList, TabsTab } from '@/components/ui/tabs'
+import { Lightbox } from '@/components/ui/lightbox'
 
 // --- Types ---
 
@@ -79,15 +83,15 @@ function RatingButton({ rating, current, onRate }: {
   const config = RATING_CONFIG[rating]
   const isActive = current === rating
   return (
-    <button
+    <Button
+      variant="ghost"
+      size="xs"
       onClick={() => onRate(rating)}
       title={config.label}
-      className={`px-1.5 py-1 rounded text-xs transition-colors ${
-        isActive ? config.active : `text-muted-foreground ${config.hover}`
-      }`}
+      className={isActive ? config.active : config.hover}
     >
       {config.emoji}
-    </button>
+    </Button>
   )
 }
 
@@ -218,28 +222,6 @@ function TweetCard({ tweet, onUpdate, expanded, onToggle, focused, itemRef }: {
   )
 }
 
-// --- Filter Select ---
-
-function FilterSelect({ value, onChange, options, placeholder }: {
-  value: string
-  onChange: (v: string) => void
-  options: { value: string; label: string }[]
-  placeholder: string
-}) {
-  return (
-    <select
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      className="bg-secondary text-foreground text-xs rounded-md px-2 py-1.5 border border-border focus:outline-none focus:ring-1 focus:ring-primary appearance-none cursor-pointer"
-    >
-      <option value="">{placeholder}</option>
-      {options.map((o) => (
-        <option key={o.value} value={o.value}>{o.label}</option>
-      ))}
-    </select>
-  )
-}
-
 // --- Main Panel ---
 
 const PAGE_SIZE = 50
@@ -247,6 +229,7 @@ const PAGE_SIZE = 50
 export function XFeedPanel() {
   const [tweets, setTweets] = useState<Tweet[]>([])
   const [total, setTotal] = useState(0)
+  const [curatedCount, setCuratedCount] = useState(0)
   const [themes, setThemes] = useState<string[]>([])
   const [digests, setDigests] = useState<string[]>([])
   const [loading, setLoading] = useState(true)
@@ -257,6 +240,7 @@ export function XFeedPanel() {
   const itemRefs = useRef<(HTMLDivElement | null)[]>([])
 
   // Filters
+  const [mode, setMode] = useState<'curated' | 'all'>('curated')
   const [themeFilter, setThemeFilter] = useState('')
   const [ratingFilter, setRatingFilter] = useState('')
   const [digestFilter, setDigestFilter] = useState('')
@@ -270,6 +254,7 @@ export function XFeedPanel() {
     setError(null)
     try {
       const params = new URLSearchParams()
+      if (mode === 'curated') params.set('verdict', 'curated')
       if (themeFilter) params.set('theme', themeFilter)
       if (ratingFilter) params.set('rating', ratingFilter)
       if (digestFilter) params.set('digest', digestFilter)
@@ -290,12 +275,19 @@ export function XFeedPanel() {
       if (data.themes) setThemes(data.themes)
       if (data.digests) setDigests(data.digests)
       setOffset(newOffset)
+
+      // Fetch curated count when in 'all' mode
+      if (mode === 'all') {
+        const curatedRes = await fetch('/api/xfeed?verdict=curated&limit=0')
+        const curatedData = await curatedRes.json()
+        setCuratedCount(curatedData.total)
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load tweets')
     } finally {
       setLoading(false)
     }
-  }, [themeFilter, ratingFilter, digestFilter, search])
+  }, [themeFilter, ratingFilter, digestFilter, search, mode])
 
   // Initial load + filter changes
   useEffect(() => {
@@ -367,6 +359,13 @@ export function XFeedPanel() {
     fetchTweets(0)
   }
 
+  const handleResetFilters = () => {
+    setThemeFilter('')
+    setRatingFilter('')
+    setDigestFilter('')
+    setSearch('')
+  }
+
   const hasMore = tweets.length < total
 
   return (
@@ -377,37 +376,51 @@ export function XFeedPanel() {
           <div className="flex items-center gap-3">
             <h2 className="text-lg font-semibold text-foreground">X Feed</h2>
             {total > 0 && (
-              <span className="text-xs text-muted-foreground bg-secondary px-2 py-0.5 rounded-full">
-                {total}
+              <span className="text-xs text-muted-foreground">
+                {mode === 'curated' ? (
+                  `${total} curated`
+                ) : (
+                  `${curatedCount} curated · ${total} total`
+                )}
               </span>
             )}
           </div>
         </div>
 
+        {/* Curated/All tabs */}
+        <div className="mb-3">
+          <Tabs value={mode} onValueChange={(v) => setMode(v as 'curated' | 'all')}>
+            <TabsList>
+              <TabsTab value="curated">Curated</TabsTab>
+              <TabsTab value="all">All</TabsTab>
+            </TabsList>
+          </Tabs>
+        </div>
+
         {/* Filter bar */}
         <div className="flex items-center gap-2 flex-wrap">
-          <FilterSelect
+          <PropertyChip
             value={themeFilter}
-            onChange={setThemeFilter}
-            placeholder="All Themes"
+            onSelect={setThemeFilter}
             options={themes.map(t => ({ value: t, label: t }))}
+            placeholder="All Themes"
           />
-          <FilterSelect
+          <PropertyChip
             value={ratingFilter}
-            onChange={setRatingFilter}
-            placeholder="All Ratings"
+            onSelect={setRatingFilter}
             options={[
-              { value: 'fire', label: '\uD83D\uDD25 Fire' },
-              { value: 'meh', label: '\uD83D\uDE10 Meh' },
-              { value: 'noise', label: '\uD83D\uDDD1\uFE0F Noise' },
+              { value: 'fire', label: '🔥 Fire' },
+              { value: 'meh', label: '😐 Meh' },
+              { value: 'noise', label: '🗑️ Noise' },
               { value: 'unrated', label: 'Unrated' },
             ]}
+            placeholder="All Ratings"
           />
-          <FilterSelect
+          <PropertyChip
             value={digestFilter}
-            onChange={setDigestFilter}
-            placeholder="All Digests"
+            onSelect={setDigestFilter}
             options={digests.map(d => ({ value: d, label: d }))}
+            placeholder="All Digests"
           />
           <input
             type="text"
@@ -427,8 +440,26 @@ export function XFeedPanel() {
         )}
 
         {!loading && !error && tweets.length === 0 && (
-          <div className="text-muted-foreground text-sm text-center py-12">
-            No tweets found. Adjust filters or import tweets.
+          <div className="text-center py-12">
+            {mode === 'curated' ? (
+              <>
+                <p className="text-muted-foreground text-sm mb-3">
+                  Your curated feed is empty
+                </p>
+                <Button variant="outline" size="sm" onClick={() => setMode('all')}>
+                  View all tweets
+                </Button>
+              </>
+            ) : (
+              <>
+                <p className="text-muted-foreground text-sm mb-3">
+                  No tweets match your filters
+                </p>
+                <Button variant="outline" size="sm" onClick={handleResetFilters}>
+                  Reset filters
+                </Button>
+              </>
+            )}
           </div>
         )}
 
@@ -449,12 +480,13 @@ export function XFeedPanel() {
         {/* Load more */}
         {hasMore && !loading && (
           <div className="flex justify-center py-6">
-            <button
+            <Button
+              variant="outline"
+              size="sm"
               onClick={handleLoadMore}
-              className="text-xs text-primary hover:underline"
             >
               Load more ({tweets.length} of {total})
-            </button>
+            </Button>
           </div>
         )}
 
