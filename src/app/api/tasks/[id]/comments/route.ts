@@ -61,10 +61,10 @@ export async function POST(
     const issueId = resolvedParams.id;
     const body = await request.json();
 
-    const { content, author = 'system' } = body;
+    const { content, author = 'system', attachments } = body;
 
-    if (!content || typeof content !== 'string' || content.trim().length === 0) {
-      return NextResponse.json({ error: 'Comment content is required' }, { status: 400 });
+    if ((!content || typeof content !== 'string' || content.trim().length === 0) && (!attachments || attachments.length === 0)) {
+      return NextResponse.json({ error: 'Comment content or attachments are required' }, { status: 400 });
     }
 
     const issue = getIssue(issueId);
@@ -74,13 +74,14 @@ export async function POST(
 
     const id = randomUUID();
     const now = new Date().toISOString();
+    const attachmentsJson = attachments ? JSON.stringify(attachments) : '[]';
 
     const writeDb = getCCDatabaseWrite();
     try {
       writeDb.prepare(`
-        INSERT INTO issue_comments (id, issue_id, author, content, created_at)
-        VALUES (?, ?, ?, ?, ?)
-      `).run(id, issueId, author, content, now);
+        INSERT INTO issue_comments (id, issue_id, author, content, created_at, attachments)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(id, issueId, author, content || '', now, attachmentsJson);
     } finally {
       writeDb.close();
     }
@@ -100,10 +101,11 @@ export async function POST(
       id,
       task_id: issueId,
       author,
-      content,
+      content: content || '',
       created_at: Math.floor(new Date(now).getTime() / 1000),
       mentions,
       replies: [],
+      attachments: attachments || [],
     };
 
     return NextResponse.json({ comment }, { status: 201 });

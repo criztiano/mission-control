@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   Circle, HalfMoon, CheckCircle, Prohibition, WarningTriangle,
-  NavArrowUp, Minus, NavArrowDown, Eye,
+  NavArrowUp, Minus, NavArrowDown, Eye, Attachment, Xmark,
 } from 'iconoir-react'
 import { useMissionControl } from '@/store'
 import { useSmartPoll } from '@/lib/use-smart-poll'
@@ -11,6 +11,7 @@ import { PropertyChip, type PropertyOption } from '@/components/ui/property-chip
 import { Button } from '@/components/ui/button'
 import { AgentAvatar } from '@/components/ui/agent-avatar'
 import { BlockEditor } from '@/components/ui/block-editor'
+import { Lightbox } from '@/components/ui/lightbox'
 
 interface Task {
   id: number
@@ -54,6 +55,7 @@ interface Comment {
   parent_id?: number
   mentions?: string[]
   replies?: Comment[]
+  attachments?: Array<{ url: string; filename: string; originalName?: string }>
 }
 
 interface Project {
@@ -878,6 +880,11 @@ function TaskDetailModal({
   const [loadingComments, setLoadingComments] = useState(false)
   const [commentText, setCommentText] = useState('')
   const [commentError, setCommentError] = useState<string | null>(null)
+  const [attachments, setAttachments] = useState<Array<{ url: string; filename: string; originalName?: string }>>([])
+  const [uploading, setUploading] = useState(false)
+  const [lightboxImage, setLightboxImage] = useState<string | null>(null)
+  const [isDragging, setIsDragging] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   const [saving, setSaving] = useState(false)
 
@@ -1028,18 +1035,97 @@ function TaskDetailModal({
   useEffect(() => { fetchComments() }, [fetchComments])
   useSmartPoll(fetchComments, 15000)
 
+  const handleFileUpload = async (files: FileList | File[]) => {
+    const fileArray = Array.from(files)
+    const imageFiles = fileArray.filter(f => f.type.startsWith('image/'))
+
+    if (imageFiles.length === 0) return
+
+    // Validate file size (10MB max)
+    const invalidFiles = imageFiles.filter(f => f.size > 10 * 1024 * 1024)
+    if (invalidFiles.length > 0) {
+      setCommentError(`Some files are too large (max 10MB): ${invalidFiles.map(f => f.name).join(', ')}`)
+      return
+    }
+
+    setUploading(true)
+    setCommentError(null)
+
+    try {
+      const uploadPromises = imageFiles.map(async (file) => {
+        const formData = new FormData()
+        formData.append('file', file)
+        const res = await fetch('/api/uploads', {
+          method: 'POST',
+          body: formData
+        })
+        if (!res.ok) throw new Error('Upload failed')
+        return await res.json()
+      })
+
+      const results = await Promise.all(uploadPromises)
+      setAttachments(prev => [...prev, ...results])
+    } catch (error) {
+      setCommentError('Failed to upload images')
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  const removeAttachment = (filename: string) => {
+    setAttachments(prev => prev.filter(a => a.filename !== filename))
+  }
+
+  const handlePaste = (e: React.ClipboardEvent) => {
+    const items = e.clipboardData?.items
+    if (!items) return
+
+    const imageItems = Array.from(items).filter(item => item.type.startsWith('image/'))
+    if (imageItems.length === 0) return
+
+    e.preventDefault()
+    const files = imageItems.map(item => item.getAsFile()).filter((f): f is File => f !== null)
+    if (files.length > 0) {
+      handleFileUpload(files)
+    }
+  }
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault()
+    setIsDragging(true)
+  }
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault()
+    setIsDragging(false)
+  }
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault()
+    setIsDragging(false)
+    const files = e.dataTransfer?.files
+    if (files && files.length > 0) {
+      handleFileUpload(files)
+    }
+  }
+
   const handleAddComment = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!commentText.trim()) return
+    if (!commentText.trim() && attachments.length === 0) return
     try {
       setCommentError(null)
       const response = await fetch(`/api/tasks/${task.id}/comments`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ author: 'cri', content: commentText })
+        body: JSON.stringify({
+          author: 'cri',
+          content: commentText,
+          attachments: attachments.length > 0 ? attachments : undefined
+        })
       })
       if (!response.ok) throw new Error('Failed to add comment')
       setCommentText('')
+      setAttachments([])
       await fetchComments()
       onUpdate()
     } catch { setCommentError('Failed to add comment') }
@@ -1061,6 +1147,19 @@ function TaskDetailModal({
         <span>{new Date(comment.created_at * 1000).toLocaleString()}</span>
       </div>
       <div className="text-sm text-foreground/90 mt-1 whitespace-pre-wrap">{comment.content}</div>
+      {comment.attachments && comment.attachments.length > 0 && (
+        <div className="flex gap-2 flex-wrap mt-2">
+          {comment.attachments.map((attachment) => (
+            <img
+              key={attachment.filename}
+              src={attachment.url}
+              alt={attachment.originalName || attachment.filename}
+              className="max-h-[200px] rounded border border-border object-cover cursor-pointer hover:opacity-90 transition-opacity"
+              onClick={() => setLightboxImage(attachment.url)}
+            />
+          ))}
+        </div>
+      )}
       {comment.replies && comment.replies.length > 0 && (
         <div className="mt-3 space-y-3">
           {comment.replies.map(reply => renderComment(reply, depth + 1))}
@@ -1192,20 +1291,86 @@ function TaskDetailModal({
         {/* Fixed Footer: comment input */}
         <div className="shrink-0 px-4 py-3 border-t border-border">
           <form onSubmit={handleAddComment}>
-            <div className="flex gap-2">
-              <input
-                type="text"
-                value={commentText}
-                onChange={e => setCommentText(e.target.value)}
-                placeholder="Write a comment..."
-                className="flex-1 bg-surface-1 text-foreground text-sm border border-border rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/50"
-                onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleAddComment(e) } }}
-              />
-              <Button type="submit">Send</Button>
+            <div
+              className={`flex flex-col gap-2 ${isDragging ? 'bg-primary/10 rounded-lg' : ''}`}
+              onDragOver={handleDragOver}
+              onDragLeave={handleDragLeave}
+              onDrop={handleDrop}
+            >
+              {/* Attachment previews */}
+              {attachments.length > 0 && (
+                <div className="flex gap-2 flex-wrap">
+                  {attachments.map((attachment) => (
+                    <div key={attachment.filename} className="relative group">
+                      <img
+                        src={attachment.url}
+                        alt={attachment.originalName || attachment.filename}
+                        className="h-16 rounded border border-border object-cover"
+                      />
+                      <Button
+                        variant="ghost"
+                        size="icon-xs"
+                        onClick={() => removeAttachment(attachment.filename)}
+                        className="absolute -top-1 -right-1 bg-card/90 hover:bg-destructive/90 text-foreground hover:text-destructive-foreground opacity-0 group-hover:opacity-100 transition-opacity"
+                        title="Remove"
+                        type="button"
+                      >
+                        <Xmark className="w-3 h-3" />
+                      </Button>
+                    </div>
+                  ))}
+                  {uploading && (
+                    <div className="h-16 w-16 rounded border border-border bg-surface-1 flex items-center justify-center">
+                      <div className="animate-spin h-4 w-4 border-2 border-primary border-t-transparent rounded-full" />
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Input row */}
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={commentText}
+                  onChange={e => setCommentText(e.target.value)}
+                  onPaste={handlePaste}
+                  placeholder="Write a comment..."
+                  className="flex-1 bg-surface-1 text-foreground text-sm border border-border rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/50"
+                  onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleAddComment(e) } }}
+                />
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  onChange={e => e.target.files && handleFileUpload(e.target.files)}
+                  className="hidden"
+                />
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  onClick={() => fileInputRef.current?.click()}
+                  title="Attach image"
+                  disabled={uploading}
+                >
+                  <Attachment className="w-4 h-4" />
+                </Button>
+                <Button type="submit" disabled={uploading}>Send</Button>
+              </div>
+
+              {commentError && (
+                <p className="text-xs text-destructive">{commentError}</p>
+              )}
             </div>
           </form>
         </div>
       </div>
+
+      {/* Lightbox for full-size image viewing */}
+      {lightboxImage && (
+        <Lightbox imageUrl={lightboxImage} onClose={() => setLightboxImage(null)} />
+      )}
     </div>
   )
 }

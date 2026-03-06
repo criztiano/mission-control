@@ -45,3 +45,36 @@ Started: 2026-03-06
   - Prevents click propagation on image
 - Build passes with zero errors
 - Next step: Comment input enhancement (file picker, paste, drag-drop)
+
+### Completed (2026-03-06 21:23)
+✅ **Comment Input & Display Enhancement**
+- Updated Comment interface to include attachments field
+- Added state management in TaskDetailModal:
+  - attachments, uploading, lightboxImage, isDragging states
+  - fileInputRef for triggering hidden file input
+- Implemented comprehensive file upload handlers:
+  - handleFileUpload: validates type/size, uploads to /api/uploads, updates state
+  - removeAttachment: removes files from preview before sending
+  - handlePaste: clipboard image paste support (Cmd+V)
+  - handleDragOver/Leave/Drop: full drag-and-drop with visual feedback
+- Enhanced comment input UI:
+  - 📎 paperclip button (ghost variant, icon-sm) triggers file picker
+  - Hidden file input with accept="image/*" and multiple
+  - Thumbnail preview area with 64px height images
+  - X button on each thumbnail to remove
+  - Spinner during upload
+  - Drag-drop visual feedback (background highlight)
+  - Error display below input
+- Updated comment display (renderComment):
+  - Images render below comment text as clickable thumbnails
+  - Max-height 200px, rounded, object-cover
+  - Click opens lightbox for full-size viewing
+  - Horizontal wrap layout with gap-2
+- Integrated Lightbox component in modal
+- Updated Comments API:
+  - POST accepts attachments field, stores as JSON
+  - Validates either content or attachments exist
+  - Returns attachments in response
+- Updated imports: Attachment, Xmark icons, Lightbox component
+- Build passes with zero errors
+- Next step: BlockEditor configuration for description images

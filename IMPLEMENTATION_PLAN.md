@@ -62,46 +62,46 @@
 ### 4. Comment Input Enhancement
 
 #### 4.1 UI Components in TaskDetailModal (lines 1193-1207)
-- [ ] Add attachment state: `const [attachments, setAttachments] = useState<Array<{url: string, filename: string, originalName?: string}>>([])`
-- [ ] Add uploading state: `const [uploading, setUploading] = useState(false)`
-- [ ] Replace input with flex container wrapping:
+- [x] Add attachment state: `const [attachments, setAttachments] = useState<Array<{url: string, filename: string, originalName?: string}>>([])`
+- [x] Add uploading state: `const [uploading, setUploading] = useState(false)`
+- [x] Replace input with flex container wrapping:
   - Text input (existing)
   - 📎 paperclip Button with `variant="ghost"`, `size="icon-sm"`
   - Hidden file input (accept="image/*", multiple)
 
 #### 4.2 File Upload Logic
-- [ ] Create `handleFileUpload` async function:
+- [x] Create `handleFileUpload` async function:
   - Accept `File[]`
   - Validate each file (type, size)
   - Set `uploading` to true
   - Upload each file to `POST /api/uploads`
   - Add result to attachments array with preview
   - Set `uploading` to false
-- [ ] Wire file picker button click to trigger hidden input
-- [ ] Handle file input change event → call `handleFileUpload`
+- [x] Wire file picker button click to trigger hidden input
+- [x] Handle file input change event → call `handleFileUpload`
 
 #### 4.3 Paste Handler
-- [ ] Add `onPaste` handler to text input:
+- [x] Add `onPaste` handler to text input:
   - Check `e.clipboardData.files`
   - If image files exist, call `handleFileUpload`
   - Prevent default if handling image
 
 #### 4.4 Drag & Drop Handler
-- [ ] Add drag event handlers to comment input container:
+- [x] Add drag event handlers to comment input container:
   - `onDragOver`: prevent default, show visual feedback
   - `onDragLeave`: remove visual feedback
   - `onDrop`: prevent default, extract files, call `handleFileUpload`
 
 #### 4.5 Thumbnail Preview (below input, before send)
-- [ ] Render attachment thumbnails below text input:
+- [x] Render attachment thumbnails below text input:
   - Horizontal row with `gap-2`, wrapping
   - Each thumbnail: 64px height, rounded corners, `object-cover`
   - X button overlay (top-right corner) to remove from attachments array
   - Show spinner during upload
-- [ ] Clear attachments on successful comment submission
+- [x] Clear attachments on successful comment submission
 
 #### 4.6 Comment Submission
-- [ ] Update `handleAddComment` to include `attachments` in POST body:
+- [x] Update `handleAddComment` to include `attachments` in POST body:
   ```json
   {
     "author": "cri",
@@ -113,13 +113,13 @@
 ### 5. Comment Display Enhancement
 
 #### 5.1 Update Comment Rendering (renderComment function, lines 1057-1070)
-- [ ] Parse `comment.attachments` (if exists)
-- [ ] Render images below comment text:
+- [x] Parse `comment.attachments` (if exists)
+- [x] Render images below comment text:
   - Horizontal row with `gap-2`, wrapping
   - Thumbnails: max-height 200px, rounded corners, `object-cover`
   - Clickable → open in lightbox
-- [ ] Add lightbox state: `const [lightboxImage, setLightboxImage] = useState<string | null>(null)`
-- [ ] Render Lightbox component at modal level (conditionally)
+- [x] Add lightbox state: `const [lightboxImage, setLightboxImage] = useState<string | null>(null)`
+- [x] Render Lightbox component at modal level (conditionally)
 
 ### 6. BlockEditor Image Upload Configuration
 
@@ -145,12 +145,12 @@
   ```
 
 ### 7. Comments API Update
-- [ ] Update `POST /api/tasks/[id]/comments/route.ts`:
+- [x] Update `POST /api/tasks/[id]/comments/route.ts`:
   - Accept `attachments` field in request body
   - Store `attachments` JSON in `issue_comments.attachments` column
-- [ ] Update `GET /api/tasks/[id]/comments/route.ts`:
+- [x] Update `GET /api/tasks/[id]/comments/route.ts`:
   - Parse `attachments` JSON from DB
-  - Include in response
+  - Include in response (handled by mapCCComment in cc-db.ts)
 
 ### 8. Testing & Validation
 - [ ] Test file picker → upload → preview → submit
