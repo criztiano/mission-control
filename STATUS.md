@@ -43,5 +43,19 @@ Started: 2026-03-06
    - Placeholder: "No project" when no project assigned
    - Build passes with no errors
 
+6. ✅ Add Project PropertyChip to CreateTaskModal (commit 762e67a)
+   - Added projects prop to CreateTaskModal component
+   - Added project_id to formData state and projectLoading state
+   - Built project options array with "No project", existing projects, and "✨ New" for AI
+   - Implemented handleProjectChange handler for project selection
+   - Updated handleSubmit to:
+     - Pass project_id in POST /api/tasks body when creating task
+     - Handle "✨ New" option by creating task first, then generating project via API
+     - Show loading spinner during AI project generation
+   - Added PropertyChip in chips row after Assignee, before description
+   - Searchable dropdown with "No project" placeholder
+   - Loading spinner (⏳) shows during project generation
+   - Build passes with no errors
+
 ### Next
-6. Add Project PropertyChip to CreateTaskModal
+7. Add Project Chips to Kanban Cards
