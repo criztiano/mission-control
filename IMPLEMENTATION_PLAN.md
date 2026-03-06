@@ -51,7 +51,7 @@
      - Otherwise: show only tasks where `task.project_id === selectedProjectFilter`
    - [x] Use `filteredTasks` instead of `tasks` for kanban/list views
 
-### 5. **Add Project PropertyChip to TaskDetailModal**
+### 5. **Add Project PropertyChip to TaskDetailModal** ✅
    - Position: in chips row after Assignee, before Creator (line 1030-1035)
    - Build project options array:
      ```typescript

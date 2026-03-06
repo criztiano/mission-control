@@ -782,6 +782,7 @@ export function TaskBoardPanel() {
           key={selectedTask.id}
           task={selectedTask}
           agents={agents}
+          projects={projects}
           allTasks={tasks}
           onClose={() => setSelectedTask(null)}
           onUpdate={() => fetchData(true)}
@@ -843,6 +844,7 @@ function priorityColor(value: string): string {
 function TaskDetailModal({
   task,
   agents,
+  projects,
   allTasks = [],
   onClose,
   onUpdate,
@@ -850,6 +852,7 @@ function TaskDetailModal({
 }: {
   task: Task
   agents: Agent[]
+  projects: Project[]
   allTasks?: Task[]
   onClose: () => void
   onUpdate: () => void
@@ -862,6 +865,8 @@ function TaskDetailModal({
   const [priority, setPriority] = useState(task.priority)
   const [assignee, setAssignee] = useState(task.assigned_to || '')
   const [creator, setCreator] = useState((task as any).creator || '')
+  const [projectId, setProjectId] = useState(task.project_id || '')
+  const [projectLoading, setProjectLoading] = useState(false)
 
   // Navigation
   const currentIndex = allTasks.findIndex(t => t.id === task.id)
@@ -886,6 +891,7 @@ function TaskDetailModal({
     setPriority(task.priority)
     setAssignee(task.assigned_to || '')
     setCreator((task as any).creator || '')
+    setProjectId(task.project_id || '')
     setCommentText('')
     setCommentError(null)
 
@@ -924,6 +930,33 @@ function TaskDetailModal({
   const handlePriorityChange = (v: string) => { setPriority(v as any); saveField('priority', v) }
   const handleAssigneeChange = (v: string) => { setAssignee(v); saveField('assigned_to', v) }
   const handleCreatorChange = (v: string) => { setCreator(v); saveField('creator', v) }
+
+  const handleProjectChange = async (v: string) => {
+    if (v === '✨-new') {
+      // AI project generation
+      setProjectLoading(true)
+      try {
+        const response = await fetch('/api/projects/generate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ taskId: task.id })
+        })
+        const data = await response.json()
+        if (response.ok && data.id) {
+          setProjectId(data.id)
+          onUpdate()
+        }
+      } catch (e) {
+        console.error('Failed to generate project', e)
+      } finally {
+        setProjectLoading(false)
+      }
+    } else {
+      // Existing project or no project
+      setProjectId(v)
+      saveField('project_id', v)
+    }
+  }
 
   const handleTitleBlur = () => {
     setEditingTitle(false)
@@ -965,6 +998,16 @@ function TaskDetailModal({
     ...agents.filter(a => a.name.toLowerCase() !== 'cri').map(a => ({
       value: a.name, label: a.name, icon: <AgentAvatar agent={a.name} size="sm" /> as React.ReactNode,
     })),
+  ]
+
+  const projectOptions: PropertyOption[] = [
+    { value: '', label: 'No project', icon: '—' },
+    ...projects.map(p => ({
+      value: p.id,
+      label: p.title,
+      icon: p.emoji,
+    })),
+    { value: '✨-new', label: '✨ New', icon: '✨' },
   ]
 
   const fetchComments = useCallback(async () => {
@@ -1097,6 +1140,15 @@ function TaskDetailModal({
             <PropertyChip value={status} options={STATUS_OPTIONS} onSelect={handleStatusChange} colorFn={statusColor} />
             <PropertyChip value={priority} options={PRIORITY_OPTIONS} onSelect={handlePriorityChange} colorFn={priorityColor} />
             <PropertyChip value={assignee} options={detailAssigneeOptions} onSelect={handleAssigneeChange} searchable label="Assignee" placeholder={<span className="flex items-center gap-1 text-muted-foreground/40"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="8" r="4"/><path d="M5 20c0-4 3.5-7 7-7s7 3 7 7"/></svg></span>} />
+            <PropertyChip
+              value={projectId}
+              options={projectOptions}
+              onSelect={handleProjectChange}
+              searchable
+              label="Project"
+              placeholder={projectLoading ? <span className="flex items-center gap-1 text-muted-foreground/40">Loading...</span> : <span className="flex items-center gap-1 text-muted-foreground/40">No project</span>}
+              icon={projectLoading ? <span className="animate-spin">⏳</span> : undefined}
+            />
             <PropertyChip value={creator} options={creatorOptions} onSelect={handleCreatorChange} label="Creator" readOnly />
           </div>
         </div>
