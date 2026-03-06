@@ -1,190 +1,239 @@
-# Implementation Plan: Projects UI Integration
+# Implementation Plan: Projects Panel + Sidebar Section
 
 ## Gap Analysis Summary
 
-**GOOD NEWS:** Most backend functionality already exists:
-- ✅ Database schema: `issues.project_id` FK to `projects` table
-- ✅ API endpoints: `GET /api/projects`, `POST /api/projects/generate`
-- ✅ Task API already handles `project_id` updates (`PUT /api/tasks/[id]`)
-- ✅ Tasks already include `project_id` and `project_title` in response
-- ✅ PropertyChip component exists and is used for status/priority/assignee
+**What exists:**
+- ✅ `GET /api/projects` - returns projects with id, title, description, emoji
+- ✅ `POST /api/projects/generate` - AI-generated project creation from tasks
+- ✅ Projects database table with all required fields
+- ✅ `getProjects()` and `getProject()` functions in cc-db.ts
+- ✅ Project selection UI in TaskDetailModal and CreateTaskModal
+- ✅ Project chips displayed on kanban cards and list rows
+- ✅ All required UI components exist: Button, BlockEditor, PropertyChip, AgentAvatar
 
-**GAPS IDENTIFIED:**
-- ❌ Task interface in task-board-panel.tsx is missing `project_id` and `project_title` fields
-- ❌ No project filtering in board header
-- ❌ No project PropertyChip in TaskDetailModal
-- ❌ No project PropertyChip in CreateTaskModal
-- ❌ No project chips on task cards (kanban/list views)
-- ❌ No projects state/fetching in TaskBoardPanel component
+**What's missing:**
+- ❌ Projects panel component (`src/components/panels/projects-panel.tsx`)
+- ❌ Projects nav item in sidebar
+- ❌ Projects route in ContentRouter (page.tsx)
+- ❌ Sidebar "Recent Projects" section in nav-rail.tsx
+- ❌ `PUT /api/projects/[id]` - update project endpoint
+- ❌ `POST /api/projects` - manual project creation endpoint
+- ❌ `DELETE /api/projects/[id]` - archive/delete project endpoint
+- ❌ Task count and last activity calculation for projects
+- ❌ Helper functions in cc-db.ts for project CRUD operations
 
 ## Implementation Tasks (Prioritized)
 
-### 1. **Update Task Interface** ✅
-   - [x] Add `project_id?: string` field to Task interface (line 15-30)
-   - [x] Add `project_title?: string` field to Task interface
-   - [x] This enables TypeScript to recognize project fields from API
+### 1. API Layer - CRUD endpoints
+- [x] Create `src/app/api/projects/[id]/route.ts`
+  - `GET /api/projects/[id]` - get single project with task count and last activity
+  - `PUT /api/projects/[id]` - update title, description, emoji
+  - `DELETE /api/projects/[id]` - set archived = 1 (soft delete)
+- [x] Update `src/app/api/projects/route.ts`
+  - Add `POST /api/projects` - create new project manually (no AI generation)
+  - Enhance `GET /api/projects` to include `taskCount` and `lastActivity` fields
+- [x] Add helper functions to `src/lib/cc-db.ts`:
+  - `updateProject(id, fields)` - update project fields
+  - `createProject(title, description, emoji)` - create new project
+  - `archiveProject(id)` - soft delete
+  - `getProjectTaskCount(projectId)` - count tasks in project
+  - `getProjectLastActivity(projectId)` - latest task updated_at timestamp
 
-### 2. **Add Projects State to TaskBoardPanel** ✅
-   - [x] Add `projects` state: `useState<Project[]>([])`
-   - [x] Add `selectedProjectFilter` state: `useState<string | null>(null)`
-     - `null` = "All Projects", `''` = "Unassigned", otherwise project.id
-   - [x] Fetch projects on mount: `GET /api/projects` in `fetchData()`
-   - [x] Cache projects in state (don't re-fetch per modal open)
-   - [x] Add Project interface to task-board-panel.tsx
+### 2. Projects Panel Component
+- [ ] Create `src/components/panels/projects-panel.tsx`
+  - **State management:**
+    - Track selected project ID (null = list view, string = detail view)
+    - Track all projects from API
+    - Track loading/error states
+  - **List View (default):**
+    - Header: "Projects" title + "New Project" button (outline variant)
+    - Fetch projects with `GET /api/projects`
+    - Sort by `lastActivity` DESC
+    - Each row: clickable card with emoji + title + description + task count badge + last activity
+    - Click row → set selectedProject → show detail view
+    - "New Project" button → open inline form or small modal with:
+      - Title input
+      - Emoji input (simple text field)
+      - Description BlockEditor (compact)
+      - POST to `/api/projects`
+  - **Detail View (project selected):**
+    - Back arrow button (ghost, icon) → clears selectedProject → returns to list
+    - Editable header section:
+      - Emoji (clickable text input, inline)
+      - Title (borderless inline input, `text-2xl font-bold`, auto-save on blur)
+      - Description (BlockEditor, compact prop, placeholder "Add project description...")
+      - Task count + last activity as muted metadata text
+    - Task list below header:
+      - Filter tasks by `project_id === selectedProject.id`
+      - Simplified list rendering (title + status chip + priority chip + assignee chip per row)
+      - OR reuse existing task list logic from task-board-panel
+      - Clicking a task → open TaskDetailModal (same as task board)
+    - "New Task" button → open CreateTaskModal with pre-filled project assignment
+    - Auto-save on blur for title/description edits (PUT `/api/projects/[id]`)
 
-### 3. **Add Project Filter to Board Header** ✅
-   - [x] Position: after view toggle buttons, before "New Task" button (line 453)
-   - [x] Component: `<select>` styled as Button variant="outline" size="sm"
-   - [x] Options structure:
-     - "All Projects" (default, value=null)
-     - "Unassigned" (value='', shows tasks with no project)
-     - Separator
-     - List all projects: `{emoji} {title}` (value=project.id)
-   - [x] On change: update `selectedProjectFilter` state
-   - [x] Responsive: show icon only on mobile
+### 3. Navigation Integration
+- [ ] Update `src/components/layout/nav-rail.tsx`
+  - **Add Projects nav item to core group:**
+    - Insert after "Feed", before "Crew"
+    - ID: `projects`
+    - Label: "Projects"
+    - Icon: Folder icon (iconoir-react or custom SVG)
+    - Priority: true (show in mobile bottom bar)
+  - **Add Recent Projects section:**
+    - Fetch top 3 projects sorted by most recent task activity (last updated_at)
+    - Position: below Core section items, above OBSERVE group (new subsection)
+    - Each item: clickable row with emoji + title
+    - Click → `setActiveTab('projects')` AND set selectedProject in panel state
+    - Below the 3 items: "View all" link → opens Projects panel (no project selected)
+    - Section header: "PROJECTS" (same style as OBSERVE/AUTOMATE/ADMIN)
+    - Only render if projects.length > 0
+    - Styling: `text-sm`, same hover/active states as nav items
+- [ ] Update `src/app/page.tsx`
+  - Import ProjectsPanel component
+  - Add route case in ContentRouter: `case 'projects': return <ProjectsPanel />`
 
-### 4. **Implement Project Filtering Logic** ✅
-   - [x] Create `filteredTasks` computed array before grouping by status
-   - [x] Filter logic:
-     - If `selectedProjectFilter === null`: show all tasks
-     - If `selectedProjectFilter === ''`: show only tasks where `!task.project_id`
-     - Otherwise: show only tasks where `task.project_id === selectedProjectFilter`
-   - [x] Use `filteredTasks` instead of `tasks` for kanban/list views
+### 4. Database & API Enhancements
+- [ ] Verify projects table schema supports all fields (it does from cc-db.ts analysis)
+- [ ] Test that `project_id` foreign key relationship works between issues and projects
 
-### 5. **Add Project PropertyChip to TaskDetailModal** ✅
-   - Position: in chips row after Assignee, before Creator (line 1030-1035)
-   - Build project options array:
-     ```typescript
-     const projectOptions: PropertyOption[] = [
-       { value: '', label: 'No project', icon: '—' },
-       ...projects.map(p => ({
-         value: p.id,
-         label: p.title,
-         icon: p.emoji,
-       })),
-       { value: '✨-new', label: '✨ New', icon: '✨' },
-     ]
-     ```
-   - Add `projectLoading` state for spinner during generation
-   - Handle selection:
-     - If existing project: call `PUT /api/tasks/${task.id}` with `{ project_id: value }`
-     - If '✨-new':
-       - Set `projectLoading = true`
-       - Call `POST /api/projects/generate` with `{ taskId: task.id }`
-       - On success: update task state, set `projectLoading = false`
-       - On error: show project name from fallback, set `projectLoading = false`
-   - Show loading spinner on chip when `projectLoading === true`
-   - Placeholder: "No project" (muted)
+### 5. State Management (if needed)
+- [ ] Check if Zustand store needs project state
+  - Currently projects are fetched per-component (task-board-panel, nav-rail, projects-panel)
+  - May want to add global projects state to avoid duplicate fetches
+  - NOT REQUIRED for MVP — can optimize later
 
-### 6. **Add Project PropertyChip to CreateTaskModal** ✅
-   - [x] Position: in chips row after Assignee (line 1178-1193)
-   - [x] Add `project_id` to formData state
-   - [x] Same project options as TaskDetailModal
-   - [x] Handle selection:
-     - If existing project: store `project_id` in formData
-     - If '✨-new':
-       - Set `projectLoading = true`
-       - Create task first (to get taskId)
-       - Then call `POST /api/projects/generate` with new taskId
-       - Update task with project_id
-   - [x] Pass `project_id` in POST /api/tasks body if selected
-   - [x] Pass `projects` prop to CreateTaskModal component
+### 6. Edge Cases & Polish
+- [ ] Empty states:
+  - No projects exist → hide Recent Projects section in sidebar
+  - Project has no tasks → show friendly empty state in detail view
+  - Filter by project in task board → context-aware empty message
+- [ ] Error handling:
+  - API failures → show error message in panel
+  - Invalid project IDs → return 404 or redirect to list view
+- [ ] Loading states:
+  - Skeleton loaders for project list and detail view
+  - Spinner for "New Project" AI generation
+- [ ] Dark mode verification
+  - All new components use theme-aware colors
+  - Check BlockEditor, PropertyChip, Button variants
 
-### 7. **Add Project Chips to Kanban Cards** ✅
-   - [x] Location: in `renderCard()` function, after title, before chips row (line 516-519)
-   - [x] Only render if `task.project_id` exists (don't show "No project")
-   - [x] Component: simple styled div, NOT PropertyChip
-   - [x] Styling: `text-xs text-muted-foreground flex items-center gap-1 mt-1.5`
-   - [x] Content: `{task.project_title && <span>{projectEmoji} {task.project_title}</span>}`
-   - [x] Need to get emoji from projects array by matching project_id
-   - [x] Keep it subtle: no background, muted text
+### 7. Testing & Validation
+- [ ] Manual testing:
+  - Create new project manually
+  - Edit project title, emoji, description
+  - View project detail with task list
+  - Click task in project detail → opens modal
+  - "New Task" in project detail → pre-fills project
+  - Navigate from sidebar Recent Projects → opens correct project
+  - "View all" in sidebar → shows full project list
+  - Filter tasks by project in task board
+- [ ] Build validation: `npx next build` passes
+- [ ] Check all acceptance criteria from specs
 
-### 8. **Add Project to List View Rows** ✅
-   - [x] Location: in list row rendering, after assignee chip (line 679-700)
-   - [x] Same approach as kanban cards: only show if project exists
-   - [x] Display: small chip with emoji + name
-   - [x] Styling: same as kanban, subtle and muted
+## File Inventory
 
-### 9. **Handle Project Updates from API** ✅
-   - [x] Ensure `fetchData()` updates keep selectedTask in sync
-     - Already implemented in lines 156-160 of task-board-panel.tsx
-     - selectedTask is updated with fresh data after every fetchData call
-   - [x] When project is assigned via generate API, task should reflect it
-     - handleProjectChange calls onUpdate() which triggers fetchData(true)
-     - Fresh task data includes updated project_id and project_title
-   - [x] Optimistic updates working correctly
-     - State updates happen immediately after successful API calls
+**New Files:**
+1. `src/app/api/projects/[id]/route.ts` - project CRUD endpoint
+2. `src/components/panels/projects-panel.tsx` - main panel component
 
-### 10. **Polish & Edge Cases** ✅
-   - [x] Loading states: spinner on project chip during generation
-     - TaskDetailModal shows ⏳ with animate-spin during projectLoading
-     - CreateTaskModal shows ⏳ with animate-spin during projectLoading
-     - Placeholder shows "Loading..." when generating
-   - [x] Error handling: fallback project name if generation fails
-     - API errors are caught and logged to console
-     - Loading state is properly reset in finally block
-   - [x] Dark mode: verify all project UI elements look correct
-     - Using standard color tokens (text-muted-foreground, border-border, etc.)
-     - All components follow existing dark mode patterns
-   - [x] Accessibility: ensure dropdown has proper ARIA labels
-     - Filter dropdown has title="Filter by project" for accessibility
-   - [x] Keyboard navigation: ensure filter dropdown is keyboard-accessible
-     - Standard <select> element is keyboard-accessible
-     - Focus ring styles applied (focus:ring-2 focus:ring-ring)
-   - [x] Empty states: "No tasks in this project" when filter has no results
-     - List view shows context-aware messages:
-       - "No tasks" (all projects)
-       - "No unassigned tasks" (unassigned filter)
-       - "No tasks in [Project Name]" (specific project)
-     - Kanban view shows column-specific empty states
+**Modified Files:**
+1. `src/app/api/projects/route.ts` - add POST handler, enhance GET with counts
+2. `src/lib/cc-db.ts` - add project helper functions
+3. `src/components/layout/nav-rail.tsx` - add Projects nav item + Recent Projects section
+4. `src/app/page.tsx` - add projects route case
 
-## Technical Notes
+## Implementation Notes
 
-### API Contracts
-- `GET /api/projects`: returns `{ projects: [{ id, title, description, emoji }] }`
-- `POST /api/projects/generate`: accepts `{ taskId }`, returns `{ id, name, emoji, description, fallback? }`
-- `PUT /api/tasks/[id]`: accepts `{ project_id }` (null/undefined to unassign)
-- Tasks already include `project_id` and `project_title` in response
+### Component Reuse Strategy
+- ✅ Use existing `<Button>` for all buttons
+- ✅ Use existing `<BlockEditor>` for all multi-line text (compact prop)
+- ✅ Use existing `<PropertyChip>` for task status/priority/assignee
+- ✅ Use existing `<AgentAvatar>` for assignee display
+- ✅ Use existing `TaskDetailModal` from task-board-panel (import and reuse)
+- ✅ Use existing task list rendering patterns from task-board-panel
 
-### Component Architecture
-- All work happens in `src/components/panels/task-board-panel.tsx`
-- PropertyChip component already exists and works well
-- No new files needed
-- Follow existing patterns for chips and dropdowns
+### Styling Patterns
+- Follow existing panel structure (header + scrollable content)
+- Use Tailwind v3.4 bracket syntax for CSS vars: `bg-[var(--color)]`
+- Use `z-[N]` not `-z-N` for z-index
+- Match existing card/row spacing and hover states
+- Dark mode: verify all colors are theme-aware (text-foreground, bg-card, etc.)
 
-### Styling Guidelines
-- Use Tailwind v3.4 bracket syntax: `h-[var(--x)]` not `h-(--x)`
-- Match existing chip styling for consistency
-- Keep project chips on cards subtle (muted, no background)
-- Use Button component for filter dropdown
-- Respect dark mode throughout
+### Data Flow
+1. Panel fetches projects from `GET /api/projects` (enhanced with counts)
+2. Sidebar fetches same endpoint, sorts by lastActivity, takes top 3
+3. Task board already has project filter — just needs to handle empty states better
+4. TaskDetailModal already supports project assignment via PropertyChip
 
-### Performance Considerations
-- Fetch projects once on mount, cache in state
-- Don't re-fetch projects on every modal open
-- Use optimistic updates where appropriate
-- Filter tasks efficiently with simple array filter
+### Icon for Projects Nav Item
+```tsx
+function ProjectsIcon() {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 2h5l2 2h4a1 1 0 011 1v8a1 1 0 01-1 1H3a1 1 0 01-1-1V3a1 1 0 011-1z" />
+    </svg>
+  )
+}
+```
 
-## Validation Checklist
+### Auto-save Pattern for Project Detail
+```tsx
+const handleTitleBlur = () => {
+  if (title.trim() && title !== project.title) {
+    fetch(`/api/projects/${project.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: title.trim() })
+    }).then(() => refetchProjects())
+  }
+}
+```
 
-Before marking complete, verify:
-- [x] `npx next build` passes without errors
-- [x] Task detail modal: Project chip shows current project
-- [x] Task detail modal: Can change project from dropdown
-- [x] Task detail modal: "✨ New" creates project via AI
-- [x] Task detail modal: Loading spinner shows during generation
-- [x] Create task modal: Project chip allows selection
-- [x] Board header: Project filter dropdown renders correctly
-- [x] Board header: "All Projects" shows everything
-- [x] Board header: "Unassigned" shows only tasks with no project
-- [x] Board header: Selecting project filters tasks correctly
-- [x] Kanban cards: Project chip shows emoji + name when assigned
-- [x] Kanban cards: No chip when no project (clean)
-- [x] List view: Project visible on each row
-- [x] Dark mode: All project UI looks correct
-- [x] No TypeScript errors
-- [x] No raw `<select>` or `<button>` elements (use components)
+### Task Count & Last Activity Calculation
+```sql
+-- Task count for a project
+SELECT COUNT(*) FROM issues WHERE project_id = ? AND archived = 0
+
+-- Last activity (most recent task update)
+SELECT MAX(updated_at) FROM issues WHERE project_id = ? AND archived = 0
+```
+
+## Risk Assessment
+
+**Low Risk:**
+- All UI components already exist and are proven
+- Database schema already supports everything needed
+- No breaking changes to existing code
+
+**Medium Risk:**
+- Need to coordinate between 3 panels (projects-panel, task-board-panel, nav-rail) for consistent project state
+- Sidebar Recent Projects requires careful fetching logic to avoid performance issues
+
+**Mitigations:**
+- Keep panels independent initially (fetch separately)
+- Add global state later if needed (Phase 2 optimization)
+- Use React.memo and useMemo for expensive computations
+
+## Acceptance Criteria Checklist
+
+From specs/projects-panel-sidebar.md:
+
+- [ ] Build passes (`npx next build`)
+- [ ] Sidebar shows top 3 projects by recent activity with emoji + title
+- [ ] "View all" in sidebar opens the Projects panel
+- [ ] Clicking a sidebar project opens Projects panel with that project selected
+- [ ] Projects panel list view: shows all projects with title, description, task count
+- [ ] Projects panel detail view: editable emoji, title (inline borderless), description (BlockEditor)
+- [ ] Back button returns to project list
+- [ ] Auto-save on blur for project edits (PUT /api/projects/[id])
+- [ ] Task list in detail view shows only that project's tasks
+- [ ] Clicking a task opens TaskDetailModal
+- [ ] "New Task" in detail view pre-fills project assignment
+- [ ] "New Project" in list view works (POST /api/projects)
+- [ ] PUT /api/projects/[id] endpoint works
+- [ ] Dark mode correct throughout
+- [ ] No raw HTML elements — all using project components
 
 ---
 
-STATUS: COMPLETE
+STATUS: PLANNING_COMPLETE

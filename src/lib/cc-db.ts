@@ -720,6 +720,114 @@ export function getInboxItems(source?: InboxSourceType, limit = 50): InboxItem[]
   return items.slice(0, limit)
 }
 
+// --- Project CRUD Operations ---
+
+/**
+ * Create a new project in control-center.db
+ */
+export function createProject(title: string, description: string, emoji: string): CCProject {
+  const db = getCCDatabaseWrite();
+  try {
+    const id = `proj-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+    const now = new Date().toISOString();
+
+    db.prepare(`
+      INSERT INTO projects (id, title, description, emoji, created_at, updated_at, archived, schedule)
+      VALUES (?, ?, ?, ?, ?, ?, 0, '')
+    `).run(id, title, description || '', emoji || '📁', now, now);
+
+    logger.info({ projectId: id, title }, 'Created project');
+
+    return {
+      id,
+      title,
+      description: description || '',
+      emoji: emoji || '📁',
+      created_at: now,
+      updated_at: now,
+      archived: 0,
+      schedule: '',
+    };
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * Update a project's fields
+ */
+export function updateProject(id: string, fields: Partial<Pick<CCProject, 'title' | 'description' | 'emoji'>>): void {
+  const db = getCCDatabaseWrite();
+  try {
+    const updates: string[] = [];
+    const values: any[] = [];
+
+    if (fields.title !== undefined) {
+      updates.push('title = ?');
+      values.push(fields.title);
+    }
+    if (fields.description !== undefined) {
+      updates.push('description = ?');
+      values.push(fields.description);
+    }
+    if (fields.emoji !== undefined) {
+      updates.push('emoji = ?');
+      values.push(fields.emoji);
+    }
+
+    if (updates.length === 0) return;
+
+    updates.push('updated_at = ?');
+    values.push(new Date().toISOString());
+    values.push(id);
+
+    const sql = `UPDATE projects SET ${updates.join(', ')} WHERE id = ?`;
+    db.prepare(sql).run(...values);
+
+    logger.info({ projectId: id, fields }, 'Updated project');
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * Archive a project (soft delete)
+ */
+export function archiveProject(id: string): void {
+  const db = getCCDatabaseWrite();
+  try {
+    db.prepare('UPDATE projects SET archived = 1, updated_at = ? WHERE id = ?')
+      .run(new Date().toISOString(), id);
+    logger.info({ projectId: id }, 'Archived project');
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * Get count of non-archived tasks for a project
+ */
+export function getProjectTaskCount(projectId: string): number {
+  const db = getCCDatabase();
+  const result = db.prepare('SELECT COUNT(*) as count FROM issues WHERE project_id = ? AND archived = 0')
+    .get(projectId) as { count: number };
+  return result.count;
+}
+
+/**
+ * Get the most recent task activity timestamp for a project
+ * Returns unix timestamp in milliseconds, or 0 if no tasks
+ */
+export function getProjectLastActivity(projectId: string): number {
+  const db = getCCDatabase();
+  const result = db.prepare('SELECT MAX(updated_at) as last_updated FROM issues WHERE project_id = ? AND archived = 0')
+    .get(projectId) as { last_updated: string | null };
+
+  if (!result.last_updated) return 0;
+
+  return isoToUnix(result.last_updated);
+}
+
 // Cleanup
 function closeCCDatabase() {
   if (ccDb) {

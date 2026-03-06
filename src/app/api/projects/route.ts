@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireRole } from '@/lib/auth';
 import { logger } from '@/lib/logger';
-import { getProjects } from '@/lib/cc-db';
+import { getProjects, createProject, getProjectTaskCount, getProjectLastActivity } from '@/lib/cc-db';
 
 /**
- * GET /api/projects - List all projects from control-center.db
+ * GET /api/projects - List all projects from control-center.db with task counts and last activity
  */
 export async function GET(request: NextRequest) {
   const auth = requireRole(request, 'viewer');
@@ -18,10 +18,54 @@ export async function GET(request: NextRequest) {
         title: p.title,
         description: p.description,
         emoji: p.emoji,
+        taskCount: getProjectTaskCount(p.id),
+        lastActivity: getProjectLastActivity(p.id),
       })),
     });
   } catch (error) {
     logger.error({ err: error }, 'GET /api/projects error');
     return NextResponse.json({ error: 'Failed to fetch projects' }, { status: 500 });
+  }
+}
+
+/**
+ * POST /api/projects - Create a new project manually (without AI generation)
+ */
+export async function POST(request: NextRequest) {
+  const auth = requireRole(request, 'operator');
+  if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status });
+
+  try {
+    const body = await request.json();
+    const { title, description, emoji } = body;
+
+    // Validate required field
+    if (!title || typeof title !== 'string' || title.trim().length === 0) {
+      return NextResponse.json(
+        { error: 'Title is required and must be a non-empty string' },
+        { status: 400 }
+      );
+    }
+
+    const project = createProject(
+      title.trim(),
+      description || '',
+      emoji || '📁'
+    );
+
+    return NextResponse.json({
+      success: true,
+      project: {
+        id: project.id,
+        title: project.title,
+        description: project.description,
+        emoji: project.emoji,
+        taskCount: 0,
+        lastActivity: 0,
+      },
+    }, { status: 201 });
+  } catch (error) {
+    logger.error({ err: error }, 'POST /api/projects error');
+    return NextResponse.json({ error: 'Failed to create project' }, { status: 500 });
   }
 }
