@@ -84,14 +84,22 @@ export function runCCMigrations(): void {
   const db = getCCDatabaseWrite();
   try {
     // 1. Add creator column if missing
-    const columns = db.prepare('PRAGMA table_info(issues)').all() as Array<{ name: string }>;
-    const hasCreator = columns.some(c => c.name === 'creator');
+    const issueColumns = db.prepare('PRAGMA table_info(issues)').all() as Array<{ name: string }>;
+    const hasCreator = issueColumns.some(c => c.name === 'creator');
     if (!hasCreator) {
       db.exec(`ALTER TABLE issues ADD COLUMN creator TEXT DEFAULT ''`);
       logger.info('cc-db migration: added creator column to issues');
     }
 
-    // 2. Migrate old statuses → new statuses
+    // 2. Add attachments column to issue_comments if missing
+    const commentColumns = db.prepare('PRAGMA table_info(issue_comments)').all() as Array<{ name: string }>;
+    const hasAttachments = commentColumns.some(c => c.name === 'attachments');
+    if (!hasAttachments) {
+      db.exec(`ALTER TABLE issue_comments ADD COLUMN attachments TEXT DEFAULT '[]'`);
+      logger.info('cc-db migration: added attachments column to issue_comments');
+    }
+
+    // 3. Migrate old statuses → new statuses
     //    idea → open, proposal → open, todo → open (these are all "not started" states)
     //    in_progress stays, blocked stays, done stays
     const statusMigrations: [string, string][] = [
@@ -155,6 +163,7 @@ export interface CCComment {
   author: string;
   content: string;
   created_at: string; // ISO
+  attachments?: string; // JSON array of {url, filename, originalName?}
 }
 
 // --- Priority mapping (CC uses low/normal/high, MC uses low/medium/high) ---
@@ -286,6 +295,15 @@ export function mapIssueToTask(issue: CCIssue, projectTitle?: string) {
 // --- Map CC comment -> MC Comment shape ---
 
 export function mapCCComment(c: CCComment) {
+  let attachments: Array<{ url: string; filename: string; originalName?: string }> = [];
+  if (c.attachments) {
+    try {
+      attachments = JSON.parse(c.attachments);
+    } catch {
+      attachments = [];
+    }
+  }
+
   return {
     id: c.id,
     task_id: c.issue_id,
@@ -294,6 +312,7 @@ export function mapCCComment(c: CCComment) {
     created_at: isoToUnix(c.created_at),
     mentions: [],
     replies: [],
+    attachments,
   };
 }
 
