@@ -582,6 +582,12 @@ export function TaskBoardPanel() {
               <h4 className="text-foreground font-medium text-sm leading-tight">
                 {task.title}
               </h4>
+              {/* Project chip - only show if assigned */}
+              {task.project_id && task.project_title && (
+                <div className="text-xs text-muted-foreground flex items-center gap-1 mt-1.5">
+                  <span>{projects.find(p => p.id === task.project_id)?.emoji || '📁'} {task.project_title}</span>
+                </div>
+              )}
               {/* Chips row */}
               <div className="flex flex-wrap gap-1.5 mt-2" onClick={e => e.stopPropagation()}>
                 <PropertyChip

@@ -90,14 +90,14 @@
    - [x] Pass `project_id` in POST /api/tasks body if selected
    - [x] Pass `projects` prop to CreateTaskModal component
 
-### 7. **Add Project Chips to Kanban Cards**
-   - Location: in `renderCard()` function, after title, before chips row (line 516-519)
-   - Only render if `task.project_id` exists (don't show "No project")
-   - Component: simple styled div, NOT PropertyChip
-   - Styling: `text-xs text-muted-foreground flex items-center gap-1 mt-1.5`
-   - Content: `{task.project_title && <span>{projectEmoji} {task.project_title}</span>}`
-   - Need to get emoji from projects array by matching project_id
-   - Keep it subtle: no background, muted text
+### 7. **Add Project Chips to Kanban Cards** ✅
+   - [x] Location: in `renderCard()` function, after title, before chips row (line 516-519)
+   - [x] Only render if `task.project_id` exists (don't show "No project")
+   - [x] Component: simple styled div, NOT PropertyChip
+   - [x] Styling: `text-xs text-muted-foreground flex items-center gap-1 mt-1.5`
+   - [x] Content: `{task.project_title && <span>{projectEmoji} {task.project_title}</span>}`
+   - [x] Need to get emoji from projects array by matching project_id
+   - [x] Keep it subtle: no background, muted text
 
 ### 8. **Add Project to List View Rows**
    - Location: in list row rendering, after assignee chip (line 679-700)
