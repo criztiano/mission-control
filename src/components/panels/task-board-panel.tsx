@@ -285,9 +285,23 @@ export function TaskBoardPanel() {
   // Keep a ref to tasksByStatus for keyboard handler (avoids stale closure)
   const tasksByStatusRef = useRef<Record<string, Task[]>>({})
 
+  // Filter tasks by selected project
+  const filteredTasks = tasks.filter(task => {
+    if (selectedProjectFilter === null) {
+      // "All Projects" - show everything
+      return true
+    } else if (selectedProjectFilter === '') {
+      // "Unassigned" - show only tasks with no project
+      return !task.project_id
+    } else {
+      // Specific project - show only matching tasks
+      return task.project_id === selectedProjectFilter
+    }
+  })
+
   // Group tasks by status
   const tasksByStatus = statusColumns.reduce((acc, column) => {
-    acc[column.key] = tasks.filter(task => (task as any).column === column.key || task.status === column.key)
+    acc[column.key] = filteredTasks.filter(task => (task as any).column === column.key || task.status === column.key)
     return acc
   }, {} as Record<string, Task[]>)
   tasksByStatusRef.current = tasksByStatus
@@ -464,6 +478,44 @@ export function TaskBoardPanel() {
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
             </Button>
           </div>
+
+          {/* Project Filter */}
+          <div className="relative">
+            <select
+              value={selectedProjectFilter === null ? 'all' : selectedProjectFilter}
+              onChange={(e) => {
+                const value = e.target.value
+                if (value === 'all') {
+                  setSelectedProjectFilter(null)
+                } else {
+                  setSelectedProjectFilter(value)
+                }
+              }}
+              className="h-9 px-3 py-2 text-sm bg-background border border-input rounded-lg hover:bg-accent hover:text-accent-foreground transition-colors appearance-none pr-8 cursor-pointer max-sm:w-9 max-sm:px-0 max-sm:text-transparent focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+              title="Filter by project"
+            >
+              <option value="all">All Projects</option>
+              <option value="">Unassigned</option>
+              {projects.length > 0 && <option disabled>──────────</option>}
+              {projects.map((project) => (
+                <option key={project.id} value={project.id}>
+                  {project.emoji} {project.title}
+                </option>
+              ))}
+            </select>
+            <svg
+              className="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none size-4 text-muted-foreground max-sm:left-1/2 max-sm:-translate-x-1/2 max-sm:right-auto"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M3 6h18M7 12h10m-7 6h4"/>
+            </svg>
+          </div>
+
           <Button
             onClick={() => setShowCreateModal(true)}
             title="New task"

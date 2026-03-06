@@ -32,24 +32,24 @@
    - [x] Cache projects in state (don't re-fetch per modal open)
    - [x] Add Project interface to task-board-panel.tsx
 
-### 3. **Add Project Filter to Board Header**
-   - Position: after view toggle buttons, before "New Task" button (line 453)
-   - Component: `<select>` styled as Button variant="outline" size="sm"
-   - Options structure:
+### 3. **Add Project Filter to Board Header** ✅
+   - [x] Position: after view toggle buttons, before "New Task" button (line 453)
+   - [x] Component: `<select>` styled as Button variant="outline" size="sm"
+   - [x] Options structure:
      - "All Projects" (default, value=null)
      - "Unassigned" (value='', shows tasks with no project)
      - Separator
      - List all projects: `{emoji} {title}` (value=project.id)
-   - On change: update `selectedProjectFilter` state
-   - Responsive: show icon only on mobile
+   - [x] On change: update `selectedProjectFilter` state
+   - [x] Responsive: show icon only on mobile
 
-### 4. **Implement Project Filtering Logic**
-   - Create `filteredTasks` computed array before grouping by status
-   - Filter logic:
+### 4. **Implement Project Filtering Logic** ✅
+   - [x] Create `filteredTasks` computed array before grouping by status
+   - [x] Filter logic:
      - If `selectedProjectFilter === null`: show all tasks
      - If `selectedProjectFilter === ''`: show only tasks where `!task.project_id`
      - Otherwise: show only tasks where `task.project_id === selectedProjectFilter`
-   - Use `filteredTasks` instead of `tasks` for kanban/list views
+   - [x] Use `filteredTasks` instead of `tasks` for kanban/list views
 
 ### 5. **Add Project PropertyChip to TaskDetailModal**
    - Position: in chips row after Assignee, before Creator (line 1030-1035)
