@@ -51,8 +51,8 @@
   - Return file buffer with proper headers
 
 ### 3. Lightbox Component
-- [ ] Create `src/components/ui/lightbox.tsx`
-- [ ] Implement simple modal overlay:
+- [x] Create `src/components/ui/lightbox.tsx`
+- [x] Implement simple modal overlay:
   - Dark backdrop with `backdrop-blur-sm`
   - Full-size image centered
   - Close on click outside or Escape key

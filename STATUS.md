@@ -29,3 +29,19 @@ Started: 2026-03-06
   - Security validation to prevent path traversal
 - Build passes with zero errors
 - Next step: Lightbox component
+
+### Completed (2026-03-06 16:35)
+✅ **Lightbox Component**
+- Created `src/components/ui/lightbox.tsx`
+- Features:
+  - Dark backdrop with backdrop-blur-sm
+  - Full-size image centered with max 90vw/90vh constraints
+  - Close button in top-right with Xmark icon from iconoir-react
+  - Click outside backdrop to close
+  - Escape key to close
+  - Prevents body scroll while open
+  - Uses existing Button component (variant="ghost", size="icon")
+  - Full dark mode compatibility
+  - Prevents click propagation on image
+- Build passes with zero errors
+- Next step: Comment input enhancement (file picker, paste, drag-drop)
