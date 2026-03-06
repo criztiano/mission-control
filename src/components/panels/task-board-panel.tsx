@@ -1092,11 +1092,11 @@ function TaskDetailModal({
 }
 
 // Create Task Modal Component (placeholder)
-function CreateTaskModal({ 
-  agents, 
-  onClose, 
-  onCreated 
-}: { 
+function CreateTaskModal({
+  agents,
+  onClose,
+  onCreated
+}: {
   agents: Agent[]
   onClose: () => void
   onCreated: () => void
@@ -1106,25 +1106,43 @@ function CreateTaskModal({
     description: '',
     priority: 'medium' as Task['priority'],
     assigned_to: '',
-    tags: '',
   })
+
+  const titleInputRef = useRef<HTMLInputElement>(null)
+
+  // Auto-focus title input on mount
+  useEffect(() => {
+    titleInputRef.current?.focus()
+  }, [])
+
+  // Build assignee options (same as detail modal)
+  const createAssigneeOptions: PropertyOption[] = [
+    { value: '', label: 'Unassigned', icon: '—' },
+    { value: 'cri', label: 'Cri', icon: <AgentAvatar agent="cri" size="sm" /> as React.ReactNode, group: 'Humans' },
+    ...agents.filter(a => a.name.toLowerCase() !== 'cri').map(a => ({
+      value: a.name, label: a.name, icon: <AgentAvatar agent={a.name} size="sm" /> as React.ReactNode, group: 'Agents',
+    })),
+  ]
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    
+    if (!formData.title.trim()) return
+
     try {
       const response = await fetch('/api/tasks', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          ...formData,
-          tags: formData.tags ? formData.tags.split(',').map(t => t.trim()) : [],
-          assigned_to: formData.assigned_to || undefined
+          title: formData.title.trim(),
+          description: formData.description.trim(),
+          priority: formData.priority,
+          assigned_to: formData.assigned_to || undefined,
+          status: 'open'
         })
       })
 
       if (!response.ok) throw new Error('Failed to create task')
-      
+
       onCreated()
       onClose()
     } catch (error) {
@@ -1132,85 +1150,71 @@ function CreateTaskModal({
     }
   }
 
+  // Cmd+Enter to submit
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+      e.preventDefault()
+      handleSubmit(e as any)
+    }
+  }
+
   return (
-    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-      <div className="bg-card border border-border rounded-lg max-w-md w-full">
-        <form onSubmit={handleSubmit} className="p-6">
-          <h3 className="text-xl font-bold text-foreground mb-4">Create New Task</h3>
-          
-          <div className="space-y-4">
-            <div>
-              <label className="block text-sm text-muted-foreground mb-1">Title</label>
-              <input
-                type="text"
-                value={formData.title}
-                onChange={(e) => setFormData(prev => ({ ...prev, title: e.target.value }))}
-                className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/50"
-                required
+    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4" onClick={onClose}>
+      <div className="bg-card border border-border rounded-lg max-w-2xl w-full max-h-[90vh] flex flex-col" onClick={e => e.stopPropagation()} onKeyDown={handleKeyDown}>
+        <form onSubmit={handleSubmit} className="flex flex-col h-full">
+          {/* Header */}
+          <div className="shrink-0 px-4 pt-3 pb-3 border-b border-border">
+            <input
+              ref={titleInputRef}
+              type="text"
+              value={formData.title}
+              onChange={(e) => setFormData(prev => ({ ...prev, title: e.target.value }))}
+              placeholder="Task title..."
+              className="w-full text-xl font-bold text-foreground bg-transparent focus:outline-none mb-2"
+              autoFocus
+            />
+
+            {/* Property Chips */}
+            <div className="flex flex-wrap gap-2">
+              <PropertyChip
+                value={formData.priority}
+                options={PRIORITY_OPTIONS}
+                onSelect={(v) => setFormData(prev => ({ ...prev, priority: v as Task['priority'] }))}
+                colorFn={priorityColor}
               />
-            </div>
-            
-            <div>
-              <label className="block text-sm text-muted-foreground mb-1">Description</label>
-              <textarea
-                value={formData.description}
-                onChange={(e) => setFormData(prev => ({ ...prev, description: e.target.value }))}
-                className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/50"
-                rows={3}
-              />
-            </div>
-            
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm text-muted-foreground mb-1">Priority</label>
-                <select
-                  value={formData.priority}
-                  onChange={(e) => setFormData(prev => ({ ...prev, priority: e.target.value as Task['priority'] }))}
-                  className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/50"
-                >
-                  <option value="low">Low</option>
-                  <option value="medium">Medium</option>
-                  <option value="high">High</option>
-                  <option value="urgent">Urgent</option>
-                </select>
-              </div>
-              
-              <div>
-                <label className="block text-sm text-muted-foreground mb-1">Assign to</label>
-                <select
-                  value={formData.assigned_to}
-                  onChange={(e) => setFormData(prev => ({ ...prev, assigned_to: e.target.value }))}
-                  className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/50"
-                >
-                  <option value="">Unassigned</option>
-                  {agents.map(agent => (
-                    <option key={agent.name} value={agent.name}>
-                      {agent.name} ({agent.role})
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
-            
-            <div>
-              <label className="block text-sm text-muted-foreground mb-1">Tags (comma-separated)</label>
-              <input
-                type="text"
-                value={formData.tags}
-                onChange={(e) => setFormData(prev => ({ ...prev, tags: e.target.value }))}
-                className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/50"
-                placeholder="frontend, urgent, bug"
+              <PropertyChip
+                value={formData.assigned_to}
+                options={createAssigneeOptions}
+                onSelect={(v) => setFormData(prev => ({ ...prev, assigned_to: v }))}
+                searchable
+                label="Assignee"
+                placeholder={<span className="flex items-center gap-1 text-muted-foreground/40"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="8" r="4"/><path d="M5 20c0-4 3.5-7 7-7s7 3 7 7"/></svg></span>}
               />
             </div>
           </div>
-          
-          <div className="flex gap-3 mt-6">
-            <Button type="submit" className="flex-1">
-              Create Task
-            </Button>
-            <Button variant="outline" onClick={onClose} className="flex-1">
-              Cancel
-            </Button>
+
+          {/* Body */}
+          <div className="flex-1 overflow-y-auto px-4 pt-4 pb-2">
+            <div className="-mx-1">
+              <BlockEditor
+                initialMarkdown=""
+                onBlur={(md) => setFormData(prev => ({ ...prev, description: md }))}
+                placeholder="Add description..."
+                compact
+              />
+            </div>
+          </div>
+
+          {/* Footer */}
+          <div className="shrink-0 px-4 py-3 border-t border-border">
+            <div className="flex gap-2">
+              <Button type="submit" disabled={!formData.title.trim()}>
+                Create Task
+              </Button>
+              <Button variant="outline" type="button" onClick={onClose}>
+                Cancel
+              </Button>
+            </div>
           </div>
         </form>
       </div>
