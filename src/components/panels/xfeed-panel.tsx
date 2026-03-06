@@ -95,15 +95,14 @@ function RatingButton({ rating, current, onRate }: {
   )
 }
 
-function TweetCard({ tweet, onUpdate, expanded, onToggle, focused, itemRef }: {
+function TweetCard({ tweet, onUpdate, focused, itemRef }: {
   tweet: Tweet
   onUpdate: () => void
-  expanded: boolean
-  onToggle: () => void
   focused?: boolean
   itemRef?: React.Ref<HTMLDivElement>
 }) {
   const [updating, setUpdating] = useState(false)
+  const [lightboxImage, setLightboxImage] = useState<string | null>(null)
 
   const handleRate = async (rating: TweetRating) => {
     setUpdating(true)
@@ -136,89 +135,111 @@ function TweetCard({ tweet, onUpdate, expanded, onToggle, focused, itemRef }: {
 
   const isNoise = tweet.rating === 'noise'
 
+  // Parse media URLs
+  const mediaUrls = tweet.media_urls ? JSON.parse(tweet.media_urls) : []
+  const firstImage = mediaUrls[0]
+
+  // Parse thread content
+  const hasThread = tweet.content.includes('---THREAD---')
+  const [mainContent, threadContent] = hasThread 
+    ? tweet.content.split('---THREAD---').map(s => s.trim())
+    : [tweet.content, null]
+
   return (
-    <div ref={itemRef} className={`border border-border rounded-lg bg-card transition-all ${isNoise ? 'opacity-50' : ''} ${tweet.pinned ? 'ring-1 ring-amber-500/30' : ''} ${focused ? 'ring-2 ring-primary/50' : ''}`}>
-      {/* Header */}
-      <button
-        onClick={onToggle}
-        className="w-full text-left px-4 py-3 flex items-start gap-3"
+    <>
+      <div 
+        ref={itemRef} 
+        className={`border rounded-lg bg-card transition-all p-4 ${
+          isNoise ? 'opacity-40' : ''
+        } ${
+          tweet.pinned ? 'border-l-4 border-l-amber-500' : 'border-border'
+        } ${
+          focused ? 'ring-2 ring-primary/50' : ''
+        }`}
       >
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 flex-wrap mb-1">
-            {tweet.theme && <ThemeBadge theme={tweet.theme} />}
-            <span className="text-xs text-muted-foreground font-medium">@{tweet.author}</span>
-            <span className="text-xs text-muted-foreground/60">{relativeTime(tweet.scraped_at || tweet.created_at)}</span>
-            {tweet.pinned ? <span title="Pinned" className="text-amber-400 text-xs">{'\uD83D\uDCCC'}</span> : null}
+        {/* Header row */}
+        <div className="flex items-start justify-between mb-3">
+          <div className="flex items-center gap-2 text-xs">
+            <span className="font-medium text-foreground">@{tweet.author}</span>
+            <span className="text-muted-foreground/60">·</span>
+            <span className="text-muted-foreground/60">{relativeTime(tweet.scraped_at || tweet.created_at)}</span>
           </div>
-          <p className="text-sm text-foreground line-clamp-2">
-            {tweet.title || tweet.content}
-          </p>
-        </div>
-      </button>
-
-      {/* Expanded content */}
-      {expanded && (
-        <div className="px-4 pb-3 space-y-2 border-t border-border/50 pt-3">
-          {tweet.title && tweet.content && tweet.content !== tweet.title && (
-            <p className="text-sm text-muted-foreground whitespace-pre-wrap">{tweet.content}</p>
-          )}
-          {tweet.verdict && (
-            <div className="text-xs text-muted-foreground bg-secondary/50 rounded px-2 py-1.5">
-              <span className="font-medium text-foreground">Verdict:</span> {tweet.verdict}
-            </div>
-          )}
-          {tweet.tweet_link && (
-            <a
-              href={tweet.tweet_link}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
+          <div className="flex items-center gap-1">
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              onClick={handlePin}
+              disabled={updating}
+              title={tweet.pinned ? 'Unpin' : 'Pin'}
+              className={tweet.pinned ? 'text-amber-400' : 'text-muted-foreground'}
             >
-              Open on X {'\u2197\uFE0F'}
-            </a>
-          )}
-          {tweet.digest && (
-            <span className="text-[10px] text-muted-foreground/60 block">Digest: {tweet.digest}</span>
-          )}
+              📌
+            </Button>
+            {tweet.tweet_link && (
+              <a
+                href={tweet.tweet_link}
+                target="_blank"
+                rel="noopener noreferrer"
+                title="Open on X"
+              >
+                <Button variant="ghost" size="icon-xs" className="text-muted-foreground">
+                  ↗️
+                </Button>
+              </a>
+            )}
+          </div>
         </div>
-      )}
 
-      {/* Action row */}
-      <div className="flex items-center gap-1 px-3 py-2 border-t border-border/50">
-        <div className="flex items-center gap-0.5 bg-secondary/40 rounded-md">
-          <RatingButton rating="fire" current={tweet.rating} onRate={handleRate} />
-          <RatingButton rating="meh" current={tweet.rating} onRate={handleRate} />
-          <RatingButton rating="noise" current={tweet.rating} onRate={handleRate} />
-        </div>
-        <div className="w-px h-4 bg-border mx-1" />
-        <button
-          onClick={handlePin}
-          disabled={updating}
-          title={tweet.pinned ? 'Unpin' : 'Pin'}
-          className={`px-1.5 py-1 rounded text-xs transition-colors ${
-            tweet.pinned
-              ? 'text-amber-400 bg-amber-500/10'
-              : 'text-muted-foreground hover:text-amber-400 hover:bg-amber-500/10'
-          }`}
-        >
-          {'\uD83D\uDCCC'}
-        </button>
-        {tweet.tweet_link && (
-          <a
-            href={tweet.tweet_link}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="px-1.5 py-1 rounded text-xs text-muted-foreground hover:text-primary hover:bg-primary/10 transition-colors"
-            title="Open on X"
+        {/* Content */}
+        <p className="text-sm text-foreground whitespace-pre-wrap mb-3 leading-relaxed">
+          {mainContent}
+        </p>
+
+        {/* Media preview */}
+        {firstImage && (
+          <button 
+            onClick={() => setLightboxImage(firstImage)}
+            className="mb-3 block w-full"
           >
-            {'\u2197\uFE0F'}
-          </a>
+            <img
+              src={firstImage}
+              alt="Tweet media"
+              loading="lazy"
+              className="rounded-lg object-cover w-full max-h-[200px] cursor-pointer hover:opacity-90 transition-opacity"
+            />
+          </button>
         )}
-        <span className="ml-auto text-[10px] text-muted-foreground/50">
-          {tweet.rating && RATING_CONFIG[tweet.rating]?.emoji}
-        </span>
+
+        {/* Thread content */}
+        {threadContent && (
+          <>
+            <div className="border-t border-border/30 my-3" />
+            <div className="flex items-center gap-1.5 text-xs text-muted-foreground mb-2">
+              <span>🧵</span>
+              <span>Thread</span>
+            </div>
+            <p className="text-sm text-foreground/90 whitespace-pre-wrap line-clamp-6 leading-relaxed">
+              {threadContent}
+            </p>
+          </>
+        )}
+
+        {/* Footer row */}
+        <div className="flex items-center justify-between mt-3 pt-3 border-t border-border/50">
+          <div className="flex items-center gap-1">
+            {tweet.theme && <ThemeBadge theme={tweet.theme} />}
+          </div>
+          <div className="flex items-center gap-0.5">
+            <RatingButton rating="fire" current={tweet.rating} onRate={handleRate} />
+            <RatingButton rating="meh" current={tweet.rating} onRate={handleRate} />
+            <RatingButton rating="noise" current={tweet.rating} onRate={handleRate} />
+          </div>
+        </div>
       </div>
-    </div>
+
+      {/* Lightbox */}
+      {lightboxImage && <Lightbox imageUrl={lightboxImage} onClose={() => setLightboxImage(null)} />}
+    </>
   )
 }
 
@@ -234,7 +255,6 @@ export function XFeedPanel() {
   const [digests, setDigests] = useState<string[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [expandedId, setExpandedId] = useState<string | null>(null)
   const [focusedIndex, setFocusedIndex] = useState<number | null>(null)
 
   const itemRefs = useRef<(HTMLDivElement | null)[]>([])
@@ -312,8 +332,6 @@ export function XFeedPanel() {
       // Skip if input/textarea/contenteditable is focused
       const tag = (e.target as HTMLElement)?.tagName
       if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target as HTMLElement)?.isContentEditable) return
-      // Skip if detail view is open
-      if (expandedId) return
 
       if (e.key === 'ArrowDown') {
         e.preventDefault()
@@ -330,7 +348,9 @@ export function XFeedPanel() {
       } else if (e.key === 'Enter' && focusedIndex !== null) {
         e.preventDefault()
         const tweet = tweets[focusedIndex]
-        if (tweet) setExpandedId(tweet.id)
+        if (tweet?.tweet_link) {
+          window.open(tweet.tweet_link, '_blank', 'noopener,noreferrer')
+        }
       } else if (e.key === 'Escape') {
         e.preventDefault()
         setFocusedIndex(null)
@@ -339,7 +359,7 @@ export function XFeedPanel() {
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [tweets, expandedId, focusedIndex])
+  }, [tweets, focusedIndex])
 
   // Debounced search
   const handleSearch = (value: string) => {
@@ -469,8 +489,6 @@ export function XFeedPanel() {
               key={tweet.id}
               tweet={tweet}
               onUpdate={handleUpdate}
-              expanded={expandedId === tweet.id}
-              onToggle={() => setExpandedId(expandedId === tweet.id ? null : tweet.id)}
               focused={focusedIndex === index}
               itemRef={(el: HTMLDivElement | null) => { itemRefs.current[index] = el }}
             />

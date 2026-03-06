@@ -89,33 +89,33 @@ Redesign the X Feed panel to show only quality tweets by default, display rich c
 
 ### Phase 4: Card Redesign (Always Expanded)
 
-#### Task 9: Remove expand/collapse logic
+#### Task 9: Remove expand/collapse logic ✅
 **File:** `src/components/panels/xfeed-panel.tsx`
-- [ ] Remove `expandedId` state (no longer needed)
-- [ ] Remove `onToggle` prop from TweetCard
-- [ ] Remove the `expanded` prop and conditional rendering in TweetCard
-- [ ] Remove click handler from card header button — convert to div
+- [x] Remove `expandedId` state (no longer needed)
+- [x] Remove `onToggle` prop from TweetCard
+- [x] Remove the `expanded` prop and conditional rendering in TweetCard
+- [x] Remove click handler from card header button — convert to div
 
-#### Task 10: Redesign card layout (always show content)
+#### Task 10: Redesign card layout (always show content) ✅
 **File:** `src/components/panels/xfeed-panel.tsx` (TweetCard component)
-- [ ] Update card structure to always show full content:
+- [x] Update card structure to always show full content:
   - Top row: `@username · time` (left) | pin + external link icons (right)
   - Content: full tweet text visible (no truncation, add `whitespace-pre-wrap` for formatting)
   - Media preview (if exists) — see Task 11
   - Thread indicator (if exists) — see Task 12
   - Footer: theme badge (left) | rating buttons (right)
-- [ ] Remove border-t and pt-3 from content section (no longer conditional)
-- [ ] Use Tailwind v3.4 syntax: `h-[var(--name)]` if needed for custom properties
+- [x] Remove border-t and pt-3 from content section (no longer conditional)
+- [x] Use Tailwind v3.4 syntax: `h-[var(--name)]` if needed for custom properties
 
-#### Task 11: Add media preview support
+#### Task 11: Add media preview support ✅
 **File:** `src/components/panels/xfeed-panel.tsx` (TweetCard component)
-- [ ] Parse `media_urls` (JSON string) at start of TweetCard:
+- [x] Parse `media_urls` (JSON string) at start of TweetCard:
   ```tsx
   const mediaUrls = tweet.media_urls ? JSON.parse(tweet.media_urls) : []
   const firstImage = mediaUrls[0]
   ```
-- [ ] Add lightbox state: `const [lightboxImage, setLightboxImage] = useState<string | null>(null)`
-- [ ] Render image preview if `firstImage` exists:
+- [x] Add lightbox state: `const [lightboxImage, setLightboxImage] = useState<string | null>(null)`
+- [x] Render image preview if `firstImage` exists:
   ```tsx
   {firstImage && (
     <button onClick={() => setLightboxImage(firstImage)}>
@@ -128,21 +128,21 @@ Redesign the X Feed panel to show only quality tweets by default, display rich c
     </button>
   )}
   ```
-- [ ] Add Lightbox component at end of TweetCard:
+- [x] Add Lightbox component at end of TweetCard:
   ```tsx
   {lightboxImage && <Lightbox imageUrl={lightboxImage} onClose={() => setLightboxImage(null)} />}
   ```
 
-#### Task 12: Add thread indicator
+#### Task 12: Add thread indicator ✅
 **File:** `src/components/panels/xfeed-panel.tsx` (TweetCard component)
-- [ ] Check if content contains `---THREAD---`:
+- [x] Check if content contains `---THREAD---`:
   ```tsx
   const hasThread = tweet.content.includes('---THREAD---')
   const [mainContent, threadContent] = hasThread 
     ? tweet.content.split('---THREAD---').map(s => s.trim())
     : [tweet.content, null]
   ```
-- [ ] Render main content, then if thread exists:
+- [x] Render main content, then if thread exists:
   ```tsx
   {threadContent && (
     <>
@@ -158,23 +158,23 @@ Redesign the X Feed panel to show only quality tweets by default, display rich c
   )}
   ```
 
-#### Task 13: Update pinned and noise styling
+#### Task 13: Update pinned and noise styling ✅
 **File:** `src/components/panels/xfeed-panel.tsx` (TweetCard component)
-- [ ] Replace ring styling for pinned tweets with left border:
+- [x] Replace ring styling for pinned tweets with left border:
   ```tsx
   className={`border border-border rounded-lg bg-card transition-all 
     ${isNoise ? 'opacity-40' : ''} 
     ${tweet.pinned ? 'border-l-4 border-l-amber-500' : ''} 
     ${focused ? 'ring-2 ring-primary/50' : ''}`}
   ```
-- [ ] Remove ring-1 ring-amber-500/30 from pinned styling
+- [x] Remove ring-1 ring-amber-500/30 from pinned styling
 
 ### Phase 5: Header & Empty States
 
-#### Task 14: Add stats to header
+#### Task 14: Add stats to header ✅
 **File:** `src/components/panels/xfeed-panel.tsx`
-- [ ] Add state to track curated count: `const [curatedCount, setCuratedCount] = useState(0)`
-- [ ] Update fetchTweets to fetch curated count when in "all" mode:
+- [x] Add state to track curated count: `const [curatedCount, setCuratedCount] = useState(0)`
+- [x] Update fetchTweets to fetch curated count when in "all" mode:
   ```tsx
   // After fetching tweets, if mode === 'all', fetch curated count:
   if (mode === 'all') {
@@ -183,7 +183,7 @@ Redesign the X Feed panel to show only quality tweets by default, display rich c
     setCuratedCount(curatedData.total)
   }
   ```
-- [ ] Update header stats display:
+- [x] Update header stats display:
   ```tsx
   {mode === 'curated' ? (
     <span>{total} curated</span>
@@ -192,9 +192,9 @@ Redesign the X Feed panel to show only quality tweets by default, display rich c
   )}
   ```
 
-#### Task 15: Add better empty states
+#### Task 15: Add better empty states ✅
 **File:** `src/components/panels/xfeed-panel.tsx`
-- [ ] Replace current empty state with mode-aware version:
+- [x] Replace current empty state with mode-aware version:
   ```tsx
   {!loading && !error && tweets.length === 0 && (
     <div className="text-center py-12">
@@ -220,7 +220,7 @@ Redesign the X Feed panel to show only quality tweets by default, display rich c
     </div>
   )}
   ```
-- [ ] Add handleResetFilters function:
+- [x] Add handleResetFilters function:
   ```tsx
   const handleResetFilters = () => {
     setThemeFilter('')
