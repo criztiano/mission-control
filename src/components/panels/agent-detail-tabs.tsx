@@ -1729,3 +1729,293 @@ export function ConfigTab({
     </div>
   )
 }
+
+// Skills Tab Component
+interface Skill {
+  id: string
+  name: string
+  description: string
+  source: 'global' | 'npm' | 'workspace'
+  enabled: boolean
+  skillMdPath: string
+}
+
+export function SkillsTab({ agent }: { agent: Agent }) {
+  const [skills, setSkills] = useState<Skill[]>([])
+  const [loading, setLoading] = useState(true)
+  const [selectedSkill, setSelectedSkill] = useState<string | null>(null)
+  const [skillContent, setSkillContent] = useState('')
+  const [readOnly, setReadOnly] = useState(false)
+  const [editing, setEditing] = useState(false)
+  const [editContent, setEditContent] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [loadingContent, setLoadingContent] = useState(false)
+  const [toggling, setToggling] = useState<string | null>(null)
+
+  const fetchSkills = async () => {
+    try {
+      const response = await fetch(`/api/agents/${agent.name}/skills`)
+      if (response.ok) {
+        const data = await response.json()
+        setSkills(data.skills || [])
+      }
+    } catch (error) {
+      console.error('Failed to fetch skills:', error)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    fetchSkills()
+  }, [agent.name])
+
+  const handleToggleSkill = async (skillId: string, currentEnabled: boolean) => {
+    setToggling(skillId)
+    try {
+      const response = await fetch(`/api/agents/${agent.name}/skills/${skillId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: !currentEnabled })
+      })
+
+      if (response.ok) {
+        // Update local state
+        setSkills(prev => prev.map(s =>
+          s.id === skillId ? { ...s, enabled: !currentEnabled } : s
+        ))
+      } else {
+        const data = await response.json()
+        alert(`Failed to toggle skill: ${data.error}`)
+      }
+    } catch (error) {
+      console.error('Failed to toggle skill:', error)
+      alert('Failed to toggle skill')
+    } finally {
+      setToggling(null)
+    }
+  }
+
+  const handleOpenSkill = async (skillId: string) => {
+    setLoadingContent(true)
+    setSelectedSkill(skillId)
+    setEditing(false)
+    try {
+      const response = await fetch(`/api/agents/${agent.name}/skills/${skillId}`)
+      if (response.ok) {
+        const data = await response.json()
+        setSkillContent(data.content)
+        setReadOnly(data.readOnly)
+        setEditContent(data.content)
+      }
+    } catch (error) {
+      console.error('Failed to load skill content:', error)
+    } finally {
+      setLoadingContent(false)
+    }
+  }
+
+  const handleSaveSkill = async () => {
+    if (!selectedSkill) return
+
+    setSaving(true)
+    try {
+      const response = await fetch(`/api/agents/${agent.name}/skills/${selectedSkill}/content`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: editContent })
+      })
+
+      if (response.ok) {
+        setSkillContent(editContent)
+        setEditing(false)
+      } else {
+        const data = await response.json()
+        alert(`Failed to save skill: ${data.error}`)
+      }
+    } catch (error) {
+      console.error('Failed to save skill:', error)
+      alert('Failed to save skill')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleBack = () => {
+    setSelectedSkill(null)
+    setEditing(false)
+  }
+
+  const getSourceBadge = (source: string) => {
+    const colors = {
+      global: 'bg-blue-500/15 text-blue-400 border-blue-500/25',
+      npm: 'bg-purple-500/15 text-purple-400 border-purple-500/25',
+      workspace: 'bg-green-500/15 text-green-400 border-green-500/25'
+    }
+    return colors[source as keyof typeof colors] || colors.global
+  }
+
+  // Sort: enabled first, then alphabetically
+  const sortedSkills = [...skills].sort((a, b) => {
+    if (a.enabled === b.enabled) {
+      return a.name.localeCompare(b.name)
+    }
+    return a.enabled ? -1 : 1
+  })
+
+  if (loading) {
+    return (
+      <div className="p-6 flex items-center justify-center">
+        <p className="text-sm text-muted-foreground">Loading skills...</p>
+      </div>
+    )
+  }
+
+  // Skill detail/edit view
+  if (selectedSkill) {
+    const skill = skills.find(s => s.id === selectedSkill)
+
+    return (
+      <div className="p-6 space-y-4">
+        <div className="flex justify-between items-center">
+          <div className="flex items-center gap-3">
+            <button
+              onClick={handleBack}
+              className="text-muted-foreground hover:text-foreground transition-smooth"
+              title="Back to list"
+            >
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <path d="M10 12L6 8l4-4" />
+              </svg>
+            </button>
+            <h4 className="text-lg font-medium text-foreground">{skill?.name || selectedSkill}</h4>
+            {skill && (
+              <span className={`px-2 py-0.5 text-xs rounded-md font-medium border ${getSourceBadge(skill.source)}`}>
+                {skill.source}
+              </span>
+            )}
+            {readOnly && (
+              <span className="px-2 py-0.5 text-xs bg-yellow-500/15 text-yellow-400 border border-yellow-500/25 rounded">
+                read-only
+              </span>
+            )}
+          </div>
+          <div className="flex gap-2">
+            {!editing && !readOnly && (
+              <button
+                onClick={() => setEditing(true)}
+                className="px-3 py-1 text-sm bg-primary text-primary-foreground rounded-md hover:bg-primary/90 transition-smooth"
+              >
+                Edit
+              </button>
+            )}
+          </div>
+        </div>
+
+        {loadingContent ? (
+          <div className="flex items-center justify-center py-8">
+            <p className="text-sm text-muted-foreground">Loading content...</p>
+          </div>
+        ) : editing ? (
+          <>
+            <textarea
+              value={editContent}
+              onChange={(e) => setEditContent(e.target.value)}
+              rows={20}
+              className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/50 font-mono text-sm"
+              placeholder="Skill markdown content..."
+            />
+            <div className="flex gap-3">
+              <button
+                onClick={handleSaveSkill}
+                disabled={saving}
+                className="flex-1 bg-primary text-primary-foreground py-2 rounded-md hover:bg-primary/90 disabled:opacity-50 transition-smooth"
+              >
+                {saving ? 'Saving...' : 'Save Skill'}
+              </button>
+              <button
+                onClick={() => {
+                  setEditing(false)
+                  setEditContent(skillContent)
+                }}
+                className="flex-1 bg-secondary text-muted-foreground py-2 rounded-md hover:bg-surface-2 transition-smooth"
+              >
+                Cancel
+              </button>
+            </div>
+          </>
+        ) : (
+          <div className="bg-surface-1/30 rounded p-4 max-h-[600px] overflow-y-auto">
+            <pre className="text-foreground whitespace-pre-wrap text-sm font-mono">{skillContent}</pre>
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  // List view
+  return (
+    <div className="p-6 space-y-4">
+      <div className="flex justify-between items-center">
+        <h4 className="text-lg font-medium text-foreground">Skills ({skills.length})</h4>
+        <button
+          onClick={fetchSkills}
+          className="text-muted-foreground hover:text-foreground transition-smooth"
+          title="Refresh"
+        >
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+            <path d="M14 8c0-3.314-2.686-6-6-6S2 4.686 2 8s2.686 6 6 6" />
+            <path d="M14 12v-4h-4" />
+          </svg>
+        </button>
+      </div>
+
+      {skills.length === 0 ? (
+        <div className="flex flex-col items-center justify-center py-8 text-muted-foreground/50">
+          <p className="text-sm">No skills found</p>
+        </div>
+      ) : (
+        <div className="space-y-1.5">
+          {sortedSkills.map(skill => (
+            <div
+              key={skill.id}
+              className="flex items-center justify-between px-4 py-3 bg-surface-1/30 rounded-lg hover:bg-surface-1/60 transition-smooth"
+            >
+              <button
+                onClick={() => handleOpenSkill(skill.id)}
+                className="flex-1 flex items-start gap-3 text-left min-w-0"
+              >
+                <span className="text-muted-foreground text-sm shrink-0">⚡</span>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="text-sm font-medium text-foreground">{skill.name}</span>
+                    <span className={`px-1.5 py-0.5 text-xs rounded font-medium border ${getSourceBadge(skill.source)}`}>
+                      {skill.source}
+                    </span>
+                  </div>
+                  {skill.description && (
+                    <p className="text-xs text-muted-foreground truncate">{skill.description}</p>
+                  )}
+                </div>
+              </button>
+              <button
+                onClick={() => handleToggleSkill(skill.id, skill.enabled)}
+                disabled={toggling === skill.id}
+                className="ml-4 shrink-0"
+                title={skill.enabled ? 'Disable skill' : 'Enable skill'}
+              >
+                <div className={`w-10 h-5 rounded-full transition-colors relative ${
+                  skill.enabled ? 'bg-green-500' : 'bg-zinc-600'
+                } ${toggling === skill.id ? 'opacity-50' : ''}`}>
+                  <div className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform ${
+                    skill.enabled ? 'translate-x-5' : 'translate-x-0'
+                  }`} />
+                </div>
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}

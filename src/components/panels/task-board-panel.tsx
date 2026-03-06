@@ -427,35 +427,45 @@ export function TaskBoardPanel() {
     <div className="h-full flex flex-col">
       {/* Header */}
       <div className="flex justify-between items-center p-4 border-b border-border flex-shrink-0">
-        <h2 className="text-xl font-bold text-foreground">Task Board</h2>
+        <h2 className="text-xl font-bold text-foreground">Tasks</h2>
         <div className="flex gap-2">
-          {/* View toggle */}
-          <div className="flex rounded-md border border-border overflow-hidden">
-            <button
+          {/* View toggle — icons only */}
+          <div className="flex rounded-lg border border-input overflow-hidden">
+            <Button
+              variant={viewMode === 'kanban' ? 'secondary' : 'ghost'}
+              size="icon-sm"
               onClick={() => { setViewMode('kanban'); setFocusedListIndex(null) }}
-              className={`px-3 py-1.5 text-xs font-medium transition-colors ${viewMode === 'kanban' ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:text-foreground'}`}
+              title="Board view"
+              className="rounded-none border-0"
             >
-              Board
-            </button>
-            <button
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="18" rx="1"/><rect x="14" y="3" width="7" height="10" rx="1"/></svg>
+            </Button>
+            <Button
+              variant={viewMode === 'list' ? 'secondary' : 'ghost'}
+              size="icon-sm"
               onClick={() => { setViewMode('list'); setFocusedIndex(null) }}
-              className={`px-3 py-1.5 text-xs font-medium transition-colors ${viewMode === 'list' ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:text-foreground'}`}
+              title="List view"
+              className="rounded-none border-0"
             >
-              List
-            </button>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+            </Button>
           </div>
-          <button
+          <Button
             onClick={() => setShowCreateModal(true)}
-            className="px-4 py-2 bg-primary text-primary-foreground rounded-md hover:bg-primary/90 transition-smooth text-sm font-medium"
+            title="New task"
+            className="max-sm:size-8 max-sm:p-0"
           >
-            + New Task
-          </button>
-          <button
+            <svg className="sm:hidden" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            <span className="hidden sm:inline">+ New Task</span>
+          </Button>
+          <Button
+            variant="outline"
+            size="icon"
             onClick={fetchData}
-            className="px-4 py-2 bg-secondary text-muted-foreground rounded-md hover:bg-surface-2 transition-smooth text-sm font-medium"
+            title="Refresh"
           >
-            Refresh
-          </button>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+          </Button>
         </div>
       </div>
 
@@ -463,12 +473,14 @@ export function TaskBoardPanel() {
       {error && (
         <div className="bg-red-500/10 border border-red-500/20 text-red-400 p-3 m-4 rounded-lg text-sm flex items-center justify-between">
           <span>{error}</span>
-          <button
+          <Button
+            variant="ghost"
+            size="icon-xs"
             onClick={() => setError(null)}
             className="text-red-400/60 hover:text-red-400 ml-2"
           >
             ×
-          </button>
+          </Button>
         </div>
       )}
 
@@ -659,12 +671,12 @@ export function TaskBoardPanel() {
                           key={task.id}
                           ref={(el) => { listRowRefs.current[globalIdx] = el }}
                           onClick={() => setSelectedTask(task)}
-                          className={`flex items-center justify-between gap-4 px-4 py-2.5 border-b border-zinc-800/50 last:border-b-0 cursor-pointer hover:bg-zinc-800 transition-colors ${
+                          className={`flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1.5 sm:gap-4 px-4 py-2.5 border-b border-zinc-800/50 last:border-b-0 cursor-pointer hover:bg-zinc-800 transition-colors ${
                             isFocused ? 'bg-zinc-800' : ''
                           }`}
                         >
                           <span className="flex-1 text-sm font-medium text-foreground truncate min-w-0">{task.title}</span>
-                          <div className="flex items-center gap-1.5 shrink-0" onClick={e => e.stopPropagation()}>
+                          <div className="flex items-center gap-1.5 sm:shrink-0 sm:justify-end" onClick={e => e.stopPropagation()}>
                             <PropertyChip
                               value={task.status}
                               options={STATUS_OPTIONS}
@@ -951,37 +963,46 @@ function TaskDetailModal({
     <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4" onClick={handleClose}>
       <div className="bg-card border border-border rounded-lg max-w-2xl w-full max-h-[90vh] flex flex-col" onClick={e => e.stopPropagation()}>
         {/* Fixed Header: nav + title + chips */}
-        <div className="shrink-0 p-6 pb-4 border-b border-border">
-          <div className="flex justify-between items-center mb-3">
+        <div className="shrink-0 px-4 pt-3 pb-3 border-b border-border">
+          <div className="flex justify-between items-center mb-2">
             <div className="flex items-center gap-2">
               {saving && <span className="text-[10px] text-muted-foreground/50">Saving...</span>}
-              <span className="text-[10px] text-muted-foreground/40">{new Date(task.created_at * 1000).toLocaleDateString()}</span>
             </div>
             <div className="flex items-center gap-1">
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                onClick={handleDelete}
+                onMouseLeave={() => setConfirmDelete(false)}
+                title={confirmDelete ? 'Click again to confirm' : 'Delete task'}
+                className={confirmDelete ? 'text-red-400 bg-red-500/15 hover:bg-red-500/20' : 'text-red-400/40 hover:text-red-400 hover:bg-red-500/10'}
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+              </Button>
               {onNavigate && (
                 <>
                   <Button
                     variant="outline"
-                    size="icon-xs"
+                    size="icon-sm"
                     onClick={() => prevTask && onNavigate(prevTask)}
                     disabled={!prevTask}
                     title="Previous task (↑)"
                   >
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 15l-6-6-6 6"/></svg>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 15l-6-6-6 6"/></svg>
                   </Button>
                   <Button
                     variant="outline"
-                    size="icon-xs"
+                    size="icon-sm"
                     onClick={() => nextTask && onNavigate(nextTask)}
                     disabled={!nextTask}
                     title="Next task (↓)"
                   >
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 9l6 6 6-6"/></svg>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 9l6 6 6-6"/></svg>
                   </Button>
                 </>
               )}
-              <Button variant="outline" size="icon-xs" onClick={handleClose} title="Close (Esc)">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+              <Button variant="outline" size="icon-sm" onClick={handleClose} title="Close (Esc)">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
               </Button>
             </div>
           </div>
@@ -1015,7 +1036,7 @@ function TaskDetailModal({
         </div>
 
         {/* Scrollable Content */}
-        <div className="flex-1 overflow-y-auto p-6 pt-4">
+        <div className="flex-1 overflow-y-auto px-4 pt-4 pb-2">
           {/* Description — BlockNote */}
           <div className="mb-4 -mx-1">
             <BlockEditor
@@ -1030,7 +1051,7 @@ function TaskDetailModal({
           <div className="border-t border-border pt-4">
             <div className="flex items-center justify-between mb-3">
               <h4 className="text-sm font-semibold text-foreground">Comments</h4>
-              <button onClick={fetchComments} className="text-[10px] text-muted-foreground/40 hover:text-muted-foreground">Refresh</button>
+              <Button variant="ghost" size="xs" onClick={fetchComments} className="text-muted-foreground/40 hover:text-muted-foreground">Refresh</Button>
             </div>
 
             {commentError && (
@@ -1042,40 +1063,28 @@ function TaskDetailModal({
             ) : comments.length === 0 ? (
               <div className="text-muted-foreground/40 text-xs py-2">No comments yet.</div>
             ) : (
-              <div className="space-y-3 mb-3">
+              <div className="space-y-3">
                 {comments.map(comment => renderComment(comment))}
               </div>
             )}
-
-            <form onSubmit={handleAddComment} className="mt-2">
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={commentText}
-                  onChange={e => setCommentText(e.target.value)}
-                  placeholder="Write a comment..."
-                  className="flex-1 bg-surface-1 text-foreground text-sm border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/50"
-                  onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleAddComment(e) } }}
-                />
-                <button type="submit" className="px-3 py-2 bg-primary text-primary-foreground rounded-md hover:bg-primary/90 transition-smooth text-xs font-medium">Send</button>
-              </div>
-            </form>
-
-            {/* Delete */}
-            <div className="border-t border-border pt-4 mt-4 flex justify-end">
-              <button
-                onClick={handleDelete}
-                onMouseLeave={() => setConfirmDelete(false)}
-                className={`text-[11px] px-3 py-1.5 rounded-md transition-smooth font-medium ${
-                  confirmDelete
-                    ? 'bg-red-500/20 text-red-400 border border-red-500/30'
-                    : 'text-muted-foreground/40 hover:text-red-400 hover:bg-red-500/10'
-                }`}
-              >
-                {confirmDelete ? 'Click again to confirm delete' : 'Delete task'}
-              </button>
-            </div>
           </div>
+        </div>
+
+        {/* Fixed Footer: comment input */}
+        <div className="shrink-0 px-4 py-3 border-t border-border">
+          <form onSubmit={handleAddComment}>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={commentText}
+                onChange={e => setCommentText(e.target.value)}
+                placeholder="Write a comment..."
+                className="flex-1 bg-surface-1 text-foreground text-sm border border-border rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/50"
+                onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleAddComment(e) } }}
+              />
+              <Button type="submit">Send</Button>
+            </div>
+          </form>
         </div>
       </div>
     </div>
@@ -1196,19 +1205,12 @@ function CreateTaskModal({
           </div>
           
           <div className="flex gap-3 mt-6">
-            <button
-              type="submit"
-              className="flex-1 bg-primary text-primary-foreground py-2 rounded-md hover:bg-primary/90 transition-smooth"
-            >
+            <Button type="submit" className="flex-1">
               Create Task
-            </button>
-            <button
-              type="button"
-              onClick={onClose}
-              className="flex-1 bg-secondary text-muted-foreground py-2 rounded-md hover:bg-surface-2 transition-smooth"
-            >
+            </Button>
+            <Button variant="outline" onClick={onClose} className="flex-1">
               Cancel
-            </button>
+            </Button>
           </div>
         </form>
       </div>

@@ -11,6 +11,7 @@ import {
   ActivityTab,
   ConfigTab,
   FilesTab,
+  SkillsTab,
   CreateAgentModal
 } from './agent-detail-tabs'
 
@@ -480,7 +481,7 @@ function AgentDetailModalPhase3({
   onStatusUpdate: (name: string, status: Agent['status'], activity?: string) => Promise<void>
   onWakeAgent: (name: string, sessionKey: string) => Promise<void>
 }) {
-  const [activeTab, setActiveTab] = useState<'overview' | 'soul' | 'memory' | 'config' | 'tasks' | 'files' | 'activity'>('overview')
+  const [activeTab, setActiveTab] = useState<'overview' | 'soul' | 'memory' | 'config' | 'tasks' | 'files' | 'skills' | 'activity'>('overview')
   const [editing, setEditing] = useState(false)
   const [formData, setFormData] = useState({
     role: agent.role,
@@ -634,6 +635,7 @@ function AgentDetailModalPhase3({
     { id: 'soul', label: 'SOUL', icon: '~' },
     { id: 'memory', label: 'Memory', icon: '@' },
     { id: 'files', label: 'Files', icon: '/' },
+    { id: 'skills', label: 'Skills', icon: '⚡' },
     { id: 'tasks', label: 'Tasks', icon: '+' },
     { id: 'config', label: 'Config', icon: '*' },
     { id: 'activity', label: 'Activity', icon: '>' }
@@ -719,6 +721,10 @@ function AgentDetailModalPhase3({
 
           {activeTab === 'files' && (
             <FilesTab agent={agent} />
+          )}
+
+          {activeTab === 'skills' && (
+            <SkillsTab agent={agent} />
           )}
 
           {activeTab === 'tasks' && (
