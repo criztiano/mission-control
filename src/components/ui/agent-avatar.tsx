@@ -3,7 +3,6 @@
 import Image from 'next/image'
 
 const AVATAR_MAP: Record<string, { sm: string; lg: string }> = {
-  userboy: { sm: '/avatars/cseno.png', lg: '/avatars/cseno_big.png' },
   cseno: { sm: '/avatars/cseno.png', lg: '/avatars/cseno_big.png' },
   main: { sm: '/avatars/cseno.png', lg: '/avatars/cseno_big.png' },
   cody: { sm: '/avatars/cody.png', lg: '/avatars/cody_big.png' },
@@ -12,9 +11,8 @@ const AVATAR_MAP: Record<string, { sm: string; lg: string }> = {
 }
 
 const DISPLAY_NAMES: Record<string, string> = {
-  userboy: 'UserBoy',
   cseno: 'Cseno',
-  main: 'UserBoy',
+  main: 'Cseno',
   cody: 'Cody',
   bookworm: 'Bookworm',
   cri: 'Cri',

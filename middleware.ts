@@ -89,8 +89,8 @@ export function middleware(request: NextRequest) {
     }
   }
 
-  // Allow login page and auth API without session
-  if (pathname === '/login' || pathname.startsWith('/api/auth/')) {
+  // Allow login page, auth API, and media proxy without session
+  if (pathname === '/login' || pathname.startsWith('/api/auth/') || pathname === '/api/media-proxy') {
     return applySecurityHeaders(NextResponse.next())
   }
 

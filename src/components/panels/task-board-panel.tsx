@@ -1203,7 +1203,7 @@ function TaskDetailModal({
   const authorColor = (name: string) => {
     const n = name.toLowerCase()
     if (n === 'cri' || n === 'cristiano') return 'text-pink-400'
-    if (n === 'cseno' || n === 'userboy' || n === 'bot') return 'text-lime-400'
+    if (n === 'cseno' || n === 'bot') return 'text-lime-400'
     if (n === 'cody') return 'text-blue-400'
     if (n === 'bookworm') return 'text-purple-400'
     return 'text-foreground/80'

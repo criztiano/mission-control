@@ -1,49 +1,38 @@
 #!/bin/bash
-# Ralph Loop for Eden (Mission Control)
-# Usage: ./loop.sh [plan|build] [max_iterations]
+# Ralph Loop — plan then build autonomously
+set -euo pipefail
 
-MODE="${1:-build}"
-MAX_ITERATIONS="${2:-10}"
-PROMPT_FILE="PROMPT_${MODE}.md"
-ITERATION=0
+PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$PROJECT_DIR"
+MAX_BUILD=${1:-12}
 
-if [ ! -f "$PROMPT_FILE" ]; then
-  echo "Error: $PROMPT_FILE not found"
-  exit 1
+# Phase 1: Planning (1 iteration)
+echo "=== PLANNING PHASE ==="
+if ! grep -q "STATUS: COMPLETE" IMPLEMENTATION_PLAN.md 2>/dev/null; then
+  cat PROMPT_plan.md | claude -p --dangerously-skip-permissions --model sonnet
+  echo "--- Planning complete ---"
 fi
 
-echo "━━━ Ralph Loop: $MODE mode, max $MAX_ITERATIONS iterations ━━━"
-echo "━━━ Project: Eden (Mission Control) ━━━"
-echo ""
-
-while [ $ITERATION -lt $MAX_ITERATIONS ]; do
-  ITERATION=$((ITERATION + 1))
-  echo "━━━ Iteration $ITERATION / $MAX_ITERATIONS ━━━"
-
-  cat "$PROMPT_FILE" | claude -p \
-    --dangerously-skip-permissions \
-    --model sonnet \
-    --verbose
-
-  EXIT_CODE=$?
-
-  # Check for completion/blocker signals
-  if grep -q "^COMPLETE:" STATUS.md 2>/dev/null; then
-    echo "✅ Ralph reports complete!"
-    break
+# Phase 2: Build loop
+echo "=== BUILD PHASE ==="
+for i in $(seq 1 $MAX_BUILD); do
+  echo "=== Build Iteration $i / $MAX_BUILD ==="
+  
+  if grep -q "STATUS: COMPLETE" IMPLEMENTATION_PLAN.md 2>/dev/null; then
+    echo "✅ All tasks complete! Exiting loop."
+    exit 0
   fi
-  if grep -q "CRITICAL BLOCKER:" STATUS.md 2>/dev/null; then
-    echo "🛑 Ralph hit a blocker. Check STATUS.md"
-    break
+  
+  if grep -q "CRITICAL BLOCKER" STATUS.md 2>/dev/null; then
+    echo "🛑 Critical blocker detected. Exiting loop."
+    exit 1
   fi
-
-  # If claude exited with error, stop
-  if [ $EXIT_CODE -ne 0 ]; then
-    echo "⚠️  Claude exited with code $EXIT_CODE"
-    break
-  fi
-
-  echo ""
+  
+  cat PROMPT_build.md | claude -p --dangerously-skip-permissions --model sonnet
+  
+  echo "--- Iteration $i complete ---"
+  sleep 2
 done
 
-echo "━━━ Ralph finished after $ITERATION iterations ━━━"
+echo "❌ Max iterations reached. Check IMPLEMENTATION_PLAN.md and STATUS.md."
+exit 1

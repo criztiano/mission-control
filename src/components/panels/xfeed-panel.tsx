@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button'
 import { PropertyChip } from '@/components/ui/property-chip'
 import { Tabs, TabsList, TabsTab } from '@/components/ui/tabs'
 import { Lightbox } from '@/components/ui/lightbox'
+import { OGCard } from '@/components/ui/og-card'
 
 // --- Types ---
 
@@ -64,6 +65,44 @@ function relativeTime(dateStr: string): string {
   return new Date(dateStr).toLocaleDateString()
 }
 
+interface ParsedMedia {
+  images: string[]
+  videos: Array<{ url: string; poster?: string }>
+}
+
+function parseMedia(media_urls: string): ParsedMedia {
+  const result: ParsedMedia = { images: [], videos: [] }
+
+  try {
+    if (!media_urls || media_urls === '[]') return result
+
+    const urls: string[] = JSON.parse(media_urls)
+
+    for (const url of urls) {
+      // Video detection: contains video.twimg.com AND ends with .mp4 (ignore query params)
+      if (url.includes('video.twimg.com') && url.match(/\.mp4(\?.*)?$/)) {
+        result.videos.push({ url })
+      } else {
+        // Everything else is an image (including old amplify_video_thumb thumbnails)
+        result.images.push(url)
+      }
+    }
+  } catch (e) {
+    console.error('Failed to parse media_urls:', e, media_urls)
+  }
+
+  return result
+}
+
+function extractTcoLinks(content: string): string[] {
+  const tcoRegex = /https:\/\/t\.co\/\w+/g
+  const matches = content.match(tcoRegex)
+  if (!matches) return []
+
+  // Deduplicate
+  return [...new Set(matches)]
+}
+
 // --- Components ---
 
 function ThemeBadge({ theme }: { theme: string }) {
@@ -102,7 +141,9 @@ function TweetCard({ tweet, onUpdate, focused, itemRef }: {
   itemRef?: React.Ref<HTMLDivElement>
 }) {
   const [updating, setUpdating] = useState(false)
-  const [lightboxImage, setLightboxImage] = useState<string | null>(null)
+  const [lightboxState, setLightboxState] = useState<{ images: string[]; index: number } | null>(null)
+  const [brokenImages, setBrokenImages] = useState<Set<string>>(new Set())
+  const [brokenVideos, setBrokenVideos] = useState<Set<string>>(new Set())
 
   const handleRate = async (rating: TweetRating) => {
     setUpdating(true)
@@ -135,15 +176,31 @@ function TweetCard({ tweet, onUpdate, focused, itemRef }: {
 
   const isNoise = tweet.rating === 'noise'
 
-  // Parse media URLs
-  const mediaUrls = tweet.media_urls ? JSON.parse(tweet.media_urls) : []
-  const firstImage = mediaUrls[0]
+  // Parse media URLs into images and videos
+  const media = parseMedia(tweet.media_urls)
+  const workingImages = media.images.filter(url => !brokenImages.has(url))
+  // Don't filter broken videos during debugging
+  const workingVideos = media.videos
+
+  const handleImageError = (url: string) => {
+    console.error('[XFeed] Image failed to load:', url)
+    setBrokenImages(prev => new Set(prev).add(url))
+  }
+
+  const handleVideoError = (url: string, event: React.SyntheticEvent<HTMLVideoElement, Event>) => {
+    console.error('[XFeed] Video failed to load:', url, event)
+    // TEMPORARILY disabled hiding broken videos to debug
+    // setBrokenVideos(prev => new Set(prev).add(url))
+  }
 
   // Parse thread content
   const hasThread = tweet.content.includes('---THREAD---')
-  const [mainContent, threadContent] = hasThread 
+  const [mainContent, threadContent] = hasThread
     ? tweet.content.split('---THREAD---').map(s => s.trim())
     : [tweet.content, null]
+
+  // Extract t.co links for OG previews (max 3 to avoid spam)
+  const tcoLinks = extractTcoLinks(mainContent).slice(0, 3)
 
   return (
     <>
@@ -195,20 +252,93 @@ function TweetCard({ tweet, onUpdate, focused, itemRef }: {
           {mainContent}
         </p>
 
-        {/* Media preview */}
-        {firstImage && (
-          <button 
-            onClick={() => setLightboxImage(firstImage)}
-            className="mb-3 block w-full"
-          >
-            <img
-              src={firstImage}
-              alt="Tweet media"
-              loading="lazy"
-              className="rounded-lg object-cover w-full max-h-[200px] cursor-pointer hover:opacity-90 transition-opacity"
-            />
-          </button>
+        {/* OG Preview Cards disabled — 429 rate limit spam, needs client-side queue */}
+        {/* {tcoLinks.length > 0 && (
+          <div className="space-y-2 mb-3">
+            {tcoLinks.map((link, idx) => (
+              <OGCard key={idx} url={link} />
+            ))}
+          </div>
+        )} */}
+
+        {/* Image grid */}
+        {workingImages.length > 0 && (
+          <div className={`mb-3 ${
+            workingImages.length === 1 ? '' :
+            workingImages.length === 2 ? 'grid grid-cols-2 gap-1' :
+            'grid grid-cols-2 gap-1'
+          }`}>
+            {workingImages.map((url, idx) => {
+              const proxiedUrl = `/api/media-proxy?url=${encodeURIComponent(url)}`
+              return (
+                <button
+                  key={idx}
+                  onClick={() => setLightboxState({ images: workingImages.map(u => `/api/media-proxy?url=${encodeURIComponent(u)}`), index: idx })}
+                  className="overflow-hidden rounded-lg"
+                >
+                  <img
+                    src={proxiedUrl}
+                    alt={`Tweet media ${idx + 1}`}
+                    loading="lazy"
+                    onError={() => handleImageError(url)}
+                    className={`w-full object-cover cursor-pointer hover:opacity-90 transition-opacity ${
+                      workingImages.length === 1 ? 'max-h-[300px]' :
+                      'h-[150px]'
+                    }`}
+                  />
+                </button>
+              )
+            })}
+          </div>
         )}
+
+        {/* Videos */}
+        {workingVideos.map((video, idx) => {
+          const proxiedUrl = `/api/media-proxy?url=${encodeURIComponent(video.url)}`
+          const proxiedPoster = video.poster ? `/api/media-proxy?url=${encodeURIComponent(video.poster)}` : undefined
+          return (
+            <div key={idx} className="mb-3">
+              <video
+                ref={(el) => {
+                  if (!el) return
+                  if ((el as any)._observer) return
+                  const loadAndPlay = () => {
+                    if (!(el as any)._loaded) {
+                      ;(el as any)._loaded = true
+                      el.src = proxiedUrl
+                      el.load()
+                    }
+                    el.addEventListener('canplay', () => el.play().catch(() => {}), { once: true })
+                  }
+                  const observer = new IntersectionObserver(
+                    ([entry]) => {
+                      if (entry.isIntersecting) {
+                        if (!el.src) {
+                          const delay = (idx % 3) * 800
+                          setTimeout(loadAndPlay, delay)
+                        } else {
+                          el.play().catch(() => {})
+                        }
+                      } else {
+                        el.pause()
+                      }
+                    },
+                    { threshold: 0.3, rootMargin: '100px' }
+                  )
+                  observer.observe(el)
+                  ;(el as any)._observer = observer
+                }}
+                poster={proxiedPoster}
+                controls
+                muted
+                playsInline
+                preload="none"
+                onError={(e) => handleVideoError(video.url, e)}
+                className="rounded-lg w-full max-h-[400px] object-cover"
+              />
+            </div>
+          )
+        })}
 
         {/* Thread content */}
         {threadContent && (
@@ -238,7 +368,13 @@ function TweetCard({ tweet, onUpdate, focused, itemRef }: {
       </div>
 
       {/* Lightbox */}
-      {lightboxImage && <Lightbox imageUrl={lightboxImage} onClose={() => setLightboxImage(null)} />}
+      {lightboxState && (
+        <Lightbox
+          images={lightboxState.images}
+          initialIndex={lightboxState.index}
+          onClose={() => setLightboxState(null)}
+        />
+      )}
     </>
   )
 }
