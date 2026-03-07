@@ -461,7 +461,7 @@ export function TaskBoardPanel() {
     { value: '', label: 'Unassigned' },
     { value: 'cri', label: 'Cri', icon: <AgentAvatar agent="cri" size="sm" /> },
     ...agents.filter(a => a.name.toLowerCase() !== 'cri').map(a => ({
-      value: a.name, label: a.name, icon: <AgentAvatar agent={a.name} size="sm" /> as React.ReactNode,
+      value: a.name.toLowerCase(), label: a.name, icon: <AgentAvatar agent={a.name} size="sm" /> as React.ReactNode,
     })),
   ]
 
@@ -1058,7 +1058,7 @@ function TaskDetailModal({
     { value: '', label: 'Unassigned', icon: '—' },
     { value: 'cri', label: 'Cri', icon: <AgentAvatar agent="cri" size="sm" /> as React.ReactNode, group: 'Humans' },
     ...agents.filter(a => a.name.toLowerCase() !== 'cri').map(a => ({
-      value: a.name, label: a.name, icon: <AgentAvatar agent={a.name} size="sm" /> as React.ReactNode, group: 'Agents',
+      value: a.name.toLowerCase(), label: a.name, icon: <AgentAvatar agent={a.name} size="sm" /> as React.ReactNode, group: 'Agents',
     })),
   ]
     const projectOptions: PropertyOption[] = [
@@ -1502,7 +1502,7 @@ function CreateTaskModal({
     { value: '', label: 'Unassigned', icon: '—' },
     { value: 'cri', label: 'Cri', icon: <AgentAvatar agent="cri" size="sm" /> as React.ReactNode, group: 'Humans' },
     ...agents.filter(a => a.name.toLowerCase() !== 'cri').map(a => ({
-      value: a.name, label: a.name, icon: <AgentAvatar agent={a.name} size="sm" /> as React.ReactNode, group: 'Agents',
+      value: a.name.toLowerCase(), label: a.name, icon: <AgentAvatar agent={a.name} size="sm" /> as React.ReactNode, group: 'Agents',
     })),
   ]
 
