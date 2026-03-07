@@ -15,9 +15,9 @@ const variantStyles = {
 } as const
 
 const sizeStyles = {
-  sm: 'text-[10px] px-1.5 py-0 h-4 gap-0.5 [&_svg]:size-2.5',
-  default: 'text-[11px] px-2 py-0.5 h-5 gap-1 [&_svg]:size-3',
-  lg: 'text-xs px-2.5 py-1 h-6 gap-1.5 [&_svg]:size-3.5',
+  sm: 'text-[11px] px-2 py-0.5 gap-1 [&_svg]:size-3',
+  default: 'text-xs px-2.5 py-0.5 gap-1 [&_svg]:size-3',
+  lg: 'text-sm px-3 py-1 gap-1.5 [&_svg]:size-3.5',
 } as const
 
 type BadgeVariant = keyof typeof variantStyles
