@@ -4,14 +4,14 @@ import { type ComponentPropsWithoutRef, type ReactElement } from 'react'
 import { cn } from '@/lib/utils'
 
 const variantStyles = {
-  default: 'bg-primary/15 text-primary border-primary/20',
-  secondary: 'bg-zinc-800/50 text-muted-foreground border-zinc-700/50',
-  outline: 'bg-transparent text-foreground border-zinc-700/60',
-  destructive: 'bg-red-500/15 text-red-400 border-red-500/20',
-  error: 'bg-red-500/15 text-red-400 border-red-500/20',
-  info: 'bg-blue-500/15 text-blue-400 border-blue-500/20',
-  success: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/20',
-  warning: 'bg-amber-500/15 text-amber-400 border-amber-500/20',
+  default: 'border-transparent bg-primary text-primary-foreground',
+  secondary: 'border-transparent bg-secondary text-secondary-foreground',
+  outline: 'text-foreground',
+  destructive: 'border-transparent bg-red-500/15 text-red-400',
+  error: 'border-transparent bg-red-500/15 text-red-400',
+  info: 'border-transparent bg-blue-500/15 text-blue-400',
+  success: 'border-transparent bg-emerald-500/15 text-emerald-400',
+  warning: 'border-transparent bg-amber-500/15 text-amber-400',
 } as const
 
 const sizeStyles = {
