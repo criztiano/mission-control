@@ -697,16 +697,14 @@ function AgentDetailModalPhase3({
               <div className="flex items-center gap-3">
                 <div className={`w-4 h-4 rounded-full ${statusColors[agent.status]}`}></div>
                 <span className="text-foreground">{agent.status}</span>
-                {agent.session_key && (
-                  <button
-                    onClick={handleRestartSession}
-                    disabled={restartingSession}
-                    className="p-1.5 rounded-md bg-surface-1 text-muted-foreground hover:text-foreground hover:bg-surface-2 disabled:opacity-50 disabled:cursor-not-allowed transition-smooth"
-                    title="Restart Session"
-                  >
-                    <Refresh className={`w-4 h-4 ${restartingSession ? 'animate-spin' : ''}`} />
-                  </button>
-                )}
+                <button
+                  onClick={agent.session_key ? handleRestartSession : () => onWakeAgent(agent.name, '')}
+                  disabled={restartingSession}
+                  className="p-1.5 rounded-md bg-surface-1 text-muted-foreground hover:text-foreground hover:bg-surface-2 disabled:opacity-50 disabled:cursor-not-allowed transition-smooth"
+                  title={agent.session_key ? 'Restart Session' : 'Wake Agent'}
+                >
+                  <Refresh className={`w-4 h-4 ${restartingSession ? 'animate-spin' : ''}`} />
+                </button>
                 <button onClick={onClose} className="text-muted-foreground hover:text-foreground text-2xl transition-smooth">×</button>
               </div>
             </div>
