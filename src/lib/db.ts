@@ -6,6 +6,7 @@ import { runCCMigrations } from './cc-db';
 import { eventBus } from './event-bus';
 import { hashPassword } from './password';
 import { logger } from './logger';
+import { seedAgentComms } from './seed-comms';
 
 // Database file location
 const DB_PATH = config.dbPath;
@@ -44,6 +45,9 @@ function initializeSchema() {
   try {
     runMigrations(db);
     seedAdminUserFromEnv(db);
+
+    // Seed demo agent communications if none exist
+    seedAgentComms();
 
     // Migrate control-center.db schema (add creator, update statuses)
     try {

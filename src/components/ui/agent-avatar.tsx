@@ -15,6 +15,7 @@ const DISPLAY_NAMES: Record<string, string> = {
   main: 'Cseno',
   cody: 'Cody',
   bookworm: 'Bookworm',
+  ralph: 'Ralph',
   cri: 'Cri',
 }
 
