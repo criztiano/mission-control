@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react'
 import {
-  Circle, HalfMoon, CheckCircle, Prohibition, WarningTriangle,
+  Circle, HalfMoon, CheckCircle, Prohibition, WarningTriangle, Clock,
   NavArrowUp, Minus, NavArrowDown, Eye, Attachment, Xmark,
 } from 'iconoir-react'
 import { useMissionControl } from '@/store'
@@ -13,6 +13,15 @@ import { AgentAvatar } from '@/components/ui/agent-avatar'
 import { BlockEditor } from '@/components/ui/block-editor'
 import { Tabs, TabsList, TabsTab } from '@/components/ui/tabs'
 import { Lightbox } from '@/components/ui/lightbox'
+
+function timeAgo(ts: number): string {
+  const diff = Math.floor(Date.now() / 1000) - ts
+  if (diff < 60) return 'now'
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`
+  if (diff < 604800) return `${Math.floor(diff / 86400)}d ago`
+  return `${Math.floor(diff / 604800)}w ago`
+}
 
 interface Task {
   id: number
@@ -1344,6 +1353,10 @@ function TaskDetailModal({
               placeholder={projectLoading ? <span className="flex items-center gap-1 text-muted-foreground/40">Loading...</span> : <span className="flex items-center gap-1 text-muted-foreground/40">No project</span>}
               icon={projectLoading ? <span className="animate-spin">⏳</span> : undefined}
             />
+            <span className="flex items-center gap-1 text-[11px] text-muted-foreground/50 ml-auto" title={new Date(task.created_at * 1000).toLocaleString()}>
+              <Clock width={12} height={12} />
+              {timeAgo(task.created_at)}
+            </span>
           </div>
         </div>
 
