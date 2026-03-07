@@ -63,7 +63,7 @@ export async function GET(request: NextRequest) {
         SUM(CASE WHEN status = 'in_progress' THEN 1 ELSE 0 END) as in_progress,
         SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) as completed
       FROM issues
-      WHERE assignee = ? AND archived = 0
+      WHERE LOWER(assignee) = LOWER(?) AND archived = 0
     `);
 
     const agentsWithStats = agentsWithParsedData.map(agent => {

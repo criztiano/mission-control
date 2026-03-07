@@ -292,7 +292,7 @@ export function useWebSocket() {
         // Tick event contains snapshot data
         const snapshot = frame.payload?.snapshot
         if (snapshot?.sessions) {
-          setSessions(snapshot.sessions.map((session: any, index: number) => ({
+          const sessionList = snapshot.sessions.map((session: any, index: number) => ({
             id: session.key || `session-${index}`,
             key: session.key || '',
             kind: session.kind || 'unknown',
@@ -305,7 +305,58 @@ export function useWebSocket() {
             lastActivity: session.updatedAt,
             messageCount: session.messageCount,
             cost: session.cost
-          })))
+          }))
+          setSessions(sessionList)
+
+          // Update agent status based on active sessions
+          // Session keys are in format "agent:name:session_id"
+          const activeAgentNames = new Set<string>()
+          const agentLastSeen = new Map<string, number>()
+
+          for (const session of snapshot.sessions) {
+            if (session.key && isActive(session.updatedAt)) {
+              // Parse session key: "agent:name:session_id"
+              const parts = session.key.split(':')
+              if (parts.length >= 2 && parts[0] === 'agent') {
+                const agentName = parts[1]
+                activeAgentNames.add(agentName.toLowerCase())
+
+                // Track most recent activity for this agent
+                const currentLastSeen = agentLastSeen.get(agentName.toLowerCase()) || 0
+                if (session.updatedAt > currentLastSeen) {
+                  agentLastSeen.set(agentName.toLowerCase(), session.updatedAt)
+                }
+              }
+            }
+          }
+
+          // Update all agents based on session state
+          for (const agent of agents) {
+            const agentNameLower = agent.name.toLowerCase()
+            const isActive = activeAgentNames.has(agentNameLower)
+            const lastSeenTimestamp = agentLastSeen.get(agentNameLower)
+
+            // Only update if status/last_seen changed
+            const newStatus = isActive ? 'idle' : 'offline'
+            if (agent.status !== newStatus || (lastSeenTimestamp && agent.last_seen !== Math.floor(lastSeenTimestamp / 1000))) {
+              updateAgent(agent.id, {
+                status: newStatus,
+                last_seen: lastSeenTimestamp ? Math.floor(lastSeenTimestamp / 1000) : agent.last_seen,
+                last_activity: isActive ? 'Active session' : agent.last_activity,
+              })
+
+              // Also persist to database via API
+              fetch('/api/agents', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  name: agent.name,
+                  status: newStatus,
+                  last_activity: isActive ? 'Active session' : agent.last_activity,
+                })
+              }).catch(err => console.error('Failed to persist agent status:', err))
+            }
+          }
         }
       } else if (frame.event === 'log') {
         const logData = frame.payload
