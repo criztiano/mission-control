@@ -46,7 +46,7 @@ export function PropertyChip({
   const containerRef = useRef<HTMLDivElement>(null)
   const searchRef = useRef<HTMLInputElement>(null)
 
-  const displayOption = options.find(o => o.value === value)
+  const displayOption = options.find(o => o.value === value || o.value.toLowerCase() === value.toLowerCase())
   const isEmpty = !value
   const displayLabel = displayOption?.label || value || 'Not assigned'
   const displayIcon = isEmpty && placeholder ? placeholder : (displayOption?.icon || icon)
@@ -142,7 +142,7 @@ export function PropertyChip({
                       setSearch('')
                     }}
                     className={`w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left transition-colors hover:bg-surface-2 ${
-                      opt.value === value ? 'bg-surface-1 text-foreground' : 'text-foreground/80'
+                      opt.value.toLowerCase() === value.toLowerCase() ? 'bg-surface-1 text-foreground' : 'text-foreground/80'
                     }`}
                   >
                     {opt.icon && <span className="flex items-center justify-center text-[11px] w-4 [&>svg]:w-3.5 [&>svg]:h-3.5">{opt.icon}</span>}
@@ -150,7 +150,7 @@ export function PropertyChip({
                     {opt.hotkey && (
                       <span className="text-[10px] text-muted-foreground/40 font-mono">{opt.hotkey}</span>
                     )}
-                    {opt.value === value && (
+                    {opt.value.toLowerCase() === value.toLowerCase() && (
                       <span className="text-primary text-[11px]">✓</span>
                     )}
                   </button>
