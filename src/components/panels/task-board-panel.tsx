@@ -178,9 +178,6 @@ export function TaskBoardPanel() {
     localStorage.setItem('mc-task-view', viewMode)
   }, [viewMode])
 
-  // Flat task list for list view
-  const allTasks = tasks
-
   // Keyboard navigation
   useEffect(() => {
     const modalOpen = selectedTask !== null || showCreateModal
@@ -252,15 +249,16 @@ export function TaskBoardPanel() {
 
         if (e.key === 'Escape') { setFocusedListIndex(null); return }
 
+        const tasks = allTasksRef.current
         if (e.key === 'Enter' && focusedListIndex !== null) {
-          if (allTasks[focusedListIndex]) setSelectedTask(allTasks[focusedListIndex])
+          if (tasks[focusedListIndex]) setSelectedTask(tasks[focusedListIndex])
           return
         }
 
         if (focusedListIndex === null) { setFocusedListIndex(0); return }
 
         if (e.key === 'ArrowDown') {
-          setFocusedListIndex(Math.min(focusedListIndex + 1, allTasks.length - 1))
+          setFocusedListIndex(Math.min(focusedListIndex + 1, tasks.length - 1))
         } else if (e.key === 'ArrowUp') {
           setFocusedListIndex(Math.max(focusedListIndex - 1, 0))
         }
@@ -268,7 +266,7 @@ export function TaskBoardPanel() {
     }
     window.addEventListener('keydown', handleKey)
     return () => window.removeEventListener('keydown', handleKey)
-  }, [viewMode, focusedIndex, focusedListIndex, selectedTask, showCreateModal, allTasks])
+  }, [viewMode, focusedIndex, focusedListIndex, selectedTask, showCreateModal])
 
   // Scroll focused card into view (kanban)
   useEffect(() => {
@@ -288,6 +286,8 @@ export function TaskBoardPanel() {
 
   // Keep a ref to tasksByStatus for keyboard handler (avoids stale closure)
   const tasksByStatusRef = useRef<Record<string, Task[]>>({})
+  // Keep a ref to allTasks for keyboard handler in list view
+  const allTasksRef = useRef<Task[]>([])
 
   // Filter tasks by selected project
   const filteredTasks = tasks.filter(task => {
@@ -314,6 +314,20 @@ export function TaskBoardPanel() {
     return acc
   }, {} as Record<string, Task[]>)
   tasksByStatusRef.current = tasksByStatus
+
+  // Flat task list for list view (grouped and sorted)
+  const listSections = [
+    { key: 'blocked', tasks: tasksByStatus['blocked'] || [] },
+    { key: 'review', tasks: tasksByStatus['review'] || [] },
+    { key: 'quality_review', tasks: tasksByStatus['quality_review'] || [] },
+    { key: 'in_progress', tasks: tasksByStatus['in_progress'] || [] },
+    { key: 'assigned', tasks: tasksByStatus['assigned'] || [] },
+    { key: 'inbox', tasks: tasksByStatus['inbox'] || [] },
+    { key: 'done', tasks: tasksByStatus['done'] || [] },
+  ].filter(s => s.tasks.length > 0)
+
+  const allTasks = listSections.flatMap(section => section.tasks)
+  allTasksRef.current = allTasks
 
   // Drag and drop handlers
   const handleDragStart = (e: React.DragEvent, task: Task) => {
@@ -704,7 +718,7 @@ export function TaskBoardPanel() {
 
       {/* List View */}
       {viewMode === 'list' && (() => {
-        const listSections = [
+        const listSectionsWithLabels = [
           { key: 'blocked', label: 'Blocked', tasks: tasksByStatus['blocked'] || [], rowClass: 'bg-rose-500/5 border-l-2 border-l-rose-500/40' },
           { key: 'review', label: 'Review', tasks: tasksByStatus['review'] || [], rowClass: 'bg-lime-500/5 border-l-2 border-l-lime-500/40' },
           { key: 'quality_review', label: 'Quality Review', tasks: tasksByStatus['quality_review'] || [], rowClass: 'bg-lime-500/5 border-l-2 border-l-lime-500/40' },
@@ -717,7 +731,7 @@ export function TaskBoardPanel() {
         // Build flat index → task mapping for keyboard nav
         let flatIdx = 0
         const flatMap: { task: Task; idx: number }[] = []
-        listSections.forEach(section => {
+        listSectionsWithLabels.forEach(section => {
           section.tasks.forEach(task => {
             flatMap.push({ task, idx: flatIdx++ })
           })
@@ -735,7 +749,7 @@ export function TaskBoardPanel() {
           {flatMap.length === 0 ? (
             <div className="text-center text-muted-foreground/50 py-8 text-sm">{getEmptyMessage()}</div>
           ) : (
-            listSections.map(section => {
+            listSectionsWithLabels.map(section => {
               return (
                 <div key={section.key}>
                   <div className="flex items-center gap-2 mb-2 px-1">
