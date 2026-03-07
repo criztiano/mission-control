@@ -1,51 +1,46 @@
 'use client'
 
 import { type ComponentPropsWithoutRef, type ReactElement } from 'react'
+import { cva, type VariantProps } from 'class-variance-authority'
 import { cn } from '@/lib/utils'
 
-const variantStyles = {
-  default: 'border-transparent bg-primary text-primary-foreground',
-  secondary: 'border-transparent bg-secondary text-secondary-foreground',
-  outline: 'text-foreground',
-  destructive: 'border-transparent bg-red-500/15 text-red-400',
-  error: 'border-transparent bg-red-500/15 text-red-400',
-  info: 'border-transparent bg-blue-500/15 text-blue-400',
-  success: 'border-transparent bg-emerald-500/15 text-emerald-400',
-  warning: 'border-transparent bg-amber-500/15 text-amber-400',
-} as const
+const badgeVariants = cva(
+  'relative inline-flex shrink-0 items-center justify-center gap-1 whitespace-nowrap rounded-sm border border-transparent font-medium outline-none transition-shadow [&_svg]:pointer-events-none [&_svg]:shrink-0',
+  {
+    defaultVariants: {
+      size: 'default',
+      variant: 'default',
+    },
+    variants: {
+      size: {
+        sm: 'h-4 min-w-[16px] px-[3px] text-[0.625rem] [&_svg]:size-2.5 rounded-[0.25rem]',
+        default: 'h-[18px] min-w-[18px] px-[3px] text-xs [&_svg]:size-3',
+        lg: 'h-[22px] min-w-[22px] px-[5px] text-sm [&_svg]:size-3.5',
+      },
+      variant: {
+        default: 'bg-primary text-primary-foreground',
+        secondary: 'bg-secondary text-secondary-foreground',
+        outline: 'border-border bg-background text-foreground',
+        destructive: 'bg-red-500/10 text-red-400',
+        error: 'bg-red-500/10 text-red-400',
+        info: 'bg-blue-500/10 text-blue-400',
+        success: 'bg-emerald-500/10 text-emerald-400',
+        warning: 'bg-amber-500/10 text-amber-400',
+      },
+    },
+  }
+)
 
-const sizeStyles = {
-  sm: 'text-[10px] px-1.5 py-px gap-1 [&_svg]:size-2.5',
-  default: 'text-xs px-2.5 py-0.5 gap-1 [&_svg]:size-3',
-  lg: 'text-sm px-3 py-1 gap-1.5 [&_svg]:size-3.5',
-} as const
-
-type BadgeVariant = keyof typeof variantStyles
-type BadgeSize = keyof typeof sizeStyles
-
-interface BadgeProps extends ComponentPropsWithoutRef<'span'> {
-  variant?: BadgeVariant
-  size?: BadgeSize
+interface BadgeProps
+  extends ComponentPropsWithoutRef<'span'>,
+    VariantProps<typeof badgeVariants> {
   render?: ReactElement
 }
 
-export function Badge({
-  variant = 'secondary',
-  size = 'default',
-  className,
-  render,
-  children,
-  ...props
-}: BadgeProps) {
-  const classes = cn(
-    'inline-flex items-center rounded-md border font-semibold whitespace-nowrap transition-colors',
-    variantStyles[variant],
-    sizeStyles[size],
-    className
-  )
+function Badge({ className, variant, size, render, children, ...props }: BadgeProps) {
+  const classes = cn(badgeVariants({ className, size, variant }))
 
   if (render) {
-    // Clone the render element with badge styling
     const { props: renderProps, ...rest } = render as any
     return {
       ...rest,
@@ -59,8 +54,10 @@ export function Badge({
   }
 
   return (
-    <span className={classes} {...props}>
+    <span className={classes} data-slot="badge" {...props}>
       {children}
     </span>
   )
 }
+
+export { Badge, badgeVariants }
