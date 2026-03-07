@@ -1354,7 +1354,7 @@ function TaskDetailModal({
               placeholder={projectLoading ? <span className="flex items-center gap-1 text-muted-foreground/40">Loading...</span> : <span className="flex items-center gap-1 text-muted-foreground/40">No project</span>}
               icon={projectLoading ? <span className="animate-spin">⏳</span> : undefined}
             />
-            <Badge variant="secondary" size="sm" className="ml-auto" title={new Date(task.created_at * 1000).toLocaleString()}>
+            <Badge variant="outline" size="sm" className="ml-auto" title={new Date(task.created_at * 1000).toLocaleString()}>
               <Clock width={10} height={10} />
               {timeAgo(task.created_at)}
             </Badge>

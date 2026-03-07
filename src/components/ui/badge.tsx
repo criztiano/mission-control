@@ -5,8 +5,8 @@ import { cn } from '@/lib/utils'
 
 const variantStyles = {
   default: 'bg-primary/15 text-primary border-primary/20',
-  secondary: 'bg-surface-1 text-muted-foreground border-border',
-  outline: 'bg-transparent text-foreground border-border',
+  secondary: 'bg-zinc-800/50 text-muted-foreground border-zinc-700/50',
+  outline: 'bg-transparent text-foreground border-zinc-700/60',
   destructive: 'bg-red-500/15 text-red-400 border-red-500/20',
   error: 'bg-red-500/15 text-red-400 border-red-500/20',
   info: 'bg-blue-500/15 text-blue-400 border-blue-500/20',
