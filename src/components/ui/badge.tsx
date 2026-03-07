@@ -15,7 +15,7 @@ const variantStyles = {
 } as const
 
 const sizeStyles = {
-  sm: 'text-[11px] px-2 py-0.5 gap-1 [&_svg]:size-3',
+  sm: 'text-[10px] px-1.5 py-px gap-1 [&_svg]:size-2.5',
   default: 'text-xs px-2.5 py-0.5 gap-1 [&_svg]:size-3',
   lg: 'text-sm px-3 py-1 gap-1.5 [&_svg]:size-3.5',
 } as const
@@ -38,7 +38,7 @@ export function Badge({
   ...props
 }: BadgeProps) {
   const classes = cn(
-    'inline-flex items-center rounded-md border font-medium whitespace-nowrap transition-colors',
+    'inline-flex items-center rounded-md border font-semibold whitespace-nowrap transition-colors',
     variantStyles[variant],
     sizeStyles[size],
     className
