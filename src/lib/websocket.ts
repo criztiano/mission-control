@@ -254,6 +254,14 @@ export function useWebSocket() {
         lastConnected: new Date(),
         reconnectAttempts: 0
       })
+      // Add log entry for successful connection
+      addLog({
+        id: `connect-${Date.now()}`,
+        timestamp: Date.now(),
+        level: 'info',
+        source: 'websocket',
+        message: 'Connected to gateway successfully',
+      })
       // Start heartbeat after successful handshake
       startHeartbeat()
       return
@@ -327,6 +335,14 @@ export function useWebSocket() {
             read_at: msg.read_at,
             created_at: msg.created_at || Math.floor(Date.now() / 1000),
           })
+          // Add log entry for chat message
+          addLog({
+            id: `chat-${msg.id}-${Date.now()}`,
+            timestamp: Date.now(),
+            level: 'info',
+            source: msg.from_agent || 'unknown',
+            message: `Chat: ${msg.content.substring(0, 100)}${msg.content.length > 100 ? '...' : ''}`,
+          })
         }
       } else if (frame.event === 'notification') {
         // Real-time notification from gateway
@@ -342,6 +358,14 @@ export function useWebSocket() {
             source_id: notif.source_id,
             created_at: notif.created_at || Math.floor(Date.now() / 1000),
           })
+          // Add log entry for notification
+          addLog({
+            id: `notif-${notif.id}-${Date.now()}`,
+            timestamp: Date.now(),
+            level: notif.type === 'error' ? 'error' : notif.type === 'warning' ? 'warn' : 'info',
+            source: 'notifications',
+            message: `${notif.title}: ${notif.message}`,
+          })
         }
       } else if (frame.event === 'agent.status') {
         // Real-time agent status update
@@ -352,10 +376,21 @@ export function useWebSocket() {
             last_seen: data.last_seen,
             last_activity: data.last_activity,
           })
+          // Add log entry for agent status change
+          const agent = agents.find(a => a.id === data.id)
+          if (agent) {
+            addLog({
+              id: `agent-status-${data.id}-${Date.now()}`,
+              timestamp: Date.now(),
+              level: 'info',
+              source: agent.name || `Agent ${data.id}`,
+              message: `Status changed to ${data.status}`,
+            })
+          }
         }
       }
     }
-  }, [sendConnectHandshake, setConnection, setSessions, addLog, startHeartbeat, handlePong, addChatMessage, addNotification, updateAgent])
+  }, [sendConnectHandshake, setConnection, setSessions, addLog, startHeartbeat, handlePong, addChatMessage, addNotification, updateAgent, agents])
 
   const connect = useCallback((url: string, token?: string) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -410,10 +445,27 @@ export function useWebSocket() {
         handshakeCompleteRef.current = false
         stopHeartbeat()
 
+        // Add log entry for disconnection
+        addLog({
+          id: `disconnect-${Date.now()}`,
+          timestamp: Date.now(),
+          level: 'warn',
+          source: 'websocket',
+          message: event.reason || `Disconnected from gateway (code: ${event.code})`,
+        })
+
         // Auto-reconnect logic with exponential backoff
         if (connection.reconnectAttempts < maxReconnectAttempts) {
           const timeout = Math.min(Math.pow(2, connection.reconnectAttempts) * 1000, 30000)
           console.log(`Reconnecting in ${timeout}ms... (attempt ${connection.reconnectAttempts + 1}/${maxReconnectAttempts})`)
+
+          addLog({
+            id: `reconnect-${Date.now()}`,
+            timestamp: Date.now(),
+            level: 'info',
+            source: 'websocket',
+            message: `Attempting to reconnect... (${connection.reconnectAttempts + 1}/${maxReconnectAttempts})`,
+          })
 
           reconnectTimeoutRef.current = setTimeout(() => {
             setConnection({ reconnectAttempts: connection.reconnectAttempts + 1 })

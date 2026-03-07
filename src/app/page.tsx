@@ -63,8 +63,9 @@ export default function Home() {
     const gatewayProto =
       process.env.NEXT_PUBLIC_GATEWAY_PROTOCOL ||
       (window.location.protocol === 'https:' ? 'wss' : 'ws')
-    const wsProto = window.location.protocol === 'https:' ? 'wss' : 'ws'
-    const wsUrl = explicitWsUrl || `${wsProto}://${window.location.host}/ws`
+
+    // Build WebSocket URL: prefer explicit URL, fallback to gateway host:port
+    const wsUrl = explicitWsUrl || `${gatewayProto}://${gatewayHost}:${gatewayPort}`
     connect(wsUrl, wsToken)
   }, [connect, setCurrentUser])
 
