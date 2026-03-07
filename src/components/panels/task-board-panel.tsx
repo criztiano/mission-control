@@ -1138,14 +1138,18 @@ function TaskDetailModal({
           method: 'POST',
           body: formData
         })
-        if (!res.ok) throw new Error('Upload failed')
+        if (!res.ok) {
+          const errorData = await res.json().catch(() => ({ error: 'Unknown error' }))
+          throw new Error(errorData.error || `Upload failed: ${res.status}`)
+        }
         return await res.json()
       })
 
       const results = await Promise.all(uploadPromises)
       setAttachments(prev => [...prev, ...results])
     } catch (error) {
-      setCommentError('Failed to upload images')
+      const errorMessage = error instanceof Error ? error.message : 'Failed to upload images'
+      setCommentError(errorMessage)
     } finally {
       setUploading(false)
     }
