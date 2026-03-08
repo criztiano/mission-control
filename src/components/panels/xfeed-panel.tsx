@@ -150,6 +150,56 @@ function RatingButton({ rating, current, onRate }: {
   )
 }
 
+function LazyVideo({ src, poster, onError }: {
+  src: string
+  poster?: string
+  onError: (url: string, e: React.SyntheticEvent<HTMLVideoElement, Event>) => void
+}) {
+  const videoRef = useRef<HTMLVideoElement>(null)
+
+  useEffect(() => {
+    const el = videoRef.current
+    if (!el) return
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) {
+          if (!el.src) {
+            el.src = src
+            el.load()
+          }
+          el.addEventListener('canplay', () => el.play().catch(() => {}), { once: true })
+        } else {
+          el.pause()
+        }
+      },
+      { threshold: 0.3, rootMargin: '100px' }
+    )
+
+    observer.observe(el)
+
+    return () => {
+      observer.disconnect()
+      el.pause()
+      el.removeAttribute('src')
+      el.load() // releases memory
+    }
+  }, [src])
+
+  return (
+    <video
+      ref={videoRef}
+      poster={poster}
+      controls
+      muted
+      playsInline
+      preload="none"
+      onError={(e) => onError(src, e)}
+      className="rounded-lg w-full max-h-[400px] object-cover"
+    />
+  )
+}
+
 function TweetCard({ tweet, onUpdate, focused }: {
   tweet: Tweet
   onUpdate: () => void
@@ -312,44 +362,7 @@ function TweetCard({ tweet, onUpdate, focused }: {
           const proxiedPoster = video.poster ? `/api/media-proxy?url=${encodeURIComponent(video.poster)}` : undefined
           return (
             <div key={idx} className="mb-3">
-              <video
-                ref={(el) => {
-                  if (!el) return
-                  if ((el as any)._observer) return
-                  const loadAndPlay = () => {
-                    if (!(el as any)._loaded) {
-                      ;(el as any)._loaded = true
-                      el.src = proxiedUrl
-                      el.load()
-                    }
-                    el.addEventListener('canplay', () => el.play().catch(() => {}), { once: true })
-                  }
-                  const observer = new IntersectionObserver(
-                    ([entry]) => {
-                      if (entry.isIntersecting) {
-                        if (!el.src) {
-                          const delay = (idx % 3) * 800
-                          setTimeout(loadAndPlay, delay)
-                        } else {
-                          el.play().catch(() => {})
-                        }
-                      } else {
-                        el.pause()
-                      }
-                    },
-                    { threshold: 0.3, rootMargin: '100px' }
-                  )
-                  observer.observe(el)
-                  ;(el as any)._observer = observer
-                }}
-                poster={proxiedPoster}
-                controls
-                muted
-                playsInline
-                preload="none"
-                onError={(e) => handleVideoError(video.url, e)}
-                className="rounded-lg w-full max-h-[400px] object-cover"
-              />
+              <LazyVideo src={proxiedUrl} poster={proxiedPoster} onError={handleVideoError} />
             </div>
           )
         })}
