@@ -4,8 +4,8 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import {
-  Circle, HalfMoon, CheckCircle, Prohibition, WarningTriangle, Clock,
-  NavArrowUp, Minus, NavArrowDown, Eye, Attachment, Xmark,
+  Circle, HalfMoon, CheckCircle, WarningTriangle, Clock,
+  NavArrowUp, Minus, NavArrowDown, Attachment, Xmark,
 } from 'iconoir-react'
 import { useMissionControl } from '@/store'
 import { useSmartPoll } from '@/lib/use-smart-poll'
@@ -30,7 +30,7 @@ interface Task {
   id: number
   title: string
   description?: string
-  status: 'open' | 'inbox' | 'assigned' | 'in_progress' | 'review' | 'quality_review' | 'blocked' | 'done'
+  status: 'draft' | 'open' | 'closed'
   priority: 'low' | 'medium' | 'high' | 'urgent'
   assigned_to?: string
   created_by: string
@@ -41,7 +41,7 @@ interface Task {
   actual_hours?: number
   tags?: string[]
   metadata?: any
-  aegisApproved?: boolean
+  badge?: 'idea' | 'proposal' | null
   project_id?: string
   project_title?: string
 }
@@ -79,13 +79,9 @@ interface Project {
 }
 
 const statusColumns = [
-  { key: 'inbox', title: 'Inbox', color: 'bg-secondary text-foreground' },
-  { key: 'assigned', title: 'Assigned', color: 'bg-blue-500/20 text-blue-400' },
-  { key: 'in_progress', title: 'In Progress', color: 'bg-yellow-500/20 text-yellow-400' },
-  { key: 'review', title: 'Review', color: 'bg-purple-500/20 text-purple-400' },
-  { key: 'quality_review', title: 'Quality Review', color: 'bg-indigo-500/20 text-indigo-400' },
-  { key: 'blocked', title: 'Blocked', color: 'bg-rose-500/20 text-rose-400' },
-  { key: 'done', title: 'Done', color: 'bg-green-500/20 text-green-400' },
+  { key: 'drafts', title: 'Drafts & Proposals', color: 'bg-secondary text-foreground' },
+  { key: 'open', title: 'Open', color: 'bg-blue-500/20 text-blue-400' },
+  { key: 'closed', title: 'Closed', color: 'bg-green-500/20 text-green-400' },
 ]
 
 const priorityColors = {
@@ -111,6 +107,7 @@ export function TaskBoardPanel() {
     }
     return 'list'
   })
+  const [showClosed, setShowClosed] = useState(false)
   const [focusedIndex, setFocusedIndex] = useState<{ col: number; row: number } | null>(null)
   const [focusedListIndex, setFocusedListIndex] = useState<number | null>(null)
   const cardRefs = useRef<Map<string, HTMLDivElement>>(new Map())
@@ -141,37 +138,14 @@ export function TaskBoardPanel() {
       const tasksList = tasksData.tasks || []
       const taskIds = tasksList.map((task: Task) => task.id)
 
-      let aegisMap: Record<number, boolean> = {}
-      if (taskIds.length > 0) {
-        try {
-          const reviewResponse = await fetch(`/api/quality-review?taskIds=${taskIds.join(',')}`)
-          if (reviewResponse.ok) {
-            const reviewData = await reviewResponse.json()
-            const latest = reviewData.latest || {}
-            aegisMap = Object.fromEntries(
-              Object.entries(latest).map(([id, row]: [string, any]) => [
-                Number(id),
-                row?.reviewer === 'aegis' && row?.status === 'approved'
-              ])
-            )
-          }
-        } catch (error) {
-          aegisMap = {}
-        }
-      }
-
-      const updatedTasks = tasksList.map((task: Task) => ({
-        ...task,
-        aegisApproved: Boolean(aegisMap[task.id])
-      }))
-      setTasks(updatedTasks)
+      setTasks(tasksList)
       setAgents(agentsData.agents || [])
       setProjects(projectsData.projects || [])
 
       // Keep selectedTask in sync with fresh data
       setSelectedTask((prev: Task | null) => {
         if (!prev) return null
-        const fresh = updatedTasks.find((t: Task) => t.id === prev.id)
+        const fresh = tasksList.find((t: Task) => t.id === prev.id)
         return fresh || null
       })
     } catch (err) {
@@ -216,12 +190,11 @@ export function TaskBoardPanel() {
 
       if (viewMode === 'kanban') {
         const tbs = tasksByStatusRef.current
-        // Build nav columns: 0=inbox, 1=in_progress (if non-empty), then assigned, done
+        // Build nav columns: drafts, open, closed (if shown)
         const cols = [
-          tbs['inbox'] || [],
-          ...(tbs['in_progress']?.length ? [tbs['in_progress']] : []),
-          tbs['assigned'] || [],
-          tbs['done'] || [],
+          tbs['drafts'] || [],
+          tbs['open'] || [],
+          ...(showClosed && tbs['closed']?.length ? [tbs['closed']] : []),
         ]
         if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter', 'Escape'].includes(e.key)) return
         e.preventDefault()
@@ -278,7 +251,7 @@ export function TaskBoardPanel() {
     }
     window.addEventListener('keydown', handleKey)
     return () => window.removeEventListener('keydown', handleKey)
-  }, [viewMode, focusedIndex, focusedListIndex, selectedTask, showCreateModal])
+  }, [viewMode, focusedIndex, focusedListIndex, selectedTask, showCreateModal, showClosed])
 
   // Scroll focused card into view (kanban)
   useEffect(() => {
@@ -315,27 +288,18 @@ export function TaskBoardPanel() {
     }
   })
 
-  // Sort priority: blocked and review tasks float to top
-  const statusSortOrder: Record<string, number> = { blocked: 0, review: 1, quality_review: 2 }
-  const sortWithPriority = (tasks: Task[]) =>
-    [...tasks].sort((a, b) => (statusSortOrder[a.status] ?? 99) - (statusSortOrder[b.status] ?? 99))
-
-  // Group tasks by status
+  // Group tasks by column (derived server-side)
   const tasksByStatus = statusColumns.reduce((acc, column) => {
-    acc[column.key] = sortWithPriority(filteredTasks.filter(task => (task as any).column === column.key || task.status === column.key))
+    acc[column.key] = filteredTasks.filter(task => (task as any).column === column.key)
     return acc
   }, {} as Record<string, Task[]>)
   tasksByStatusRef.current = tasksByStatus
 
   // Flat task list for list view (grouped and sorted)
   const listSections = [
-    { key: 'blocked', tasks: tasksByStatus['blocked'] || [] },
-    { key: 'review', tasks: tasksByStatus['review'] || [] },
-    { key: 'quality_review', tasks: tasksByStatus['quality_review'] || [] },
-    { key: 'in_progress', tasks: tasksByStatus['in_progress'] || [] },
-    { key: 'assigned', tasks: tasksByStatus['assigned'] || [] },
-    { key: 'inbox', tasks: tasksByStatus['inbox'] || [] },
-    { key: 'done', tasks: tasksByStatus['done'] || [] },
+    { key: 'drafts', tasks: tasksByStatus['drafts'] || [] },
+    { key: 'open', tasks: tasksByStatus['open'] || [] },
+    ...(showClosed ? [{ key: 'closed', tasks: tasksByStatus['closed'] || [] }] : []),
   ].filter(s => s.tasks.length > 0)
 
   const allTasks = listSections.flatMap(section => section.tasks)
@@ -376,18 +340,6 @@ export function TaskBoardPanel() {
     }
 
     try {
-      if (newStatus === 'done') {
-        const reviewResponse = await fetch(`/api/quality-review?taskId=${draggedTask.id}`)
-        if (!reviewResponse.ok) {
-          throw new Error('Unable to verify Aegis approval')
-        }
-        const reviewData = await reviewResponse.json()
-        const latest = reviewData.reviews?.find((review: any) => review.reviewer === 'aegis')
-        if (!latest || latest.status !== 'approved') {
-          throw new Error('Aegis approval is required before moving to done')
-        }
-      }
-
       // Optimistically update UI
       setTasks(prevTasks =>
         prevTasks.map(task =>
@@ -528,6 +480,16 @@ export function TaskBoardPanel() {
           />
 
           <Button
+            variant={showClosed ? 'outline' : 'ghost'}
+            size="sm"
+            onClick={() => setShowClosed(prev => !prev)}
+            title={showClosed ? 'Hide closed tasks' : 'Show closed tasks'}
+            className="text-muted-foreground"
+          >
+            <CheckCircle width={14} height={14} />
+            <span className="hidden sm:inline ml-1">Closed</span>
+          </Button>
+          <Button
             onClick={() => setShowCreateModal(true)}
             title="New task"
             className="max-sm:size-8 max-sm:p-0"
@@ -563,19 +525,13 @@ export function TaskBoardPanel() {
 
       {/* Kanban Board */}
       {viewMode === 'kanban' && (() => {
-        // Build columns: inbox (double width), then in_progress stacked on assigned, then done
-        const inboxTasks = tasksByStatus['inbox'] || []
-        const assignedTasks = tasksByStatus['assigned'] || []
-        const inProgressTasks = tasksByStatus['in_progress'] || []
-        const doneTasks = tasksByStatus['done'] || []
+        const draftTasks = tasksByStatus['drafts'] || []
+        const openTasks = tasksByStatus['open'] || []
+        const closedTasks = showClosed ? (tasksByStatus['closed'] || []) : []
 
-        // Keyboard nav column indices must match the cols array in the handler:
-        // cols = [inbox, ...(in_progress if non-empty), assigned, done]
-        const hasInProgress = inProgressTasks.length > 0
-        const COL_INBOX = 0
-        const COL_IN_PROGRESS = hasInProgress ? 1 : -1  // -1 = not rendered
-        const COL_ASSIGNED = hasInProgress ? 2 : 1
-        const COL_DONE = hasInProgress ? 3 : 2
+        const COL_DRAFTS = 0
+        const COL_OPEN = 1
+        const COL_CLOSED = showClosed ? 2 : -1
 
         const renderCard = (task: Task, colIdx: number, rowIdx: number) => {
           const isFocused = focusedIndex?.col === colIdx && focusedIndex?.row === rowIdx
@@ -595,14 +551,12 @@ export function TaskBoardPanel() {
               </h4>
               {/* Chips row */}
               <div className="flex flex-wrap gap-1.5 mt-2" onClick={e => e.stopPropagation()}>
-                {task.status !== 'open' && task.status !== 'inbox' && (
-                  <PropertyChip
-                    value={task.status}
-                    options={STATUS_OPTIONS}
-                    onSelect={(v) => { fetch(`/api/tasks/${task.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: v }) }).then(() => fetchData()) }}
-                    colorFn={statusColor}
-                  />
-                )}
+                <PropertyChip
+                  value={task.status}
+                  options={STATUS_OPTIONS}
+                  onSelect={(v) => { fetch(`/api/tasks/${task.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: v }) }).then(() => fetchData()) }}
+                  colorFn={statusColor}
+                />
                 {task.priority === 'high' && (
                   <Button
                     variant="ghost"
@@ -616,12 +570,7 @@ export function TaskBoardPanel() {
                   value={task.assigned_to || ''}
                   options={assigneeOptions}
                   onSelect={(v) => {
-                    const updates: Record<string, any> = { assigned_to: v || null }
-                    // Auto-unblock when reassigning from Cri
-                    if (task.status === 'blocked' && task.assigned_to?.toLowerCase() === 'cri' && v && v.toLowerCase() !== 'cri') {
-                      updates.status = 'assigned'
-                    }
-                    fetch(`/api/tasks/${task.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(updates) }).then(() => fetchData())
+                    fetch(`/api/tasks/${task.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ assigned_to: v || null }) }).then(() => fetchData())
                   }}
                   searchable
                   align="right"
@@ -654,75 +603,58 @@ export function TaskBoardPanel() {
 
         return (
         <div className="flex-1 flex gap-4 p-4 overflow-x-auto">
-          {/* Inbox — double width */}
+          {/* Drafts & Proposals */}
           <div
-            className="flex-[2] min-w-80 flex flex-col"
-            onDragEnter={(e) => handleDragEnter(e, 'inbox')}
+            className="flex-1 min-w-72 flex flex-col"
+            onDragEnter={(e) => handleDragEnter(e, 'draft')}
             onDragLeave={handleDragLeave}
             onDragOver={handleDragOver}
-            onDrop={(e) => handleDrop(e, 'inbox')}
+            onDrop={(e) => handleDrop(e, 'draft')}
           >
-            {renderColumnHeader('Inbox', inboxTasks.length)}
+            {renderColumnHeader('Drafts & Proposals', draftTasks.length)}
             <div className="flex-1 space-y-2 min-h-32 overflow-y-auto">
-              {inboxTasks.map((task, rowIdx) => renderCard(task, COL_INBOX, rowIdx))}
-              {inboxTasks.length === 0 && (
-                <div className="text-center text-muted-foreground/50 py-8 text-sm">No tasks in inbox</div>
+              {draftTasks.map((task, rowIdx) => renderCard(task, COL_DRAFTS, rowIdx))}
+              {draftTasks.length === 0 && (
+                <div className="text-center text-muted-foreground/50 py-8 text-sm">No drafts</div>
               )}
             </div>
           </div>
 
-          {/* Middle stack: In Progress (conditional) + Assigned */}
-          <div className="flex-1 min-w-72 flex flex-col gap-4">
-            {/* In Progress — only shown when non-empty */}
-            {inProgressTasks.length > 0 && (
-              <div
-                className="flex flex-col"
-                onDragEnter={(e) => handleDragEnter(e, 'in_progress')}
-                onDragLeave={handleDragLeave}
-                onDragOver={handleDragOver}
-                onDrop={(e) => handleDrop(e, 'in_progress')}
-              >
-                {renderColumnHeader('In Progress', inProgressTasks.length)}
-                <div className="space-y-2">
-                  {inProgressTasks.map((task, rowIdx) => renderCard(task, COL_IN_PROGRESS, rowIdx))}
-                </div>
-              </div>
-            )}
+          {/* Open */}
+          <div
+            className="flex-[2] min-w-80 flex flex-col"
+            onDragEnter={(e) => handleDragEnter(e, 'open')}
+            onDragLeave={handleDragLeave}
+            onDragOver={handleDragOver}
+            onDrop={(e) => handleDrop(e, 'open')}
+          >
+            {renderColumnHeader('Open', openTasks.length)}
+            <div className="flex-1 space-y-2 min-h-32 overflow-y-auto">
+              {openTasks.map((task, rowIdx) => renderCard(task, COL_OPEN, rowIdx))}
+              {openTasks.length === 0 && (
+                <div className="text-center text-muted-foreground/50 py-8 text-sm">No open tasks</div>
+              )}
+            </div>
+          </div>
 
-            {/* Assigned */}
+          {/* Closed (toggleable) */}
+          {showClosed && (
             <div
-              className="flex-1 flex flex-col"
-              onDragEnter={(e) => handleDragEnter(e, 'assigned')}
+              className="flex-1 min-w-72 flex flex-col"
+              onDragEnter={(e) => handleDragEnter(e, 'closed')}
               onDragLeave={handleDragLeave}
               onDragOver={handleDragOver}
-              onDrop={(e) => handleDrop(e, 'assigned')}
+              onDrop={(e) => handleDrop(e, 'closed')}
             >
-              {renderColumnHeader('Assigned', assignedTasks.length)}
+              {renderColumnHeader('Closed', closedTasks.length)}
               <div className="flex-1 space-y-2 min-h-32 overflow-y-auto">
-                {assignedTasks.map((task, rowIdx) => renderCard(task, COL_ASSIGNED, rowIdx))}
-                {assignedTasks.length === 0 && (
-                  <div className="text-center text-muted-foreground/50 py-8 text-sm">No assigned tasks</div>
+                {closedTasks.map((task, rowIdx) => renderCard(task, COL_CLOSED, rowIdx))}
+                {closedTasks.length === 0 && (
+                  <div className="text-center text-muted-foreground/50 py-8 text-sm">No closed tasks</div>
                 )}
               </div>
             </div>
-          </div>
-
-          {/* Done */}
-          <div
-            className="flex-1 min-w-72 flex flex-col"
-            onDragEnter={(e) => handleDragEnter(e, 'done')}
-            onDragLeave={handleDragLeave}
-            onDragOver={handleDragOver}
-            onDrop={(e) => handleDrop(e, 'done')}
-          >
-            {renderColumnHeader('Done', doneTasks.length)}
-            <div className="flex-1 space-y-2 min-h-32 overflow-y-auto">
-              {doneTasks.map((task, rowIdx) => renderCard(task, COL_DONE, rowIdx))}
-              {doneTasks.length === 0 && (
-                <div className="text-center text-muted-foreground/50 py-8 text-sm">No done tasks</div>
-              )}
-            </div>
-          </div>
+          )}
         </div>
         )
       })()
@@ -731,13 +663,9 @@ export function TaskBoardPanel() {
       {/* List View */}
       {viewMode === 'list' && (() => {
         const listSectionsWithLabels = [
-          { key: 'blocked', label: 'Blocked', tasks: tasksByStatus['blocked'] || [], rowClass: 'bg-rose-500/5 border-l-2 border-l-rose-500/40' },
-          { key: 'review', label: 'Review', tasks: tasksByStatus['review'] || [], rowClass: 'bg-lime-500/5 border-l-2 border-l-lime-500/40' },
-          { key: 'quality_review', label: 'Quality Review', tasks: tasksByStatus['quality_review'] || [], rowClass: 'bg-lime-500/5 border-l-2 border-l-lime-500/40' },
-          { key: 'in_progress', label: 'In Progress', tasks: tasksByStatus['in_progress'] || [], rowClass: '' },
-          { key: 'assigned', label: 'Assigned', tasks: tasksByStatus['assigned'] || [], rowClass: '' },
-          { key: 'inbox', label: 'Inbox', tasks: tasksByStatus['inbox'] || [], rowClass: '' },
-          { key: 'done', label: 'Done', tasks: tasksByStatus['done'] || [], rowClass: '' },
+          { key: 'drafts', label: 'Drafts & Proposals', tasks: tasksByStatus['drafts'] || [], rowClass: '' },
+          { key: 'open', label: 'Open', tasks: tasksByStatus['open'] || [], rowClass: '' },
+          ...(showClosed ? [{ key: 'closed', label: 'Closed', tasks: tasksByStatus['closed'] || [], rowClass: '' }] : []),
         ].filter(s => s.tasks.length > 0)
 
         // Build flat index → task mapping for keyboard nav
@@ -783,14 +711,12 @@ export function TaskBoardPanel() {
                         >
                           <span className="flex-1 text-sm font-medium text-foreground truncate min-w-0">{task.title}</span>
                           <div className="flex items-center gap-1.5 sm:shrink-0 sm:justify-end" onClick={e => e.stopPropagation()}>
-                            {task.status !== 'open' && task.status !== 'inbox' && (
-                              <PropertyChip
-                                value={task.status}
-                                options={STATUS_OPTIONS}
-                                onSelect={(v) => { fetch(`/api/tasks/${task.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: v }) }).then(() => fetchData()) }}
-                                colorFn={statusColor}
-                              />
-                            )}
+                            <PropertyChip
+                              value={task.status}
+                              options={STATUS_OPTIONS}
+                              onSelect={(v) => { fetch(`/api/tasks/${task.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: v }) }).then(() => fetchData()) }}
+                              colorFn={statusColor}
+                            />
                             {task.priority === 'high' && (
                               <Button
                                 variant="ghost"
@@ -804,11 +730,7 @@ export function TaskBoardPanel() {
                               value={task.assigned_to || ''}
                               options={assigneeOptions}
                               onSelect={(v) => {
-                                const updates: Record<string, any> = { assigned_to: v || null }
-                                if (task.status === 'blocked' && task.assigned_to?.toLowerCase() === 'cri' && v && v.toLowerCase() !== 'cri') {
-                                  updates.status = 'assigned'
-                                }
-                                fetch(`/api/tasks/${task.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(updates) }).then(() => fetchData())
+                                fetch(`/api/tasks/${task.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ assigned_to: v || null }) }).then(() => fetchData())
                               }}
                               searchable
                               align="right"
@@ -865,11 +787,9 @@ export function TaskBoardPanel() {
 // --- Status / Priority option configs ---
 
 const STATUS_OPTIONS: PropertyOption[] = [
-  { value: 'open', label: 'Open', icon: <Circle width={14} height={14} /> },
-  { value: 'in_progress', label: 'In Progress', icon: <HalfMoon width={14} height={14} /> },
-  { value: 'review', label: 'Review', icon: <Eye width={14} height={14} /> },
-  { value: 'blocked', label: 'Blocked', icon: <Prohibition width={14} height={14} /> },
-  { value: 'done', label: 'Done', icon: <CheckCircle width={14} height={14} /> },
+  { value: 'draft', label: 'Draft', icon: <Circle width={14} height={14} /> },
+  { value: 'open', label: 'Open', icon: <HalfMoon width={14} height={14} /> },
+  { value: 'closed', label: 'Closed', icon: <CheckCircle width={14} height={14} /> },
 ]
 
 const PRIORITY_OPTIONS: PropertyOption[] = [
@@ -881,10 +801,9 @@ const PRIORITY_OPTIONS: PropertyOption[] = [
 
 function statusColor(value: string): string {
   switch (value) {
-    case 'done': return 'text-emerald-500'
-    case 'in_progress': return 'text-yellow-400'
-    case 'review': return 'text-indigo-400'
-    case 'blocked': return 'text-rose-400'
+    case 'closed': return 'text-emerald-500'
+    case 'open': return 'text-blue-400'
+    case 'draft': return 'text-muted-foreground'
     default: return 'text-muted-foreground'
   }
 }
@@ -1001,12 +920,6 @@ function TaskDetailModal({
   }
   const handleAssigneeChange = (v: string) => {
     setAssignee(v)
-    // Auto-unblock: if task is blocked and assignee changes from Cri to someone else, unblock it
-    if (status === 'blocked' && assignee.toLowerCase() === 'cri' && v.toLowerCase() !== 'cri' && v !== '') {
-      setStatus('assigned' as any)
-      saveField('assigned_to', v).then(() => saveField('status', 'assigned'))
-      return
-    }
     saveField('assigned_to', v)
   }
   // handleCreatorChange removed — creator not shown in UI
