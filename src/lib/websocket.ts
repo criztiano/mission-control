@@ -38,6 +38,7 @@ export function useWebSocket() {
   const authTokenRef = useRef<string>('')
   const requestIdRef = useRef<number>(0)
   const handshakeCompleteRef = useRef<boolean>(false)
+  const lastSyncTimeRef = useRef<number>(0)
 
   // Heartbeat tracking
   const pingCounterRef = useRef<number>(0)
@@ -356,6 +357,34 @@ export function useWebSocket() {
                 })
               }).catch(err => console.error('Failed to persist agent status:', err))
             }
+          }
+
+          // Debounced agent config sync (max once per 60s)
+          const now = Date.now()
+          if (now - lastSyncTimeRef.current >= 60000) {
+            lastSyncTimeRef.current = now
+            fetch('/api/agents/sync', { method: 'POST' })
+              .then(res => res.json())
+              .then(data => {
+                if (data.updated > 0 || data.created > 0) {
+                  // Re-fetch agents to update Zustand store with new config
+                  fetch('/api/agents')
+                    .then(res => res.json())
+                    .then(agentsData => {
+                      if (agentsData.agents) {
+                        // Update agents in store without triggering a full page refresh
+                        for (const updatedAgent of agentsData.agents) {
+                          const existing = agents.find(a => a.id === updatedAgent.id)
+                          if (existing) {
+                            updateAgent(updatedAgent.id, updatedAgent)
+                          }
+                        }
+                      }
+                    })
+                    .catch(err => console.error('Failed to fetch agents after sync:', err))
+                }
+              })
+              .catch(err => console.error('Failed to sync agent config:', err))
           }
         }
       } else if (frame.event === 'log') {

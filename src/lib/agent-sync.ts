@@ -38,6 +38,9 @@ interface OpenClawAgent {
     deny?: string[]
   }
   memorySearch?: any
+  heartbeat?: {
+    every?: string
+  }
 }
 
 export interface SyncResult {
@@ -97,6 +100,7 @@ function mapAgentToMC(agent: OpenClawAgent): {
     workspace: agent.workspace,
     agentDir: agent.agentDir,
     isDefault: agent.default || false,
+    heartbeat: agent.heartbeat,
   }
 
   return { name, role, config: configData }

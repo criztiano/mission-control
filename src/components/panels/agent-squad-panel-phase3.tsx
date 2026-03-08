@@ -329,9 +329,15 @@ export function AgentSquadPanelPhase3() {
                     <div>
                       <h3 className="font-semibold text-foreground text-lg">{agent.name}</h3>
                       <p className="text-muted-foreground text-sm">{agent.role}</p>
+                      {/* Model info */}
+                      {agent.config?.model?.primary && (
+                        <p className="text-xs text-muted-foreground/70 mt-0.5">
+                          {agent.config.model.primary.replace(/^[^/]+\//, '')}
+                        </p>
+                      )}
                     </div>
                   </div>
-                  
+
                   <div className="flex items-center gap-2">
                     {/* Heartbeat indicator */}
                     {hasRecentHeartbeat(agent) && (
@@ -370,6 +376,22 @@ export function AgentSquadPanelPhase3() {
                     </div>
                   </div>
                 )}
+
+                {/* Config Badges */}
+                <div className="flex flex-wrap gap-1.5 mb-3">
+                  {/* Heartbeat interval */}
+                  {agent.config?.heartbeat?.every && (
+                    <div className="px-2 py-1 bg-cyan-500/10 border border-cyan-500/20 text-cyan-400 rounded text-xs">
+                      ⏱ {agent.config.heartbeat.every}
+                    </div>
+                  )}
+                  {/* Tools deny count */}
+                  {agent.config?.tools?.deny && agent.config.tools.deny.length > 0 && (
+                    <div className="px-2 py-1 bg-yellow-500/10 border border-yellow-500/20 text-yellow-400 rounded text-xs" title={agent.config.tools.deny.join(', ')}>
+                      🚫 {agent.config.tools.deny.length} tools denied
+                    </div>
+                  )}
+                </div>
 
                 {/* Last Activity */}
                 <div className="text-xs text-muted-foreground mb-3">
