@@ -150,25 +150,75 @@ function RatingButton({ rating, current, onRate }: {
   )
 }
 
+// --- Video load queue (max 3 concurrent) ---
+
+const videoLoadQueue = {
+  active: 0,
+  max: 3,
+  queue: [] as { id: number; fn: () => void }[],
+  nextId: 0,
+}
+
+function enqueueVideoLoad(loadFn: () => void): number {
+  const id = videoLoadQueue.nextId++
+  if (videoLoadQueue.active < videoLoadQueue.max) {
+    videoLoadQueue.active++
+    loadFn()
+  } else {
+    videoLoadQueue.queue.push({ id, fn: loadFn })
+  }
+  return id
+}
+
+function dequeueVideoLoad() {
+  videoLoadQueue.active = Math.max(0, videoLoadQueue.active - 1)
+  const next = videoLoadQueue.queue.shift()
+  if (next) {
+    videoLoadQueue.active++
+    next.fn()
+  }
+}
+
+function cancelVideoLoad(id: number) {
+  const idx = videoLoadQueue.queue.findIndex((item) => item.id === id)
+  if (idx !== -1) videoLoadQueue.queue.splice(idx, 1)
+}
+
+// --- LazyVideo ---
+
 function LazyVideo({ src, poster, onError }: {
   src: string
   poster?: string
   onError: (url: string, e: React.SyntheticEvent<HTMLVideoElement, Event>) => void
 }) {
   const videoRef = useRef<HTMLVideoElement>(null)
+  const queueIdRef = useRef<number | null>(null)
 
   useEffect(() => {
     const el = videoRef.current
     if (!el) return
 
+    let loaded = false
+
     const observer = new IntersectionObserver(
       ([entry]) => {
         if (entry.isIntersecting) {
-          if (!el.src) {
-            el.src = src
-            el.load()
+          if (!loaded) {
+            queueIdRef.current = enqueueVideoLoad(() => {
+              loaded = true
+              el.src = src
+              el.load()
+              el.addEventListener('canplay', () => {
+                dequeueVideoLoad()
+                el.play().catch(() => {})
+              }, { once: true })
+              el.addEventListener('error', () => {
+                dequeueVideoLoad()
+              }, { once: true })
+            })
+          } else {
+            el.play().catch(() => {})
           }
-          el.addEventListener('canplay', () => el.play().catch(() => {}), { once: true })
         } else {
           el.pause()
         }
@@ -180,6 +230,7 @@ function LazyVideo({ src, poster, onError }: {
 
     return () => {
       observer.disconnect()
+      if (queueIdRef.current !== null) cancelVideoLoad(queueIdRef.current)
       el.pause()
       el.removeAttribute('src')
       el.load() // releases memory
