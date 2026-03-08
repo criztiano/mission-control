@@ -4,10 +4,9 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import {
-  Circle, HalfMoon, CheckCircle, WarningTriangle, Clock,
-  NavArrowUp, Minus, NavArrowDown, Attachment, Xmark,
+  HalfMoon, CheckCircle, Clock,
+  NavArrowUp, Attachment, Xmark,
 } from 'iconoir-react'
-import { useMissionControl } from '@/store'
 import { useSmartPoll } from '@/lib/use-smart-poll'
 import { PropertyChip, type PropertyOption } from '@/components/ui/property-chip'
 import { Button } from '@/components/ui/button'
@@ -82,13 +81,6 @@ const statusColumns = [
   { key: 'open', title: 'Open', color: 'bg-blue-500/20 text-blue-400' },
   { key: 'closed', title: 'Closed', color: 'bg-green-500/20 text-green-400' },
 ]
-
-const priorityColors = {
-  low: 'border-green-500',
-  medium: 'border-yellow-500',
-  high: 'border-orange-500',
-  urgent: 'border-red-500',
-}
 
 export function TaskBoardPanel() {
   const [tasks, setTasks] = useState<Task[]>([])
@@ -226,49 +218,6 @@ export function TaskBoardPanel() {
 
   const allTasks = listSections.flatMap(section => section.tasks)
   allTasksRef.current = allTasks
-
-  // Format relative time for tasks
-  const formatTaskTimestamp = (timestamp: number) => {
-    const now = new Date().getTime()
-    const time = new Date(timestamp * 1000).getTime()
-    const diff = now - time
-    
-    const seconds = Math.floor(diff / 1000)
-    const minutes = Math.floor(seconds / 60)
-    const hours = Math.floor(minutes / 60)
-    const days = Math.floor(hours / 24)
-    
-    if (days > 0) return `${days} day${days > 1 ? 's' : ''} ago`
-    if (hours > 0) return `${hours} hour${hours > 1 ? 's' : ''} ago`
-    if (minutes > 0) return `${minutes} minute${minutes > 1 ? 's' : ''} ago`
-    return 'just now'
-  }
-
-  const getTagColor = (tag: string) => {
-    const lowerTag = tag.toLowerCase()
-    if (lowerTag.includes('urgent') || lowerTag.includes('critical')) {
-      return 'bg-red-500/20 text-red-400 border-red-500/30'
-    }
-    if (lowerTag.includes('bug') || lowerTag.includes('fix')) {
-      return 'bg-orange-500/20 text-orange-400 border-orange-500/30'
-    }
-    if (lowerTag.includes('feature') || lowerTag.includes('enhancement')) {
-      return 'bg-green-500/20 text-green-400 border-green-500/30'
-    }
-    if (lowerTag.includes('research') || lowerTag.includes('analysis')) {
-      return 'bg-purple-500/20 text-purple-400 border-purple-500/30'
-    }
-    if (lowerTag.includes('deploy') || lowerTag.includes('release')) {
-      return 'bg-blue-500/20 text-blue-400 border-blue-500/30'
-    }
-    return 'bg-muted-foreground/10 text-muted-foreground border-muted-foreground/20'
-  }
-
-  // Get agent name by session key
-  const getAgentName = (sessionKey?: string) => {
-    const agent = agents.find(a => a.name === sessionKey)
-    return agent?.name || sessionKey || 'Unassigned'
-  }
 
   // Assignee options for PropertyChip
   const assigneeOptions: PropertyOption[] = [
@@ -477,40 +426,6 @@ export function TaskBoardPanel() {
       )}
     </div>
   )
-}
-
-// --- Status / Priority option configs ---
-
-const STATUS_OPTIONS: PropertyOption[] = [
-  { value: 'draft', label: 'Draft', icon: <Circle width={14} height={14} /> },
-  { value: 'open', label: 'Open', icon: <HalfMoon width={14} height={14} /> },
-  { value: 'closed', label: 'Closed', icon: <CheckCircle width={14} height={14} /> },
-]
-
-const PRIORITY_OPTIONS: PropertyOption[] = [
-  { value: 'urgent', label: 'Urgent', icon: <WarningTriangle width={14} height={14} /> },
-  { value: 'high', label: 'High', icon: <NavArrowUp width={14} height={14} /> },
-  { value: 'medium', label: 'Normal', icon: <Minus width={14} height={14} /> },
-  { value: 'low', label: 'Low', icon: <NavArrowDown width={14} height={14} /> },
-]
-
-function statusColor(value: string): string {
-  switch (value) {
-    case 'closed': return 'text-emerald-500'
-    case 'open': return 'text-blue-400'
-    case 'draft': return 'text-muted-foreground'
-    default: return 'text-muted-foreground'
-  }
-}
-
-function priorityColor(value: string): string {
-  switch (value) {
-    case 'urgent': return 'bg-orange-500/15 text-orange-400'
-    case 'high': return 'bg-red-500/15 text-red-400'
-    case 'medium': return 'bg-yellow-500/15 text-yellow-400'
-    case 'low': return 'bg-green-500/15 text-green-400'
-    default: return 'bg-surface-1 text-muted-foreground'
-  }
 }
 
 // --- Task Detail Modal ---
