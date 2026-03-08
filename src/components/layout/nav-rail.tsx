@@ -86,28 +86,17 @@ interface Project {
 }
 
 export function NavRail() {
-  const { activeTab, setActiveTab, connection, sidebarExpanded, collapsedGroups, toggleSidebar, toggleGroup } = useMissionControl()
+  const { activeTab, setActiveTab, connection, sidebarExpanded, collapsedGroups, toggleSidebar, toggleGroup, agents: storeAgents } = useMissionControl()
   const [inboxCount, setInboxCount] = useState(0)
   const [recentProjects, setRecentProjects] = useState<Project[]>([])
-  const [agentsList, setAgentsList] = useState<AgentListItem[]>([])
 
-  // Fetch agents for sidebar
-  const fetchAgents = useCallback(async () => {
-    try {
-      const res = await fetch('/api/agents')
-      if (res.ok) {
-        const data = await res.json()
-        // Store full agent objects with status
-        const agents = (data.agents || []).map((a: any) => ({
-          name: a.name,
-          status: a.status,
-          role: a.role,
-          config: a.config
-        }))
-        setAgentsList(agents)
-      }
-    } catch {}
-  }, [])
+  // Use agents from Zustand store (updated live via WS tick)
+  const agentsList: AgentListItem[] = storeAgents.map((a: any) => ({
+    name: a.name,
+    status: a.status || 'offline',
+    role: a.role,
+    config: a.config
+  }))
 
   // Fetch inbox count periodically
   const fetchInboxCount = useCallback(async () => {
@@ -148,12 +137,6 @@ export function NavRail() {
     const interval = setInterval(fetchRecentProjects, 60_000) // Refresh every minute
     return () => clearInterval(interval)
   }, [fetchRecentProjects])
-
-  useEffect(() => {
-    fetchAgents()
-    const interval = setInterval(fetchAgents, 30_000) // Refresh every 30 seconds
-    return () => clearInterval(interval)
-  }, [fetchAgents])
 
   // Inject badge into inbox nav item
   const navGroupsWithBadge = navGroups.map(group => ({
