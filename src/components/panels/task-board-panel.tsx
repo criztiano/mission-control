@@ -412,12 +412,6 @@ export function TaskBoardPanel() {
                         >
                           <span className="flex-1 text-sm font-medium text-foreground truncate min-w-0">{task.title}</span>
                           <div className="flex items-center gap-1.5 sm:shrink-0 sm:justify-end" onClick={e => e.stopPropagation()}>
-                            <PropertyChip
-                              value={task.status}
-                              options={STATUS_OPTIONS}
-                              onSelect={(v) => { fetch(`/api/tasks/${task.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: v }) }).then(() => fetchData()) }}
-                              colorFn={statusColor}
-                            />
                             {task.priority === 'high' && (
                               <Button
                                 variant="ghost"
@@ -974,7 +968,30 @@ function TaskDetailModal({
 
           {/* Property Chips */}
           <div className="flex flex-wrap gap-2">
-            <PropertyChip value={status} options={STATUS_OPTIONS} onSelect={handleStatusChange} colorFn={statusColor} />
+            {/* Contextual action buttons based on status */}
+            {status === 'draft' && (
+              <PropertyChip
+                value=""
+                options={detailAssigneeOptions.filter(o => o.value !== '')}
+                onSelect={(agent) => { handleAssigneeChange(agent); handleStatusChange('open') }}
+                searchable
+                placeholder={<span className="flex items-center gap-1 text-muted-foreground/60 hover:text-foreground"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg> Delegate</span>}
+              />
+            )}
+            {status === 'open' && (
+              <Button size="xs" variant="ghost" onClick={() => handleStatusChange('closed')}
+                className="text-muted-foreground/60 hover:text-red-400">
+                <CheckCircle width={14} height={14} />
+                Close
+              </Button>
+            )}
+            {status === 'closed' && (
+              <Button size="xs" variant="ghost" onClick={() => handleStatusChange('open')}
+                className="text-muted-foreground/60 hover:text-green-400">
+                <HalfMoon width={14} height={14} />
+                Reopen
+              </Button>
+            )}
             <Button
               variant={priority === 'high' ? 'default' : 'ghost'}
               size="xs"
