@@ -5,14 +5,13 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import {
   HalfMoon, CheckCircle, Clock,
-  NavArrowUp, Attachment, Xmark,
+  NavArrowUp, Xmark, OpenNewWindow,
 } from 'iconoir-react'
 import { useSmartPoll } from '@/lib/use-smart-poll'
 import { PropertyChip, type PropertyOption } from '@/components/ui/property-chip'
 import { Button } from '@/components/ui/button'
 import { AgentAvatar } from '@/components/ui/agent-avatar'
 import { BlockEditor } from '@/components/ui/block-editor'
-import { Lightbox } from '@/components/ui/lightbox'
 import { Badge } from '@/components/ui/badge'
 
 function timeAgo(ts: number): string {
@@ -43,6 +42,15 @@ interface Task {
   badge?: 'idea' | 'proposal' | null
   project_id?: string
   project_title?: string
+  last_turn_at?: number | null
+  seen_at?: number | null
+  picked?: number
+  picked_at?: number | null
+}
+
+const PRIORITY_ORDER: Record<string, number> = { urgent: 0, high: 1, medium: 2, low: 3 }
+function sortByPriority(tasks: Task[]): Task[] {
+  return [...tasks].sort((a, b) => (PRIORITY_ORDER[a.priority] ?? 99) - (PRIORITY_ORDER[b.priority] ?? 99))
 }
 
 const TWO_HOURS_S = 2 * 60 * 60
@@ -67,16 +75,16 @@ interface Agent {
   }
 }
 
-interface Comment {
-  id: number
-  task_id: number
+interface Turn {
+  id: string
+  task_id: string
+  round_number: number
+  type: 'instruction' | 'result' | 'note'
   author: string
   content: string
-  created_at: number
-  parent_id?: number
-  mentions?: string[]
-  replies?: Comment[]
-  attachments?: Array<{ url: string; filename: string; originalName?: string }>
+  links: Array<{ url: string; title?: string; type?: string }>
+  created_at: string
+  updated_at: string
 }
 
 interface Project {
@@ -87,7 +95,7 @@ interface Project {
 }
 
 const statusColumns = [
-  { key: 'drafts', title: 'Drafts & Proposals', color: 'bg-secondary text-foreground' },
+  { key: 'drafts', title: 'Drafts', color: 'bg-secondary text-foreground' },
   { key: 'open', title: 'Open', color: 'bg-blue-500/20 text-blue-400' },
   { key: 'closed', title: 'Closed', color: 'bg-green-500/20 text-green-400' },
 ]
@@ -102,6 +110,7 @@ export function TaskBoardPanel() {
   const [selectedTask, setSelectedTask] = useState<Task | null>(null)
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [showClosed, setShowClosed] = useState(false)
+  const [hideUnassigned, setHideUnassigned] = useState(true)
   const [focusedListIndex, setFocusedListIndex] = useState<number | null>(null)
   const listRowRefs = useRef<(HTMLDivElement | null)[]>([])
 
@@ -199,8 +208,11 @@ export function TaskBoardPanel() {
   // Keep a ref to allTasks for keyboard handler in list view
   const allTasksRef = useRef<Task[]>([])
 
-  // Filter tasks by selected project
+  // Filter tasks by selected project and assignee visibility
   const filteredTasks = tasks.filter(task => {
+    // Hide unassigned tasks when toggle is on
+    if (hideUnassigned && !task.assigned_to) return false
+
     if (selectedProjectFilter === null) {
       // "All Projects" - show everything
       return true
@@ -219,10 +231,16 @@ export function TaskBoardPanel() {
     return acc
   }, {} as Record<string, Task[]>)
 
+  // Split open tasks into "My Tasks" (cri) and "Agent Tasks" (others)
+  const openTasks = tasksByStatus['open'] || []
+  const myTasks = sortByPriority(openTasks.filter(t => t.assigned_to?.toLowerCase() === 'cri'))
+  const agentTasks = sortByPriority(openTasks.filter(t => t.assigned_to && t.assigned_to.toLowerCase() !== 'cri'))
+
   // Flat task list for list view (grouped and sorted)
   const listSections = [
     { key: 'drafts', tasks: tasksByStatus['drafts'] || [] },
-    { key: 'open', tasks: tasksByStatus['open'] || [] },
+    { key: 'my-tasks', tasks: myTasks },
+    { key: 'agent-tasks', tasks: agentTasks },
     ...(showClosed ? [{ key: 'closed', tasks: tasksByStatus['closed'] || [] }] : []),
   ].filter(s => s.tasks.length > 0)
 
@@ -277,6 +295,20 @@ export function TaskBoardPanel() {
           />
 
           <Button
+            variant={hideUnassigned ? 'outline' : 'ghost'}
+            size="sm"
+            onClick={() => setHideUnassigned(prev => !prev)}
+            title={hideUnassigned ? 'Show unassigned tasks' : 'Hide unassigned tasks'}
+            className="text-muted-foreground"
+          >
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" width={14} height={14}>
+              <circle cx="8" cy="5" r="3" />
+              <path d="M2 14c0-3 2.7-5 6-5s6 2 6 5" />
+              {hideUnassigned && <path d="M2 2l12 12" stroke="currentColor" strokeWidth="2" />}
+            </svg>
+            <span className="hidden sm:inline ml-1">Assigned</span>
+          </Button>
+          <Button
             variant={showClosed ? 'outline' : 'ghost'}
             size="sm"
             onClick={() => setShowClosed(prev => !prev)}
@@ -323,8 +355,9 @@ export function TaskBoardPanel() {
       {/* List View */}
       {(() => {
         const listSectionsWithLabels = [
-          { key: 'drafts', label: 'Drafts & Proposals', tasks: tasksByStatus['drafts'] || [], rowClass: '' },
-          { key: 'open', label: 'Open', tasks: tasksByStatus['open'] || [], rowClass: '' },
+          { key: 'drafts', label: 'Drafts', tasks: tasksByStatus['drafts'] || [], rowClass: '' },
+          { key: 'my-tasks', label: 'Me', tasks: myTasks, rowClass: '' },
+          { key: 'agent-tasks', label: 'Crew', tasks: agentTasks, rowClass: '' },
           ...(showClosed ? [{ key: 'closed', label: 'Closed', tasks: tasksByStatus['closed'] || [], rowClass: '' }] : []),
         ].filter(s => s.tasks.length > 0)
 
@@ -356,7 +389,7 @@ export function TaskBoardPanel() {
                     <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">{section.label}</span>
                     <span className="text-[10px] text-muted-foreground/50">{section.tasks.length}</span>
                   </div>
-                  <div className="bg-card border border-border rounded-lg overflow-hidden">
+                  <div className={`bg-card border rounded-lg overflow-hidden ${section.key === 'drafts' ? 'border-dashed border-border/60' : 'border-border'}`}>
                     {section.tasks.map(task => {
                       const globalIdx = flatMap.find(f => f.task.id === task.id)?.idx ?? -1
                       const isFocused = focusedListIndex === globalIdx
@@ -477,17 +510,13 @@ function TaskDetailModal({
   const prevTask = currentIndex > 0 ? allTasks[currentIndex - 1] : null
   const nextTask = currentIndex < allTasks.length - 1 ? allTasks[currentIndex + 1] : null
 
-  const [comments, setComments] = useState<Comment[]>([])
-  const [loadingComments, setLoadingComments] = useState(false)
-  const [commentText, setCommentText] = useState('')
-  const [commentError, setCommentError] = useState<string | null>(null)
-  const [attachments, setAttachments] = useState<Array<{ url: string; filename: string; originalName?: string }>>([])
-  const [uploading, setUploading] = useState(false)
-  const [lightboxImage, setLightboxImage] = useState<string | null>(null)
-  const [editingCommentId, setEditingCommentId] = useState<number | null>(null)
-  const [editingCommentText, setEditingCommentText] = useState('')
-  const [isDragging, setIsDragging] = useState(false)
-  const fileInputRef = useRef<HTMLInputElement>(null)
+  const [turns, setTurns] = useState<Turn[]>([])
+  const [loadingTurns, setLoadingTurns] = useState(false)
+  const [turnText, setTurnText] = useState('')
+  const [turnError, setTurnError] = useState<string | null>(null)
+  const [turnMode, setTurnMode] = useState<'note' | 'instruction'>('note')
+  const [turnAssignee, setTurnAssignee] = useState('')
+  const [expandedRounds, setExpandedRounds] = useState<Set<number>>(new Set())
 
   const [saving, setSaving] = useState(false)
 
@@ -503,8 +532,10 @@ function TaskDetailModal({
     setAssignee(task.assigned_to || '')
     // creator state removed from UI
     setProjectId(task.project_id || '')
-    setCommentText('')
-    setCommentError(null)
+    setTurnText('')
+    setTurnError(null)
+    setTurnMode('note')
+    setExpandedRounds(new Set())
 
   }, [task.id])
 
@@ -621,137 +652,56 @@ function TaskDetailModal({
     { value: '✨-new', label: 'New' },
   ]
 
-  const fetchComments = useCallback(async () => {
+  const fetchTurns = useCallback(async () => {
     try {
-      setLoadingComments(true)
-      const response = await fetch(`/api/tasks/${task.id}/comments`)
-      if (!response.ok) throw new Error('Failed to fetch comments')
+      setLoadingTurns(true)
+      const response = await fetch(`/api/tasks/${task.id}/turns`)
+      if (!response.ok) throw new Error('Failed to fetch turns')
       const data = await response.json()
-      setComments(data.comments || [])
-    } catch (error) {
-      setCommentError('Failed to load comments')
+      setTurns(data.turns || [])
+    } catch {
+      setTurnError('Failed to load turns')
     } finally {
-      setLoadingComments(false)
+      setLoadingTurns(false)
     }
   }, [task.id])
 
-  useEffect(() => { fetchComments() }, [fetchComments])
-  useSmartPoll(fetchComments, 15000)
+  useEffect(() => { fetchTurns() }, [fetchTurns])
+  useSmartPoll(fetchTurns, 15000)
 
-  const deleteComment = async (commentId: number) => {
-    try {
-      await fetch(`/api/tasks/${task.id}/comments`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ commentId: String(commentId) }) })
-      fetchComments()
-    } catch { setCommentError('Failed to delete comment') }
-  }
+  // Mark as seen when modal opens
+  useEffect(() => {
+    fetch(`/api/tasks/${task.id}/seen`, { method: 'PUT' }).catch(() => {})
+  }, [task.id])
 
-  const saveEditComment = async (commentId: number) => {
-    if (!editingCommentText.trim()) return
-    try {
-      await fetch(`/api/tasks/${task.id}/comments`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ commentId: String(commentId), content: editingCommentText.trim() }) })
-      setEditingCommentId(null)
-      fetchComments()
-    } catch { setCommentError('Failed to edit comment') }
-  }
-
-  const handleFileUpload = async (files: FileList | File[]) => {
-    const fileArray = Array.from(files)
-    const imageFiles = fileArray.filter(f => f.type.startsWith('image/'))
-
-    if (imageFiles.length === 0) return
-
-    // Validate file size (10MB max)
-    const invalidFiles = imageFiles.filter(f => f.size > 10 * 1024 * 1024)
-    if (invalidFiles.length > 0) {
-      setCommentError(`Some files are too large (max 10MB): ${invalidFiles.map(f => f.name).join(', ')}`)
+  const handleSubmitTurn = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!turnText.trim()) return
+    if (turnMode === 'instruction' && !turnAssignee) {
+      setTurnError('Select who to pass the ball to')
       return
     }
-
-    setUploading(true)
-    setCommentError(null)
-
     try {
-      const uploadPromises = imageFiles.map(async (file) => {
-        const formData = new FormData()
-        formData.append('file', file)
-        const res = await fetch('/api/uploads', {
-          method: 'POST',
-          body: formData
-        })
-        if (!res.ok) {
-          const errorData = await res.json().catch(() => ({ error: 'Unknown error' }))
-          throw new Error(errorData.error || `Upload failed: ${res.status}`)
-        }
-        return await res.json()
-      })
-
-      const results = await Promise.all(uploadPromises)
-      setAttachments(prev => [...prev, ...results])
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Failed to upload images'
-      setCommentError(errorMessage)
-    } finally {
-      setUploading(false)
-    }
-  }
-
-  const removeAttachment = (filename: string) => {
-    setAttachments(prev => prev.filter(a => a.filename !== filename))
-  }
-
-  const handlePaste = (e: React.ClipboardEvent) => {
-    const items = e.clipboardData?.items
-    if (!items) return
-
-    const imageItems = Array.from(items).filter(item => item.type.startsWith('image/'))
-    if (imageItems.length === 0) return
-
-    e.preventDefault()
-    const files = imageItems.map(item => item.getAsFile()).filter((f): f is File => f !== null)
-    if (files.length > 0) {
-      handleFileUpload(files)
-    }
-  }
-
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault()
-    setIsDragging(true)
-  }
-
-  const handleDragLeave = (e: React.DragEvent) => {
-    e.preventDefault()
-    setIsDragging(false)
-  }
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault()
-    setIsDragging(false)
-    const files = e.dataTransfer?.files
-    if (files && files.length > 0) {
-      handleFileUpload(files)
-    }
-  }
-
-  const handleAddComment = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!commentText.trim() && attachments.length === 0) return
-    try {
-      setCommentError(null)
-      const response = await fetch(`/api/tasks/${task.id}/comments`, {
+      setTurnError(null)
+      const body: Record<string, unknown> = {
+        type: turnMode,
+        content: turnText.trim(),
+        author: 'cri',
+      }
+      if (turnMode === 'instruction') {
+        body.assigned_to = turnAssignee
+      }
+      const response = await fetch(`/api/tasks/${task.id}/turns`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          author: 'cri',
-          content: commentText,
-          attachments: attachments.length > 0 ? attachments : undefined
-        })
+        body: JSON.stringify(body),
       })
-      if (!response.ok) throw new Error('Failed to add comment')
-      setCommentText('')
-      setAttachments([])
-      await fetchComments()
+      if (!response.ok) throw new Error('Failed to create turn')
+      setTurnText('')
+      setTurnMode('note')
+      await fetchTurns()
       onUpdate()
-    } catch { setCommentError('Failed to add comment') }
+    } catch { setTurnError('Failed to create turn') }
   }
 
   const authorColor = (name: string) => {
@@ -759,75 +709,92 @@ function TaskDetailModal({
     if (n === 'cri' || n === 'cristiano') return 'text-pink-400'
     if (n === 'cseno' || n === 'bot') return 'text-lime-400'
     if (n === 'cody') return 'text-blue-400'
+    if (n === 'ralph') return 'text-amber-400'
+    if (n === 'scottie') return 'text-cyan-400'
     if (n === 'bookworm') return 'text-purple-400'
     return 'text-foreground/80'
   }
 
-  const renderComment = (comment: Comment, depth: number = 0) => (
-    <div key={comment.id} className={`border-l-2 border-border pl-3 ${depth > 0 ? 'ml-4' : ''} group/comment`}>
-      <div className="flex items-center justify-between text-xs text-muted-foreground">
-        <span className={`font-semibold ${authorColor(comment.author)}`}>{comment.author}</span>
-        <div className="flex items-center gap-1">
-          <span>{new Date(comment.created_at * 1000).toLocaleString()}</span>
-          <div className="hidden group-hover/comment:flex items-center gap-0.5 ml-1">
-            <Button variant="ghost" size="icon-xs" className="h-5 w-5 text-muted-foreground/40 hover:text-muted-foreground" onClick={() => { setEditingCommentId(comment.id); setEditingCommentText(comment.content) }}>
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-            </Button>
-            <Button variant="ghost" size="icon-xs" className="h-5 w-5 text-muted-foreground/40 hover:text-red-400" onClick={() => deleteComment(comment.id)}>
-              <Xmark width={12} height={12} />
-            </Button>
-          </div>
-        </div>
-      </div>
-      {editingCommentId === comment.id ? (
-        <div className="mt-1 flex gap-1.5">
-          <input className="flex-1 text-sm bg-zinc-900 border border-border rounded px-2 py-1 text-foreground" value={editingCommentText} onChange={e => setEditingCommentText(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') saveEditComment(comment.id); if (e.key === 'Escape') setEditingCommentId(null) }} autoFocus />
-          <Button size="xs" onClick={() => saveEditComment(comment.id)}>Save</Button>
-          <Button size="xs" variant="ghost" onClick={() => setEditingCommentId(null)}>Cancel</Button>
-        </div>
-      ) : (
-        <div className="text-sm text-muted-foreground mt-1 prose prose-sm prose-invert max-w-none
-          prose-headings:text-foreground prose-headings:font-semibold prose-headings:mt-3 prose-headings:mb-1.5
-          prose-h1:text-base prose-h2:text-sm prose-h3:text-xs
-          prose-p:my-1 prose-p:leading-relaxed
-          prose-a:text-primary prose-a:no-underline hover:prose-a:underline
-          prose-strong:text-foreground prose-strong:font-semibold
-          prose-code:text-primary prose-code:bg-surface-1 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:text-xs prose-code:before:content-[''] prose-code:after:content-['']
-          prose-pre:bg-surface-1 prose-pre:text-foreground prose-pre:border prose-pre:border-border prose-pre:rounded prose-pre:p-2 prose-pre:text-xs prose-pre:overflow-x-auto
-          prose-ul:my-1 prose-ul:list-disc prose-ul:pl-4
-          prose-ol:my-1 prose-ol:list-decimal prose-ol:pl-4
-          prose-li:my-0.5
-          prose-blockquote:border-l-2 prose-blockquote:border-border prose-blockquote:pl-3 prose-blockquote:italic prose-blockquote:text-muted-foreground
-          prose-img:rounded prose-img:border prose-img:border-border
-          prose-hr:border-border prose-hr:my-2
-          prose-table:text-xs prose-table:border-collapse
-          prose-th:border prose-th:border-border prose-th:bg-surface-1 prose-th:px-2 prose-th:py-1
-          prose-td:border prose-td:border-border prose-td:px-2 prose-td:py-1">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>
-            {comment.content}
-          </ReactMarkdown>
-        </div>
-      )}
-      {comment.attachments && comment.attachments.length > 0 && (
-        <div className="flex gap-2 flex-wrap mt-2">
-          {comment.attachments.map((attachment) => (
-            <img
-              key={attachment.filename}
-              src={attachment.url}
-              alt={attachment.originalName || attachment.filename}
-              className="max-h-[200px] rounded border border-border object-cover cursor-pointer hover:opacity-90 transition-opacity"
-              onClick={() => setLightboxImage(attachment.url)}
-            />
-          ))}
-        </div>
-      )}
-      {comment.replies && comment.replies.length > 0 && (
-        <div className="mt-3 space-y-3">
-          {comment.replies.map(reply => renderComment(reply, depth + 1))}
-        </div>
-      )}
+  const turnTypeLabel = (type: string) => {
+    if (type === 'instruction') return { text: 'Instruction', color: 'bg-blue-500/15 text-blue-400' }
+    if (type === 'result') return { text: 'Result', color: 'bg-green-500/15 text-green-400' }
+    return { text: 'Note', color: 'bg-zinc-500/15 text-zinc-400' }
+  }
+
+  // Group turns by round
+  const roundsMap = new Map<number, Turn[]>()
+  for (const turn of turns) {
+    const existing = roundsMap.get(turn.round_number) || []
+    existing.push(turn)
+    roundsMap.set(turn.round_number, existing)
+  }
+  const roundNumbers = [...roundsMap.keys()].sort((a, b) => b - a) // newest first
+  const maxRound = roundNumbers.length > 0 ? roundNumbers[0] : 0
+
+  const renderTurnContent = (turn: Turn) => (
+    <div className="text-sm text-muted-foreground mt-1 prose prose-sm prose-invert max-w-none
+      prose-headings:text-foreground prose-headings:font-semibold prose-headings:mt-3 prose-headings:mb-1.5
+      prose-h1:text-base prose-h2:text-sm prose-h3:text-xs
+      prose-p:my-1 prose-p:leading-relaxed
+      prose-a:text-primary prose-a:no-underline hover:prose-a:underline
+      prose-strong:text-foreground prose-strong:font-semibold
+      prose-code:text-primary prose-code:bg-surface-1 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:text-xs prose-code:before:content-[''] prose-code:after:content-['']
+      prose-pre:bg-surface-1 prose-pre:text-foreground prose-pre:border prose-pre:border-border prose-pre:rounded prose-pre:p-2 prose-pre:text-xs prose-pre:overflow-x-auto
+      prose-ul:my-1 prose-ul:list-disc prose-ul:pl-4
+      prose-ol:my-1 prose-ol:list-decimal prose-ol:pl-4
+      prose-li:my-0.5
+      prose-blockquote:border-l-2 prose-blockquote:border-border prose-blockquote:pl-3 prose-blockquote:italic prose-blockquote:text-muted-foreground
+      prose-hr:border-border prose-hr:my-2">
+      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+        {turn.content}
+      </ReactMarkdown>
     </div>
   )
+
+  const renderTurnLinks = (links: Turn['links']) => {
+    if (!links || links.length === 0) return null
+    return (
+      <div className="flex gap-2 flex-wrap mt-2">
+        {links.map((link, i) => {
+          let domain = ''
+          try { domain = new URL(link.url).hostname.replace('www.', '') } catch {}
+          return (
+            <a
+              key={i}
+              href={link.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-1.5 text-xs bg-surface-1 border border-border rounded-md px-2 py-1 hover:bg-zinc-800 transition-colors text-muted-foreground hover:text-foreground"
+            >
+              <OpenNewWindow width={12} height={12} className="shrink-0" />
+              <span className="truncate max-w-[200px]">{link.title || domain || link.url}</span>
+              {link.type && (
+                <span className="text-[10px] bg-zinc-700/50 px-1 rounded">{link.type}</span>
+              )}
+            </a>
+          )
+        })}
+      </div>
+    )
+  }
+
+  const renderTurn = (turn: Turn) => {
+    const label = turnTypeLabel(turn.type)
+    const edited = turn.updated_at !== turn.created_at
+    return (
+      <div key={turn.id} className="border-l-2 border-border pl-3 group/turn">
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <AgentAvatar agent={turn.author} size="sm" />
+          <span className={`font-semibold ${authorColor(turn.author)}`}>{turn.author}</span>
+          <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${label.color}`}>{label.text}</span>
+          <span className="ml-auto">{new Date(turn.created_at).toLocaleString()}</span>
+          {edited && <span className="text-muted-foreground/40" title={`Edited ${new Date(turn.updated_at).toLocaleString()}`}>(edited)</span>}
+        </div>
+        {renderTurnContent(turn)}
+        {renderTurnLinks(turn.links)}
+      </div>
+    )
+  }
 
   return (
     <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4" onClick={handleClose}>
@@ -960,112 +927,134 @@ function TaskDetailModal({
             />
           </div>
 
-          {/* Comments */}
+          {/* Turns Timeline */}
           <div className="border-t border-border pt-4">
             <div className="flex items-center justify-between mb-3">
-              <h4 className="text-sm font-semibold text-foreground">Comments</h4>
-              <Button variant="ghost" size="xs" onClick={fetchComments} className="text-muted-foreground/40 hover:text-muted-foreground">Refresh</Button>
+              <h4 className="text-sm font-semibold text-foreground">Turns</h4>
+              <Button variant="ghost" size="xs" onClick={fetchTurns} className="text-muted-foreground/40 hover:text-muted-foreground">Refresh</Button>
             </div>
 
-            {commentError && (
-              <div className="bg-red-500/10 border border-red-500/20 text-red-400 p-2 rounded-md text-xs mb-3">{commentError}</div>
+            {turnError && (
+              <div className="bg-red-500/10 border border-red-500/20 text-red-400 p-2 rounded-md text-xs mb-3">{turnError}</div>
             )}
 
-            {loadingComments ? (
-              <div className="text-muted-foreground text-xs py-2">Loading comments...</div>
-            ) : comments.length === 0 ? (
-              <div className="text-muted-foreground/40 text-xs py-2">No comments yet.</div>
+            {loadingTurns ? (
+              <div className="text-muted-foreground text-xs py-2">Loading turns...</div>
+            ) : turns.length === 0 ? (
+              <div className="text-muted-foreground/40 text-xs py-2">No turns yet. Pass the ball to start a conversation.</div>
             ) : (
-              <div className="space-y-3">
-                {comments.map(comment => renderComment(comment))}
+              <div className="space-y-4">
+                {roundNumbers.map(roundNum => {
+                  const roundTurns = roundsMap.get(roundNum) || []
+                  const isActive = roundNum === maxRound
+                  const isExpanded = isActive || expandedRounds.has(roundNum)
+                  const firstTurn = roundTurns[0]
+                  const preview = firstTurn?.content?.substring(0, 80) || ''
+
+                  if (roundNum === 0) {
+                    // Round 0 = migrated notes, always show inline
+                    return (
+                      <div key={roundNum} className="space-y-3">
+                        {roundTurns.map(turn => renderTurn(turn))}
+                      </div>
+                    )
+                  }
+
+                  return (
+                    <div key={roundNum} className="border border-border/50 rounded-lg overflow-hidden">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (isActive) return
+                          setExpandedRounds(prev => {
+                            const next = new Set(prev)
+                            if (next.has(roundNum)) next.delete(roundNum)
+                            else next.add(roundNum)
+                            return next
+                          })
+                        }}
+                        className={`w-full flex items-center gap-2 px-3 py-2 text-xs text-left ${
+                          isActive ? 'bg-surface-1/50 cursor-default' : 'hover:bg-surface-1/30 cursor-pointer'
+                        }`}
+                      >
+                        <span className="font-semibold text-muted-foreground">Round {roundNum}</span>
+                        {!isExpanded && (
+                          <span className="text-muted-foreground/50 truncate flex-1">{preview}{preview.length >= 80 ? '...' : ''}</span>
+                        )}
+                        {isActive && <Badge variant="secondary" className="ml-auto text-[10px]">Active</Badge>}
+                        {!isActive && (
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className={`ml-auto transition-transform ${isExpanded ? 'rotate-180' : ''}`}><path d="M6 9l6 6 6-6"/></svg>
+                        )}
+                      </button>
+                      {isExpanded && (
+                        <div className="px-3 pb-3 space-y-3">
+                          {roundTurns.map(turn => renderTurn(turn))}
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
               </div>
             )}
           </div>
         </div>
 
-        {/* Fixed Footer: comment input */}
+        {/* Fixed Footer: turn composer */}
         <div className="shrink-0 px-4 py-3 border-t border-border">
-          <form onSubmit={handleAddComment}>
-            <div
-              className={`flex flex-col gap-2 ${isDragging ? 'bg-primary/10 rounded-lg' : ''}`}
-              onDragOver={handleDragOver}
-              onDragLeave={handleDragLeave}
-              onDrop={handleDrop}
-            >
-              {/* Attachment previews */}
-              {attachments.length > 0 && (
-                <div className="flex gap-2 flex-wrap">
-                  {attachments.map((attachment) => (
-                    <div key={attachment.filename} className="relative group">
-                      <img
-                        src={attachment.url}
-                        alt={attachment.originalName || attachment.filename}
-                        className="h-16 rounded border border-border object-cover"
-                      />
-                      <Button
-                        variant="ghost"
-                        size="icon-xs"
-                        onClick={() => removeAttachment(attachment.filename)}
-                        className="absolute -top-1 -right-1 bg-card/90 hover:bg-destructive/90 text-foreground hover:text-destructive-foreground opacity-0 group-hover:opacity-100 transition-opacity"
-                        title="Remove"
-                        type="button"
-                      >
-                        <Xmark className="w-3 h-3" />
-                      </Button>
-                    </div>
-                  ))}
-                  {uploading && (
-                    <div className="h-16 w-16 rounded border border-border bg-surface-1 flex items-center justify-center">
-                      <div className="animate-spin h-4 w-4 border-2 border-primary border-t-transparent rounded-full" />
-                    </div>
-                  )}
-                </div>
-              )}
+          <form onSubmit={handleSubmitTurn}>
+            <div className="flex flex-col gap-2">
+              {/* Mode toggle */}
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  variant={turnMode === 'note' ? 'outline' : 'ghost'}
+                  size="xs"
+                  onClick={() => setTurnMode('note')}
+                >
+                  Add note
+                </Button>
+                <Button
+                  type="button"
+                  variant={turnMode === 'instruction' ? 'outline' : 'ghost'}
+                  size="xs"
+                  onClick={() => setTurnMode('instruction')}
+                  className={turnMode === 'instruction' ? 'border-blue-500/30 text-blue-400' : ''}
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                  Pass the ball
+                </Button>
+                {turnMode === 'instruction' && (
+                  <PropertyChip
+                    value={turnAssignee}
+                    options={detailAssigneeOptions.filter(o => o.value !== '')}
+                    onSelect={setTurnAssignee}
+                    searchable
+                    placeholder={<span className="text-muted-foreground/40 text-xs">Assign to...</span>}
+                  />
+                )}
+              </div>
 
               {/* Input row */}
               <div className="flex gap-2">
                 <input
                   type="text"
-                  value={commentText}
-                  onChange={e => setCommentText(e.target.value)}
-                  onPaste={handlePaste}
-                  placeholder="Write a comment..."
+                  value={turnText}
+                  onChange={e => setTurnText(e.target.value)}
+                  placeholder={turnMode === 'instruction' ? 'Write instructions...' : 'Add a note...'}
                   className="flex-1 bg-surface-1 text-foreground text-sm border border-border rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/50"
-                  onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleAddComment(e) } }}
+                  onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSubmitTurn(e) } }}
                 />
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="image/*"
-                  multiple
-                  onChange={e => e.target.files && handleFileUpload(e.target.files)}
-                  className="hidden"
-                />
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon-sm"
-                  onClick={() => fileInputRef.current?.click()}
-                  title="Attach image"
-                  disabled={uploading}
-                >
-                  <Attachment className="w-4 h-4" />
-                </Button>
-                <Button type="submit" disabled={uploading}>Send</Button>
+                <Button type="submit">{turnMode === 'instruction' ? 'Send' : 'Add'}</Button>
               </div>
 
-              {commentError && (
-                <p className="text-xs text-destructive">{commentError}</p>
+              {turnError && (
+                <p className="text-xs text-destructive">{turnError}</p>
               )}
             </div>
           </form>
         </div>
       </div>
 
-      {/* Lightbox for full-size image viewing */}
-      {lightboxImage && (
-        <Lightbox imageUrl={lightboxImage} onClose={() => setLightboxImage(null)} />
-      )}
     </div>
   )
 }
