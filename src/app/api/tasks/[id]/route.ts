@@ -13,17 +13,7 @@ import {
   type IssueStatus,
 } from '@/lib/cc-db';
 
-const VALID_STATUSES: Set<string> = new Set(['open', 'in_progress', 'review', 'blocked', 'done']);
-
-function isHumanUser(request: NextRequest): boolean {
-  const username = request.headers.get('x-mc-actor') || '';
-  if (username.toLowerCase() === 'cri') return true;
-  const apiKey = request.headers.get('x-api-key');
-  if (apiKey) return true;
-  const cookie = request.headers.get('cookie') || '';
-  if (cookie.includes('mc-session')) return true;
-  return false;
-}
+const VALID_STATUSES: Set<string> = new Set(['draft', 'open', 'closed']);
 
 /**
  * GET /api/tasks/[id] - Get a specific issue from control-center.db
@@ -85,12 +75,8 @@ export async function PUT(
       assigned_to,
       creator,
       project_id,
+      plan_path,
     } = body;
-
-    // Permission: agents cannot set done
-    if (status === 'done' && !isHumanUser(request)) {
-      return NextResponse.json({ error: 'Only human users can set status to done' }, { status: 403 });
-    }
 
     if (status && !VALID_STATUSES.has(status)) {
       return NextResponse.json({ error: `Invalid status: ${status}` }, { status: 400 });
@@ -129,6 +115,10 @@ export async function PUT(
     if (project_id !== undefined) {
       fieldsToUpdate.push('project_id = ?');
       updateParams.push(project_id || null);
+    }
+    if (plan_path !== undefined) {
+      fieldsToUpdate.push('plan_path = ?');
+      updateParams.push(plan_path || null);
     }
 
     if (fieldsToUpdate.length === 0) {

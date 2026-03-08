@@ -73,7 +73,7 @@ export async function GET(
     const assignedTasks = ccDb.prepare(`
       SELECT * FROM issues
       WHERE assignee = ?
-      AND status IN ('open', 'in_progress')
+      AND status = 'open'
       AND archived = 0
       ORDER BY priority DESC, created_at ASC
       LIMIT 10

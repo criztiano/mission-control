@@ -15,24 +15,7 @@ import {
 } from '@/lib/cc-db';
 import { randomUUID } from 'crypto';
 
-const VALID_STATUSES: Set<string> = new Set(['open', 'in_progress', 'review', 'blocked', 'done']);
-
-/**
- * Check if the requesting user is a human (can set 'done') or an agent.
- * API-key users and the 'cri' user are considered human.
- */
-function isHumanUser(request: NextRequest): boolean {
-  const username = request.headers.get('x-mc-actor') || '';
-  if (username.toLowerCase() === 'cri') return true;
-  // API key auth returns username='api' with admin role — treat as human
-  const apiKey = request.headers.get('x-api-key');
-  if (apiKey) return true;
-  // Session-based: check if user is admin
-  // For now, cookie-based sessions are always human (UI users)
-  const cookie = request.headers.get('cookie') || '';
-  if (cookie.includes('mc-session')) return true;
-  return false;
-}
+const VALID_STATUSES: Set<string> = new Set(['draft', 'open', 'closed']);
 
 /**
  * GET /api/tasks - List all tasks from control-center.db issues table
@@ -109,11 +92,6 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: `Invalid status: ${status}. Valid: ${[...VALID_STATUSES].join(', ')}` }, { status: 400 });
     }
 
-    // Permission: agents cannot create tasks with status 'done'
-    if (status === 'done' && !isHumanUser(request)) {
-      return NextResponse.json({ error: 'Only human users can set status to done' }, { status: 403 });
-    }
-
     const ccPriority = PRIORITY_FROM_MC[priority] || 'normal';
     const now = new Date().toISOString();
     const id = randomUUID();
@@ -146,6 +124,7 @@ export async function POST(request: NextRequest) {
         schedule: '',
         parent_id: null,
         notion_id: '',
+        plan_path: null,
       },
       projectTitle,
     );
@@ -181,13 +160,7 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: 'Tasks must be an array' }, { status: 400 });
     }
 
-    const human = isHumanUser(request);
-
-    // Validate: agents cannot set done
     for (const item of tasks) {
-      if (item.status === 'done' && !human) {
-        return NextResponse.json({ error: 'Only human users can set status to done' }, { status: 403 });
-      }
       if (item.status && !VALID_STATUSES.has(item.status)) {
         return NextResponse.json({ error: `Invalid status: ${item.status}` }, { status: 400 });
       }

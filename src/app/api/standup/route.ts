@@ -45,36 +45,22 @@ export async function POST(request: NextRequest) {
       SELECT id, title, status, updated_at
       FROM issues
       WHERE assignee = ? AND archived = 0
-      AND status = 'done'
+      AND status = 'closed'
       AND updated_at BETWEEN ? AND ?
       ORDER BY updated_at DESC
     `);
-    const inProgressTasksStmt = ccDb.prepare(`
-      SELECT id, title, status, created_at
-      FROM issues
-      WHERE assignee = ? AND archived = 0
-      AND status = 'in_progress'
-      ORDER BY created_at ASC
-    `);
-    const assignedTasksStmt = ccDb.prepare(`
+    const openTasksStmt = ccDb.prepare(`
       SELECT id, title, status, created_at, priority
       FROM issues
       WHERE assignee = ? AND archived = 0
       AND status = 'open'
       ORDER BY priority DESC, created_at ASC
     `);
-    const reviewTasksStmt = ccDb.prepare(`
-      SELECT id, title, status, updated_at
+    const draftTasksStmt = ccDb.prepare(`
+      SELECT id, title, status, created_at, priority
       FROM issues
       WHERE assignee = ? AND archived = 0
-      AND status = 'review'
-      ORDER BY updated_at ASC
-    `);
-    const blockedTasksStmt = ccDb.prepare(`
-      SELECT id, title, status, priority, created_at
-      FROM issues
-      WHERE assignee = ? AND archived = 0
-      AND status = 'blocked'
+      AND status = 'draft'
       ORDER BY priority DESC, created_at ASC
     `);
     const activityCountStmt = db.prepare(`
@@ -93,10 +79,8 @@ export async function POST(request: NextRequest) {
     // Generate standup data for each agent
     const standupData = agents.map(agent => {
       const completedTasks = completedTasksStmt.all(agent.name, startOfDayISO, endOfDayISO);
-      const inProgressTasks = inProgressTasksStmt.all(agent.name);
-      const assignedTasks = assignedTasksStmt.all(agent.name);
-      const reviewTasks = reviewTasksStmt.all(agent.name);
-      const blockedTasks = blockedTasksStmt.all(agent.name);
+      const openTasks = openTasksStmt.all(agent.name);
+      const draftTasks = draftTasksStmt.all(agent.name);
       const activityCount = activityCountStmt.get(agent.name, startOfDayUnix, endOfDayUnix) as { count: number };
       const commentsToday = commentCountStmt.get(agent.name, startOfDayUnix, endOfDayUnix) as { count: number };
 
@@ -109,10 +93,11 @@ export async function POST(request: NextRequest) {
           last_activity: agent.last_activity
         },
         completedToday: completedTasks,
-        inProgress: inProgressTasks,
-        assigned: assignedTasks,
-        review: reviewTasks,
-        blocked: blockedTasks,
+        inProgress: openTasks,
+        assigned: openTasks,
+        review: [],
+        blocked: [],
+        drafts: draftTasks,
         activity: {
           actionCount: activityCount.count,
           commentsCount: commentsToday.count
