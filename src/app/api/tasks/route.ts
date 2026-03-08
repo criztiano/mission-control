@@ -125,6 +125,10 @@ export async function POST(request: NextRequest) {
         parent_id: null,
         notion_id: '',
         plan_path: null,
+        last_turn_at: null,
+        seen_at: null,
+        picked: 0,
+        picked_at: null,
       },
       projectTitle,
     );

@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 import { homedir } from 'os';
 import { join } from 'path';
+import { randomUUID } from 'crypto';
 import { logger } from './logger';
 
 const CC_DB_PATH = process.env.CC_DB_PATH || join(homedir(), '.openclaw', 'control-center.db');
@@ -95,7 +96,64 @@ export function runCCMigrations(): void {
       logger.info('cc-db migration: added attachments column to issue_comments');
     }
 
-    // 3. Migrate old statuses → 3-status model (draft, open, closed)
+    // 3. Create turns table if not exists
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS turns (
+        id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+        round_number INTEGER NOT NULL DEFAULT 1,
+        type TEXT NOT NULL CHECK(type IN ('instruction','result','note')),
+        author TEXT NOT NULL,
+        content TEXT NOT NULL DEFAULT '',
+        links TEXT DEFAULT '[]',
+        created_at TEXT DEFAULT (datetime('now')),
+        updated_at TEXT DEFAULT (datetime('now'))
+      )
+    `);
+    db.exec('CREATE INDEX IF NOT EXISTS idx_turns_task_id ON turns(task_id)');
+
+    // 4. Add new columns to issues for turns system
+    const issueCols = db.prepare('PRAGMA table_info(issues)').all() as Array<{ name: string }>;
+    const issueColNames = new Set(issueCols.map(c => c.name));
+
+    if (!issueColNames.has('last_turn_at')) {
+      db.exec(`ALTER TABLE issues ADD COLUMN last_turn_at TEXT`);
+      logger.info('cc-db migration: added last_turn_at column to issues');
+    }
+    if (!issueColNames.has('seen_at')) {
+      db.exec(`ALTER TABLE issues ADD COLUMN seen_at TEXT`);
+      logger.info('cc-db migration: added seen_at column to issues');
+    }
+    if (!issueColNames.has('picked')) {
+      db.exec(`ALTER TABLE issues ADD COLUMN picked INTEGER DEFAULT 0`);
+      logger.info('cc-db migration: added picked column to issues');
+    }
+    if (!issueColNames.has('picked_at')) {
+      db.exec(`ALTER TABLE issues ADD COLUMN picked_at TEXT`);
+      logger.info('cc-db migration: added picked_at column to issues');
+    }
+
+    // 5. Migrate existing comments to turns (as notes, round 0)
+    const turnsExist = (db.prepare('SELECT COUNT(*) as c FROM turns').get() as { c: number }).c;
+    const commentsExist = (db.prepare('SELECT COUNT(*) as c FROM issue_comments').get() as { c: number }).c;
+    if (turnsExist === 0 && commentsExist > 0) {
+      db.exec(`
+        INSERT INTO turns (id, task_id, round_number, type, author, content, links, created_at, updated_at)
+        SELECT id, issue_id, 0, 'note', author, content, COALESCE(attachments, '[]'), created_at, created_at
+        FROM issue_comments
+        WHERE NOT EXISTS (SELECT 1 FROM turns WHERE turns.id = issue_comments.id)
+      `);
+      logger.info('cc-db migration: migrated existing comments to turns');
+
+      // Update last_turn_at for tasks that have migrated turns
+      db.exec(`
+        UPDATE issues SET last_turn_at = (SELECT MAX(created_at) FROM turns WHERE turns.task_id = issues.id)
+        WHERE last_turn_at IS NULL AND EXISTS (SELECT 1 FROM turns WHERE turns.task_id = issues.id)
+      `);
+      logger.info('cc-db migration: updated last_turn_at from migrated turns');
+    }
+
+    // 6. Migrate old statuses → 3-status model (draft, open, closed)
     //    Active work statuses → open
     //    Proposal/idea/todo → draft (not yet actionable)
     //    done → closed
@@ -147,6 +205,10 @@ export interface CCIssue {
   parent_id: string | null;
   notion_id: string;
   plan_path: string | null;
+  last_turn_at: string | null;
+  seen_at: string | null;
+  picked: number;
+  picked_at: string | null;
 }
 
 export interface CCProject {
@@ -169,6 +231,177 @@ export interface CCComment {
   content: string;
   created_at: string; // ISO
   attachments?: string; // JSON array of {url, filename, originalName?}
+}
+
+// --- Turn types ---
+
+export type TurnType = 'instruction' | 'result' | 'note'
+
+export interface Turn {
+  id: string
+  task_id: string
+  round_number: number
+  type: TurnType
+  author: string
+  content: string
+  links: Array<{ url: string; title?: string; type?: string }>
+  created_at: string
+  updated_at: string
+}
+
+interface TurnRow {
+  id: string
+  task_id: string
+  round_number: number
+  type: string
+  author: string
+  content: string
+  links: string
+  created_at: string
+  updated_at: string
+}
+
+function parseTurnRow(row: TurnRow): Turn {
+  let links: Turn['links'] = []
+  try { links = JSON.parse(row.links || '[]') } catch { links = [] }
+  return {
+    id: row.id,
+    task_id: row.task_id,
+    round_number: row.round_number,
+    type: row.type as TurnType,
+    author: row.author,
+    content: row.content,
+    links,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  }
+}
+
+export function getTurns(taskId: string): Turn[] {
+  const db = getCCDatabase()
+  const rows = db.prepare(
+    'SELECT * FROM turns WHERE task_id = ? ORDER BY round_number ASC, created_at ASC'
+  ).all(taskId) as TurnRow[]
+  return rows.map(parseTurnRow)
+}
+
+export function getCurrentRound(taskId: string): number {
+  const db = getCCDatabase()
+  const row = db.prepare(
+    'SELECT MAX(round_number) as max_round FROM turns WHERE task_id = ?'
+  ).get(taskId) as { max_round: number | null } | undefined
+  return row?.max_round ?? 0
+}
+
+export function createTurn(
+  taskId: string,
+  turn: { type: TurnType; author: string; content: string; links?: Turn['links']; assigned_to?: string }
+): Turn {
+  const writeDb = getCCDatabaseWrite()
+  try {
+    const id = randomUUID()
+    const now = new Date().toISOString()
+    const linksJson = JSON.stringify(turn.links || [])
+
+    let roundNumber: number
+
+    if (turn.type === 'instruction') {
+      // New instruction = new round
+      const currentMax = (writeDb.prepare(
+        'SELECT MAX(round_number) as max_round FROM turns WHERE task_id = ?'
+      ).get(taskId) as { max_round: number | null })?.max_round ?? 0
+      roundNumber = currentMax + 1
+
+      // Reassign task + reset picked
+      writeDb.prepare(
+        'UPDATE issues SET assignee = ?, picked = 0, picked_at = NULL, last_turn_at = ?, updated_at = ? WHERE id = ?'
+      ).run(turn.assigned_to || '', now, now, taskId)
+
+    } else if (turn.type === 'result') {
+      // Result completes current round
+      const currentMax = (writeDb.prepare(
+        'SELECT MAX(round_number) as max_round FROM turns WHERE task_id = ? AND type = \'instruction\''
+      ).get(taskId) as { max_round: number | null })?.max_round ?? 1
+      roundNumber = currentMax
+
+      // Find instruction author for this round to reassign back
+      const instructionRow = writeDb.prepare(
+        'SELECT author FROM turns WHERE task_id = ? AND round_number = ? AND type = \'instruction\' LIMIT 1'
+      ).get(taskId, currentMax) as { author: string } | undefined
+      const reassignTo = instructionRow?.author || 'cri'
+
+      writeDb.prepare(
+        'UPDATE issues SET assignee = ?, picked = 0, picked_at = NULL, last_turn_at = ?, updated_at = ? WHERE id = ?'
+      ).run(reassignTo, now, now, taskId)
+
+    } else {
+      // Note — use current round (or 0 if none)
+      const currentMax = (writeDb.prepare(
+        'SELECT MAX(round_number) as max_round FROM turns WHERE task_id = ?'
+      ).get(taskId) as { max_round: number | null })?.max_round ?? 0
+      roundNumber = currentMax
+
+      // Just update last_turn_at
+      writeDb.prepare(
+        'UPDATE issues SET last_turn_at = ?, updated_at = ? WHERE id = ?'
+      ).run(now, now, taskId)
+    }
+
+    writeDb.prepare(`
+      INSERT INTO turns (id, task_id, round_number, type, author, content, links, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(id, taskId, roundNumber, turn.type, turn.author, turn.content, linksJson, now, now)
+
+    return {
+      id,
+      task_id: taskId,
+      round_number: roundNumber,
+      type: turn.type,
+      author: turn.author,
+      content: turn.content,
+      links: turn.links || [],
+      created_at: now,
+      updated_at: now,
+    }
+  } finally {
+    writeDb.close()
+  }
+}
+
+export function updateTurn(turnId: string, content: string): void {
+  const writeDb = getCCDatabaseWrite()
+  try {
+    const now = new Date().toISOString()
+    writeDb.prepare(
+      'UPDATE turns SET content = ?, updated_at = ? WHERE id = ? AND type = \'note\''
+    ).run(content, now, turnId)
+  } finally {
+    writeDb.close()
+  }
+}
+
+export function setTaskPicked(taskId: string): void {
+  const writeDb = getCCDatabaseWrite()
+  try {
+    const now = new Date().toISOString()
+    writeDb.prepare(
+      'UPDATE issues SET picked = 1, picked_at = ? WHERE id = ?'
+    ).run(now, taskId)
+  } finally {
+    writeDb.close()
+  }
+}
+
+export function setTaskSeen(taskId: string): void {
+  const writeDb = getCCDatabaseWrite()
+  try {
+    const now = new Date().toISOString()
+    writeDb.prepare(
+      'UPDATE issues SET seen_at = ? WHERE id = ?'
+    ).run(now, taskId)
+  } finally {
+    writeDb.close()
+  }
 }
 
 // --- Priority mapping (CC uses low/normal/high, MC uses low/medium/high) ---
@@ -286,9 +519,11 @@ export function mapIssueToTask(issue: CCIssue & { last_comment_at?: string | nul
     creator: issue.creator || '',
     created_at: isoToUnix(issue.created_at),
     updated_at: isoToUnix(issue.updated_at),
-    last_activity_at: issue.last_comment_at
-      ? Math.max(isoToUnix(issue.updated_at), isoToUnix(issue.last_comment_at))
-      : isoToUnix(issue.updated_at),
+    last_activity_at: issue.last_turn_at
+      ? Math.max(isoToUnix(issue.updated_at), isoToUnix(issue.last_turn_at))
+      : issue.last_comment_at
+        ? Math.max(isoToUnix(issue.updated_at), isoToUnix(issue.last_comment_at))
+        : isoToUnix(issue.updated_at),
     tags: [],
     metadata: {
       project_id: issue.project_id || '',
@@ -300,6 +535,10 @@ export function mapIssueToTask(issue: CCIssue & { last_comment_at?: string | nul
     project_id: issue.project_id || '',
     project_title: projectTitle || '',
     plan_path: issue.plan_path || null,
+    last_turn_at: issue.last_turn_at ? isoToUnix(issue.last_turn_at) : null,
+    seen_at: issue.seen_at ? isoToUnix(issue.seen_at) : null,
+    picked: issue.picked ?? 0,
+    picked_at: issue.picked_at ? isoToUnix(issue.picked_at) : null,
   };
 }
 
