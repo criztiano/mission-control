@@ -2,10 +2,9 @@
 
 import { useState, useEffect, useCallback } from 'react'
 import { AgentAvatar } from '@/components/ui/agent-avatar'
-import { Button } from '@/components/ui/button'
 import { Tabs, TabsList, TabsTab, TabsPanel } from '@/components/ui/tabs'
-import { Refresh, NavArrowLeft } from 'iconoir-react'
 import { useMissionControl } from '@/store'
+import { Refresh, NavArrowLeft } from 'iconoir-react'
 import {
   OverviewTab,
   SoulTab,
@@ -71,7 +70,7 @@ export function AgentDetailPage({ agentName }: { agentName: string }) {
   const [agent, setAgent] = useState<Agent | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [activeTabValue, setActiveTabValue] = useState<'overview' | 'soul' | 'memory' | 'config' | 'tasks' | 'files' | 'skills' | 'activity'>('overview')
+  const [activeTab, setActiveTabLocal] = useState<'overview' | 'soul' | 'memory' | 'config' | 'tasks' | 'files' | 'skills' | 'activity'>('overview')
   const [editing, setEditing] = useState(false)
   const [formData, setFormData] = useState({
     role: '',
@@ -87,12 +86,10 @@ export function AgentDetailPage({ agentName }: { agentName: string }) {
   const [loadingHeartbeat, setLoadingHeartbeat] = useState(false)
   const [restartingSession, setRestartingSession] = useState(false)
 
-  // Fetch agent data
+  // Fetch agent details
   const fetchAgent = useCallback(async () => {
     try {
       setError(null)
-      if (!agent) setLoading(true)
-
       const response = await fetch('/api/agents')
       if (!response.ok) throw new Error('Failed to fetch agents')
 
@@ -100,7 +97,8 @@ export function AgentDetailPage({ agentName }: { agentName: string }) {
       const foundAgent = data.agents?.find((a: Agent) => a.name === agentName)
 
       if (!foundAgent) {
-        throw new Error(`Agent "${agentName}" not found`)
+        setError(`Agent "${agentName}" not found`)
+        return
       }
 
       setAgent(foundAgent)
@@ -115,7 +113,7 @@ export function AgentDetailPage({ agentName }: { agentName: string }) {
     } finally {
       setLoading(false)
     }
-  }, [agentName, agent])
+  }, [agentName])
 
   useEffect(() => {
     fetchAgent()
@@ -123,7 +121,7 @@ export function AgentDetailPage({ agentName }: { agentName: string }) {
 
   // Load SOUL content from disk-first API + templates
   useEffect(() => {
-    if (activeTabValue !== 'soul' || !agent) return
+    if (activeTab !== 'soul' || !agent) return
 
     const loadSoul = async () => {
       try {
@@ -155,11 +153,11 @@ export function AgentDetailPage({ agentName }: { agentName: string }) {
 
     loadSoul()
     loadTemplates()
-  }, [activeTabValue, agent])
+  }, [activeTab, agent])
 
   // Load memory content from disk-first API
   useEffect(() => {
-    if (activeTabValue !== 'memory' || !agent) return
+    if (activeTab !== 'memory' || !agent) return
 
     const loadMemory = async () => {
       try {
@@ -176,7 +174,24 @@ export function AgentDetailPage({ agentName }: { agentName: string }) {
     }
 
     loadMemory()
-  }, [activeTabValue, agent])
+  }, [activeTab, agent])
+
+  // Perform heartbeat check
+  const performHeartbeat = async () => {
+    if (!agent) return
+    setLoadingHeartbeat(true)
+    try {
+      const response = await fetch(`/api/agents/${agent.name}/heartbeat`)
+      if (response.ok) {
+        const data = await response.json()
+        setHeartbeatData(data)
+      }
+    } catch (error) {
+      console.error('Failed to perform heartbeat:', error)
+    } finally {
+      setLoadingHeartbeat(false)
+    }
+  }
 
   // Update agent status
   const updateAgentStatus = async (agentName: string, status: Agent['status'], activity?: string) => {
@@ -193,7 +208,8 @@ export function AgentDetailPage({ agentName }: { agentName: string }) {
 
       if (!response.ok) throw new Error('Failed to update agent status')
 
-      await fetchAgent()
+      // Refresh agent data
+      fetchAgent()
     } catch (error) {
       console.error('Failed to update agent status:', error)
       setError('Failed to update agent status')
@@ -223,23 +239,6 @@ export function AgentDetailPage({ agentName }: { agentName: string }) {
     }
   }
 
-  // Perform heartbeat check
-  const performHeartbeat = async () => {
-    if (!agent) return
-    setLoadingHeartbeat(true)
-    try {
-      const response = await fetch(`/api/agents/${agent.name}/heartbeat`)
-      if (response.ok) {
-        const data = await response.json()
-        setHeartbeatData(data)
-      }
-    } catch (error) {
-      console.error('Failed to perform heartbeat:', error)
-    } finally {
-      setLoadingHeartbeat(false)
-    }
-  }
-
   const handleSave = async () => {
     if (!agent) return
     try {
@@ -255,7 +254,7 @@ export function AgentDetailPage({ agentName }: { agentName: string }) {
       if (!response.ok) throw new Error('Failed to update agent')
 
       setEditing(false)
-      await fetchAgent()
+      fetchAgent()
     } catch (error) {
       console.error('Failed to update agent:', error)
     }
@@ -276,7 +275,7 @@ export function AgentDetailPage({ agentName }: { agentName: string }) {
       if (!response.ok) throw new Error('Failed to update SOUL')
 
       setFormData(prev => ({ ...prev, soul_content: content }))
-      await fetchAgent()
+      fetchAgent()
     } catch (error) {
       console.error('Failed to update SOUL:', error)
     }
@@ -298,7 +297,7 @@ export function AgentDetailPage({ agentName }: { agentName: string }) {
 
       const data = await response.json()
       setFormData(prev => ({ ...prev, working_memory: data.working_memory }))
-      await fetchAgent()
+      fetchAgent()
     } catch (error) {
       console.error('Failed to update memory:', error)
     }
@@ -331,7 +330,7 @@ export function AgentDetailPage({ agentName }: { agentName: string }) {
       await updateAgentStatus(agent.name, 'idle', 'Session restarted')
 
       // Refresh agent data
-      await fetchAgent()
+      fetchAgent()
     } catch (error) {
       console.error('Failed to restart session:', error)
       alert(`Failed to restart session: ${error instanceof Error ? error.message : 'Unknown error'}`)
@@ -351,50 +350,57 @@ export function AgentDetailPage({ agentName }: { agentName: string }) {
     { id: 'activity', label: 'Activity', icon: '>' }
   ]
 
-  if (loading && !agent) {
+  if (loading) {
     return (
-      <div className="flex items-center justify-center h-64">
+      <div className="h-full flex items-center justify-center">
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
         <span className="ml-2 text-muted-foreground">Loading agent...</span>
       </div>
     )
   }
 
-  if (error && !agent) {
+  if (error || !agent) {
     return (
-      <div className="p-6">
-        <div className="bg-red-500/10 border border-red-500/20 text-red-400 p-4 rounded-lg">
-          {error}
+      <div className="h-full flex flex-col">
+        <div className="flex items-center gap-3 p-4 border-b border-border">
+          <button
+            onClick={() => setActiveTab('agents')}
+            className="p-2 rounded-md hover:bg-secondary transition-smooth"
+            title="Back to Crew"
+          >
+            <NavArrowLeft className="w-5 h-5" />
+          </button>
+          <h2 className="text-xl font-bold text-foreground">Agent Not Found</h2>
         </div>
-        <Button
-          variant="outline"
-          onClick={() => setActiveTab('agents')}
-          className="mt-4"
-        >
-          <NavArrowLeft className="w-4 h-4 mr-2" />
-          Back to Crew
-        </Button>
+        <div className="flex-1 flex items-center justify-center">
+          <div className="text-center">
+            <p className="text-muted-foreground">{error || 'Agent not found'}</p>
+            <button
+              onClick={() => setActiveTab('agents')}
+              className="mt-4 px-4 py-2 bg-primary text-primary-foreground rounded-md hover:bg-primary/90 transition-smooth"
+            >
+              Back to Crew
+            </button>
+          </div>
+        </div>
       </div>
     )
   }
 
-  if (!agent) return null
-
   return (
     <div className="h-full flex flex-col">
-      <Tabs value={activeTabValue} onValueChange={(val) => setActiveTabValue(val as any)} className="flex-1 min-h-0 flex flex-col">
+      <Tabs value={activeTab} onValueChange={(val) => setActiveTabLocal(val as any)} className="flex-1 min-h-0 flex flex-col">
         {/* Header */}
         <div className="p-6 border-b border-border flex-shrink-0">
           <div className="flex justify-between items-start mb-4">
             <div className="flex items-center gap-3">
-              <Button
-                variant="ghost"
-                size="icon-sm"
+              <button
                 onClick={() => setActiveTab('agents')}
+                className="p-2 rounded-md hover:bg-secondary transition-smooth"
                 title="Back to Crew"
               >
-                <NavArrowLeft className="w-4 h-4" />
-              </Button>
+                <NavArrowLeft className="w-5 h-5" />
+              </button>
               <AgentAvatar agent={agent.name} size="lg" />
               <div>
                 <h3 className="text-xl font-bold text-foreground">{agent.name}</h3>
@@ -404,15 +410,14 @@ export function AgentDetailPage({ agentName }: { agentName: string }) {
             <div className="flex items-center gap-3">
               <div className={`w-4 h-4 rounded-full ${statusColors[agent.status]}`}></div>
               <span className="text-foreground">{agent.status}</span>
-              <Button
-                variant="ghost"
-                size="icon-sm"
+              <button
                 onClick={agent.session_key ? handleRestartSession : () => wakeAgent(agent.name, '')}
                 disabled={restartingSession}
+                className="p-1.5 rounded-md bg-surface-1 text-muted-foreground hover:text-foreground hover:bg-surface-2 disabled:opacity-50 disabled:cursor-not-allowed transition-smooth"
                 title={agent.session_key ? 'Restart Session' : 'Wake Agent'}
               >
                 <Refresh className={`w-4 h-4 ${restartingSession ? 'animate-spin' : ''}`} />
-              </Button>
+              </button>
             </div>
           </div>
 
