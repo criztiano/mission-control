@@ -13,7 +13,6 @@ import { PropertyChip, type PropertyOption } from '@/components/ui/property-chip
 import { Button } from '@/components/ui/button'
 import { AgentAvatar } from '@/components/ui/agent-avatar'
 import { BlockEditor } from '@/components/ui/block-editor'
-import { Tabs, TabsList, TabsTab } from '@/components/ui/tabs'
 import { Lightbox } from '@/components/ui/lightbox'
 import { Badge } from '@/components/ui/badge'
 
@@ -99,20 +98,10 @@ export function TaskBoardPanel() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [selectedTask, setSelectedTask] = useState<Task | null>(null)
-  const [draggedTask, setDraggedTask] = useState<Task | null>(null)
   const [showCreateModal, setShowCreateModal] = useState(false)
-  const [viewMode, setViewMode] = useState<'kanban' | 'list'>(() => {
-    if (typeof window !== 'undefined') {
-      return (localStorage.getItem('mc-task-view') as 'kanban' | 'list') || 'list'
-    }
-    return 'list'
-  })
   const [showClosed, setShowClosed] = useState(false)
-  const [focusedIndex, setFocusedIndex] = useState<{ col: number; row: number } | null>(null)
   const [focusedListIndex, setFocusedListIndex] = useState<number | null>(null)
-  const cardRefs = useRef<Map<string, HTMLDivElement>>(new Map())
   const listRowRefs = useRef<(HTMLDivElement | null)[]>([])
-  const dragCounter = useRef(0)
 
   // Fetch tasks and agents
   const fetchData = useCallback(async (silent?: boolean | React.MouseEvent) => {
@@ -159,11 +148,6 @@ export function TaskBoardPanel() {
     fetchData()
   }, [fetchData])
 
-  // Persist view mode
-  useEffect(() => {
-    localStorage.setItem('mc-task-view', viewMode)
-  }, [viewMode])
-
   // Keyboard navigation
   useEffect(() => {
     const modalOpen = selectedTask !== null || showCreateModal
@@ -179,88 +163,29 @@ export function TaskBoardPanel() {
       const t = e.target as HTMLElement
       if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t instanceof HTMLSelectElement || t?.isContentEditable) return
 
-      // L to toggle view mode
-      if (e.key === 'l' || e.key === 'L') {
-        e.preventDefault()
-        setViewMode(prev => prev === 'kanban' ? 'list' : 'kanban')
-        setFocusedIndex(null)
-        setFocusedListIndex(null)
+      // List mode keyboard navigation
+      if (!['ArrowUp', 'ArrowDown', 'Enter', 'Escape'].includes(e.key)) return
+      e.preventDefault()
+
+      if (e.key === 'Escape') { setFocusedListIndex(null); return }
+
+      const tasks = allTasksRef.current
+      if (e.key === 'Enter' && focusedListIndex !== null) {
+        if (tasks[focusedListIndex]) setSelectedTask(tasks[focusedListIndex])
         return
       }
 
-      if (viewMode === 'kanban') {
-        const tbs = tasksByStatusRef.current
-        // Build nav columns: drafts, open, closed (if shown)
-        const cols = [
-          tbs['drafts'] || [],
-          tbs['open'] || [],
-          ...(showClosed && tbs['closed']?.length ? [tbs['closed']] : []),
-        ]
-        if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter', 'Escape'].includes(e.key)) return
-        e.preventDefault()
+      if (focusedListIndex === null) { setFocusedListIndex(0); return }
 
-        if (e.key === 'Escape') { setFocusedIndex(null); return }
-
-        if (e.key === 'Enter' && focusedIndex) {
-          const col = cols[focusedIndex.col]
-          if (col && col[focusedIndex.row]) setSelectedTask(col[focusedIndex.row])
-          return
-        }
-
-        if (!focusedIndex) {
-          for (let c = 0; c < cols.length; c++) {
-            if (cols[c].length > 0) { setFocusedIndex({ col: c, row: 0 }); return }
-          }
-          return
-        }
-
-        let { col, row } = focusedIndex
-        if (e.key === 'ArrowDown') {
-          row = Math.min(row + 1, (cols[col]?.length || 1) - 1)
-        } else if (e.key === 'ArrowUp') {
-          row = Math.max(row - 1, 0)
-        } else if (e.key === 'ArrowRight') {
-          col = Math.min(col + 1, cols.length - 1)
-          row = Math.min(row, (cols[col]?.length || 1) - 1)
-        } else if (e.key === 'ArrowLeft') {
-          col = Math.max(col - 1, 0)
-          row = Math.min(row, (cols[col]?.length || 1) - 1)
-        }
-        setFocusedIndex({ col, row })
-      } else {
-        // List mode
-        if (!['ArrowUp', 'ArrowDown', 'Enter', 'Escape'].includes(e.key)) return
-        e.preventDefault()
-
-        if (e.key === 'Escape') { setFocusedListIndex(null); return }
-
-        const tasks = allTasksRef.current
-        if (e.key === 'Enter' && focusedListIndex !== null) {
-          if (tasks[focusedListIndex]) setSelectedTask(tasks[focusedListIndex])
-          return
-        }
-
-        if (focusedListIndex === null) { setFocusedListIndex(0); return }
-
-        if (e.key === 'ArrowDown') {
-          setFocusedListIndex(Math.min(focusedListIndex + 1, tasks.length - 1))
-        } else if (e.key === 'ArrowUp') {
-          setFocusedListIndex(Math.max(focusedListIndex - 1, 0))
-        }
+      if (e.key === 'ArrowDown') {
+        setFocusedListIndex(Math.min(focusedListIndex + 1, tasks.length - 1))
+      } else if (e.key === 'ArrowUp') {
+        setFocusedListIndex(Math.max(focusedListIndex - 1, 0))
       }
     }
     window.addEventListener('keydown', handleKey)
     return () => window.removeEventListener('keydown', handleKey)
-  }, [viewMode, focusedIndex, focusedListIndex, selectedTask, showCreateModal, showClosed])
-
-  // Scroll focused card into view (kanban)
-  useEffect(() => {
-    if (focusedIndex) {
-      const key = `${focusedIndex.col}-${focusedIndex.row}`
-      const el = cardRefs.current.get(key)
-      el?.scrollIntoView({ block: 'nearest' })
-    }
-  }, [focusedIndex])
+  }, [focusedListIndex, selectedTask, showCreateModal])
 
   // Scroll focused row into view (list)
   useEffect(() => {
@@ -269,8 +194,6 @@ export function TaskBoardPanel() {
     }
   }, [focusedListIndex])
 
-  // Keep a ref to tasksByStatus for keyboard handler (avoids stale closure)
-  const tasksByStatusRef = useRef<Record<string, Task[]>>({})
   // Keep a ref to allTasks for keyboard handler in list view
   const allTasksRef = useRef<Task[]>([])
 
@@ -293,7 +216,6 @@ export function TaskBoardPanel() {
     acc[column.key] = filteredTasks.filter(task => (task as any).column === column.key)
     return acc
   }, {} as Record<string, Task[]>)
-  tasksByStatusRef.current = tasksByStatus
 
   // Flat task list for list view (grouped and sorted)
   const listSections = [
@@ -304,78 +226,6 @@ export function TaskBoardPanel() {
 
   const allTasks = listSections.flatMap(section => section.tasks)
   allTasksRef.current = allTasks
-
-  // Drag and drop handlers
-  const handleDragStart = (e: React.DragEvent, task: Task) => {
-    setDraggedTask(task)
-    e.dataTransfer.effectAllowed = 'move'
-    e.dataTransfer.setData('text/html', e.currentTarget.outerHTML)
-  }
-
-  const handleDragEnter = (e: React.DragEvent, status: string) => {
-    e.preventDefault()
-    dragCounter.current++
-    e.currentTarget.classList.add('drag-over')
-  }
-
-  const handleDragLeave = (e: React.DragEvent) => {
-    dragCounter.current--
-    if (dragCounter.current === 0) {
-      e.currentTarget.classList.remove('drag-over')
-    }
-  }
-
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault()
-  }
-
-  const handleDrop = async (e: React.DragEvent, newStatus: string) => {
-    e.preventDefault()
-    dragCounter.current = 0
-    e.currentTarget.classList.remove('drag-over')
-
-    if (!draggedTask || draggedTask.status === newStatus) {
-      setDraggedTask(null)
-      return
-    }
-
-    try {
-      // Optimistically update UI
-      setTasks(prevTasks =>
-        prevTasks.map(task =>
-          task.id === draggedTask.id
-            ? { ...task, status: newStatus as Task['status'], updated_at: Math.floor(Date.now() / 1000) }
-            : task
-        )
-      )
-
-      // Update on server
-      const response = await fetch('/api/tasks', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          tasks: [{ id: draggedTask.id, status: newStatus }]
-        })
-      })
-
-      if (!response.ok) {
-        const data = await response.json().catch(() => ({}))
-        throw new Error(data.error || 'Failed to update task status')
-      }
-    } catch (err) {
-      // Revert optimistic update
-      setTasks(prevTasks =>
-        prevTasks.map(task =>
-          task.id === draggedTask.id
-            ? { ...task, status: draggedTask.status }
-            : task
-        )
-      )
-      setError(err instanceof Error ? err.message : 'Failed to update task status')
-    } finally {
-      setDraggedTask(null)
-    }
-  }
 
   // Format relative time for tasks
   const formatTaskTimestamp = (timestamp: number) => {
@@ -449,18 +299,6 @@ export function TaskBoardPanel() {
       <div className="flex justify-between items-center p-4 border-b border-border flex-shrink-0">
         <h2 className="text-xl font-bold text-foreground">Tasks</h2>
         <div className="flex gap-2">
-          {/* View toggle */}
-          <Tabs value={viewMode} onValueChange={(v) => { setViewMode(v as 'kanban' | 'list'); if (v === 'kanban') setFocusedListIndex(null); else setFocusedIndex(null) }}>
-            <TabsList>
-              <TabsTab value="kanban" title="Board view">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="18" rx="1"/><rect x="14" y="3" width="7" height="10" rx="1"/></svg>
-              </TabsTab>
-              <TabsTab value="list" title="List view">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
-              </TabsTab>
-            </TabsList>
-          </Tabs>
-
           {/* Project Filter */}
           <PropertyChip
             value={selectedProjectFilter === null ? 'all' : selectedProjectFilter}
@@ -523,145 +361,8 @@ export function TaskBoardPanel() {
         </div>
       )}
 
-      {/* Kanban Board */}
-      {viewMode === 'kanban' && (() => {
-        const draftTasks = tasksByStatus['drafts'] || []
-        const openTasks = tasksByStatus['open'] || []
-        const closedTasks = showClosed ? (tasksByStatus['closed'] || []) : []
-
-        const COL_DRAFTS = 0
-        const COL_OPEN = 1
-        const COL_CLOSED = showClosed ? 2 : -1
-
-        const renderCard = (task: Task, colIdx: number, rowIdx: number) => {
-          const isFocused = focusedIndex?.col === colIdx && focusedIndex?.row === rowIdx
-          return (
-            <div
-              key={task.id}
-              ref={(el) => { if (el) cardRefs.current.set(`${colIdx}-${rowIdx}`, el) }}
-              draggable
-              onDragStart={(e) => handleDragStart(e, task)}
-              onClick={() => setSelectedTask(task)}
-              className={`${isFocused ? 'bg-zinc-800' : 'bg-zinc-900/50'} border border-zinc-800/50 rounded-lg p-3 cursor-pointer hover:bg-zinc-800 transition-colors ${
-                draggedTask?.id === task.id ? 'opacity-50' : ''
-              }`}
-            >
-              <h4 className="text-foreground font-medium text-sm leading-tight">
-                {task.title}
-              </h4>
-              {/* Chips row */}
-              <div className="flex flex-wrap gap-1.5 mt-2" onClick={e => e.stopPropagation()}>
-                <PropertyChip
-                  value={task.status}
-                  options={STATUS_OPTIONS}
-                  onSelect={(v) => { fetch(`/api/tasks/${task.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: v }) }).then(() => fetchData()) }}
-                  colorFn={statusColor}
-                />
-                {task.priority === 'high' && (
-                  <Button
-                    variant="ghost"
-                    size="icon-xs"
-                    className="bg-red-500/15 text-red-400 pointer-events-none"
-                  >
-                    <NavArrowUp width={14} height={14} />
-                  </Button>
-                )}
-                <PropertyChip
-                  value={task.assigned_to || ''}
-                  options={assigneeOptions}
-                  onSelect={(v) => {
-                    fetch(`/api/tasks/${task.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ assigned_to: v || null }) }).then(() => fetchData())
-                  }}
-                  searchable
-                  align="right"
-                  placeholder={<span className="flex items-center gap-1 text-muted-foreground/40"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="8" r="4"/><path d="M5 20c0-4 3.5-7 7-7s7 3 7 7"/></svg></span>}
-                />
-                {task.project_id && (
-                  <PropertyChip
-                    value={task.project_id}
-                    options={projectChipOptions}
-                    onSelect={(v) => { fetch(`/api/tasks/${task.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project_id: v || null }) }).then(() => fetchData()) }}
-                  />
-                )}
-                {task.tags?.slice(0, 2).map((tag, i) => (
-                  <span key={i} className={`text-[10px] px-1.5 py-0.5 rounded-full border font-medium ${getTagColor(tag)}`}>{tag}</span>
-                ))}
-                {(task.tags?.length || 0) > 2 && (
-                  <span className="text-[10px] text-muted-foreground">+{task.tags!.length - 2}</span>
-                )}
-              </div>
-            </div>
-          )
-        }
-
-        const renderColumnHeader = (title: string, count: number) => (
-          <div className="py-2 flex justify-between items-center">
-            <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">{title}</h3>
-            <span className="text-xs text-muted-foreground/50">{count}</span>
-          </div>
-        )
-
-        return (
-        <div className="flex-1 flex gap-4 p-4 overflow-x-auto">
-          {/* Drafts & Proposals */}
-          <div
-            className="flex-1 min-w-72 flex flex-col"
-            onDragEnter={(e) => handleDragEnter(e, 'draft')}
-            onDragLeave={handleDragLeave}
-            onDragOver={handleDragOver}
-            onDrop={(e) => handleDrop(e, 'draft')}
-          >
-            {renderColumnHeader('Drafts & Proposals', draftTasks.length)}
-            <div className="flex-1 space-y-2 min-h-32 overflow-y-auto">
-              {draftTasks.map((task, rowIdx) => renderCard(task, COL_DRAFTS, rowIdx))}
-              {draftTasks.length === 0 && (
-                <div className="text-center text-muted-foreground/50 py-8 text-sm">No drafts</div>
-              )}
-            </div>
-          </div>
-
-          {/* Open */}
-          <div
-            className="flex-[2] min-w-80 flex flex-col"
-            onDragEnter={(e) => handleDragEnter(e, 'open')}
-            onDragLeave={handleDragLeave}
-            onDragOver={handleDragOver}
-            onDrop={(e) => handleDrop(e, 'open')}
-          >
-            {renderColumnHeader('Open', openTasks.length)}
-            <div className="flex-1 space-y-2 min-h-32 overflow-y-auto">
-              {openTasks.map((task, rowIdx) => renderCard(task, COL_OPEN, rowIdx))}
-              {openTasks.length === 0 && (
-                <div className="text-center text-muted-foreground/50 py-8 text-sm">No open tasks</div>
-              )}
-            </div>
-          </div>
-
-          {/* Closed (toggleable) */}
-          {showClosed && (
-            <div
-              className="flex-1 min-w-72 flex flex-col"
-              onDragEnter={(e) => handleDragEnter(e, 'closed')}
-              onDragLeave={handleDragLeave}
-              onDragOver={handleDragOver}
-              onDrop={(e) => handleDrop(e, 'closed')}
-            >
-              {renderColumnHeader('Closed', closedTasks.length)}
-              <div className="flex-1 space-y-2 min-h-32 overflow-y-auto">
-                {closedTasks.map((task, rowIdx) => renderCard(task, COL_CLOSED, rowIdx))}
-                {closedTasks.length === 0 && (
-                  <div className="text-center text-muted-foreground/50 py-8 text-sm">No closed tasks</div>
-                )}
-              </div>
-            </div>
-          )}
-        </div>
-        )
-      })()
-      }
-
       {/* List View */}
-      {viewMode === 'list' && (() => {
+      {(() => {
         const listSectionsWithLabels = [
           { key: 'drafts', label: 'Drafts & Proposals', tasks: tasksByStatus['drafts'] || [], rowClass: '' },
           { key: 'open', label: 'Open', tasks: tasksByStatus['open'] || [], rowClass: '' },
