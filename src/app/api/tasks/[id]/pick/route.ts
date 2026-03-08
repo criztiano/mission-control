@@ -1,13 +1,21 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireRole } from '@/lib/auth';
 import { logger } from '@/lib/logger';
-import { getIssue, setTaskPicked } from '@/lib/cc-db';
+import { getIssue, setTaskPicked, getTurns } from '@/lib/cc-db';
 
 /**
- * PUT /api/tasks/[id]/pick — set picked=1, picked_at=now
- * Called by agent when starting work on a task.
+ * POST /api/tasks/[id]/pick — agent picks up a task
+ *
+ * Body: { agent: string }  (required — who's picking it up)
+ *
+ * Returns the full task context: id, title, description, turns, priority, plan_path.
+ * Sets picked=1, picked_at=now, picked_by=agent.
+ *
+ * If the task has no turns and no description, the response includes
+ * `needs_refinement: true` — the agent must call /update with title + description
+ * before doing anything else.
  */
-export async function PUT(
+export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -16,17 +24,48 @@ export async function PUT(
 
   try {
     const { id: taskId } = await params;
+    const body = await request.json().catch(() => ({}));
+    const agent = body.agent;
+
+    if (!agent || typeof agent !== 'string') {
+      return NextResponse.json(
+        { error: 'agent is required — identify yourself' },
+        { status: 400 }
+      );
+    }
 
     const issue = getIssue(taskId);
     if (!issue) {
       return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     }
 
-    setTaskPicked(taskId);
+    if (issue.status === 'closed') {
+      return NextResponse.json({ error: 'Task is closed' }, { status: 400 });
+    }
 
-    return NextResponse.json({ ok: true });
+    // Record the pick
+    setTaskPicked(taskId, agent);
+
+    // Get all turns for context
+    const turns = getTurns(taskId);
+
+    // Determine if this task needs refinement (no turns, no meaningful description)
+    const hasDescription = issue.description && issue.description.trim().length > 0;
+    const needsRefinement = turns.length === 0 && !hasDescription;
+
+    return NextResponse.json({
+      id: issue.id,
+      title: issue.title,
+      description: issue.description || '',
+      status: issue.status,
+      assignee: issue.assignee,
+      priority: issue.priority,
+      plan_path: issue.plan_path || null,
+      turns,
+      needs_refinement: needsRefinement,
+    });
   } catch (error) {
-    logger.error({ err: error }, 'PUT /api/tasks/[id]/pick error');
+    logger.error({ err: error }, 'POST /api/tasks/[id]/pick error');
     return NextResponse.json({ error: 'Failed to pick task' }, { status: 500 });
   }
 }

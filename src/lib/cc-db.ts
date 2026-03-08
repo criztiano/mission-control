@@ -132,6 +132,10 @@ export function runCCMigrations(): void {
       db.exec(`ALTER TABLE issues ADD COLUMN picked_at TEXT`);
       logger.info('cc-db migration: added picked_at column to issues');
     }
+    if (!issueColNames.has('picked_by')) {
+      db.exec(`ALTER TABLE issues ADD COLUMN picked_by TEXT DEFAULT ''`);
+      logger.info('cc-db migration: added picked_by column to issues');
+    }
 
     // 5. Migrate existing comments to turns (as notes, round 0)
     const turnsExist = (db.prepare('SELECT COUNT(*) as c FROM turns').get() as { c: number }).c;
@@ -209,6 +213,7 @@ export interface CCIssue {
   seen_at: string | null;
   picked: number;
   picked_at: string | null;
+  picked_by: string;
 }
 
 export interface CCProject {
@@ -380,13 +385,13 @@ export function updateTurn(turnId: string, content: string): void {
   }
 }
 
-export function setTaskPicked(taskId: string): void {
+export function setTaskPicked(taskId: string, agent?: string): void {
   const writeDb = getCCDatabaseWrite()
   try {
     const now = new Date().toISOString()
     writeDb.prepare(
-      'UPDATE issues SET picked = 1, picked_at = ? WHERE id = ?'
-    ).run(now, taskId)
+      'UPDATE issues SET picked = 1, picked_at = ?, picked_by = ? WHERE id = ?'
+    ).run(now, agent || '', taskId)
   } finally {
     writeDb.close()
   }
@@ -539,6 +544,7 @@ export function mapIssueToTask(issue: CCIssue & { last_comment_at?: string | nul
     seen_at: issue.seen_at ? isoToUnix(issue.seen_at) : null,
     picked: issue.picked ?? 0,
     picked_at: issue.picked_at ? isoToUnix(issue.picked_at) : null,
+    picked_by: issue.picked_by || '',
   };
 }
 

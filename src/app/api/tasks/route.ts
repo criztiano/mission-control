@@ -129,6 +129,7 @@ export async function POST(request: NextRequest) {
         seen_at: null,
         picked: 0,
         picked_at: null,
+        picked_by: '',
       },
       projectTitle,
     );
