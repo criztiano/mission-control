@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
+import { BlockEditor } from '@/components/ui/block-editor'
 
 interface Agent {
   id: number
@@ -439,23 +440,14 @@ export function SoulTab({
         <label className="block text-sm font-medium text-muted-foreground mb-1">
           SOUL Content ({content.length} characters)
         </label>
-        {editing ? (
-          <textarea
-            value={content}
-            onChange={(e) => setContent(e.target.value)}
-            rows={20}
-            className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/50 font-mono text-sm"
-            placeholder="Define the agent's personality, instructions, and behavior patterns..."
-          />
-        ) : (
-          <div className="bg-surface-1/30 rounded p-4 max-h-96 overflow-y-auto">
-            {content ? (
-              <pre className="text-foreground whitespace-pre-wrap text-sm">{content}</pre>
-            ) : (
-              <p className="text-muted-foreground italic">No SOUL content defined</p>
-            )}
-          </div>
-        )}
+        <BlockEditor
+          initialMarkdown={content}
+          onChange={(md) => setContent(md)}
+          onBlur={(md) => setContent(md)}
+          placeholder="Define the agent's personality, instructions, and behavior patterns..."
+          editable={editing}
+          compact={true}
+        />
       </div>
 
       {/* Actions */}
@@ -606,22 +598,15 @@ export function MemoryTab({
               placeholder="Add new memory entry..."
             />
           </div>
-        ) : editing ? (
-          <textarea
-            value={content}
-            onChange={(e) => setContent(e.target.value)}
-            rows={15}
-            className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/50 font-mono text-sm"
-            placeholder="Working memory for temporary notes, current tasks, and session data..."
-          />
         ) : (
-          <div className="bg-surface-1/30 rounded p-4 max-h-96 overflow-y-auto">
-            {content ? (
-              <pre className="text-foreground whitespace-pre-wrap text-sm">{content}</pre>
-            ) : (
-              <p className="text-muted-foreground italic">No working memory content</p>
-            )}
-          </div>
+          <BlockEditor
+            initialMarkdown={content}
+            onChange={(md) => setContent(md)}
+            onBlur={(md) => setContent(md)}
+            placeholder="Working memory for temporary notes, current tasks, and session data..."
+            editable={editing}
+            compact={true}
+          />
         )}
       </div>
 
@@ -1063,34 +1048,34 @@ export function FilesTab({ agent }: { agent: Agent }) {
               <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-primary"></div>
               Loading...
             </div>
-          ) : editing ? (
-            <div className="space-y-3">
-              <textarea
-                value={editContent}
-                onChange={(e) => setEditContent(e.target.value)}
-                rows={20}
-                className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/50 font-mono text-sm"
-              />
-              <div className="flex gap-3">
-                <button
-                  onClick={handleSaveFile}
-                  disabled={saving}
-                  className="flex-1 bg-primary text-primary-foreground py-2 rounded-md hover:bg-primary/90 disabled:opacity-50 transition-smooth"
-                >
-                  {saving ? 'Saving...' : 'Save'}
-                </button>
-                <button
-                  onClick={() => { setEditing(false); setEditContent(fileContent) }}
-                  className="flex-1 bg-secondary text-muted-foreground py-2 rounded-md hover:bg-surface-2 transition-smooth"
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
           ) : (
-            <div className="bg-surface-1/30 rounded-lg p-4 max-h-[500px] overflow-y-auto">
-              <pre className="text-foreground whitespace-pre-wrap text-sm font-mono">{fileContent}</pre>
-            </div>
+            <>
+              <BlockEditor
+                initialMarkdown={fileContent}
+                onChange={(md) => setEditContent(md)}
+                onBlur={(md) => setEditContent(md)}
+                placeholder="File content..."
+                editable={editing}
+                compact={true}
+              />
+              {editing && (
+                <div className="flex gap-3 mt-3">
+                  <button
+                    onClick={handleSaveFile}
+                    disabled={saving}
+                    className="flex-1 bg-primary text-primary-foreground py-2 rounded-md hover:bg-primary/90 disabled:opacity-50 transition-smooth"
+                  >
+                    {saving ? 'Saving...' : 'Save'}
+                  </button>
+                  <button
+                    onClick={() => { setEditing(false); setEditContent(fileContent) }}
+                    className="flex-1 bg-secondary text-muted-foreground py-2 rounded-md hover:bg-surface-2 transition-smooth"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              )}
+            </>
           )}
         </div>
       )}
@@ -1916,38 +1901,37 @@ export function SkillsTab({ agent }: { agent: Agent }) {
           <div className="flex items-center justify-center py-8">
             <p className="text-sm text-muted-foreground">Loading content...</p>
           </div>
-        ) : editing ? (
-          <>
-            <textarea
-              value={editContent}
-              onChange={(e) => setEditContent(e.target.value)}
-              rows={20}
-              className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/50 font-mono text-sm"
-              placeholder="Skill markdown content..."
-            />
-            <div className="flex gap-3">
-              <button
-                onClick={handleSaveSkill}
-                disabled={saving}
-                className="flex-1 bg-primary text-primary-foreground py-2 rounded-md hover:bg-primary/90 disabled:opacity-50 transition-smooth"
-              >
-                {saving ? 'Saving...' : 'Save Skill'}
-              </button>
-              <button
-                onClick={() => {
-                  setEditing(false)
-                  setEditContent(skillContent)
-                }}
-                className="flex-1 bg-secondary text-muted-foreground py-2 rounded-md hover:bg-surface-2 transition-smooth"
-              >
-                Cancel
-              </button>
-            </div>
-          </>
         ) : (
-          <div className="bg-surface-1/30 rounded p-4 max-h-[600px] overflow-y-auto">
-            <pre className="text-foreground whitespace-pre-wrap text-sm font-mono">{skillContent}</pre>
-          </div>
+          <>
+            <BlockEditor
+              initialMarkdown={skillContent}
+              onChange={(md) => setEditContent(md)}
+              onBlur={(md) => setEditContent(md)}
+              placeholder="Skill markdown content..."
+              editable={editing}
+              compact={true}
+            />
+            {editing && (
+              <div className="flex gap-3 mt-3">
+                <button
+                  onClick={handleSaveSkill}
+                  disabled={saving}
+                  className="flex-1 bg-primary text-primary-foreground py-2 rounded-md hover:bg-primary/90 disabled:opacity-50 transition-smooth"
+                >
+                  {saving ? 'Saving...' : 'Save Skill'}
+                </button>
+                <button
+                  onClick={() => {
+                    setEditing(false)
+                    setEditContent(skillContent)
+                  }}
+                  className="flex-1 bg-secondary text-muted-foreground py-2 rounded-md hover:bg-surface-2 transition-smooth"
+                >
+                  Cancel
+                </button>
+              </div>
+            )}
+          </>
         )}
       </div>
     )
