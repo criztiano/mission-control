@@ -1,9 +1,9 @@
 import type { Metadata, Viewport } from 'next'
-import { Google_Sans } from 'next/font/google'
+import { Inter } from 'next/font/google'
 import { ThemeProvider } from 'next-themes'
 import './globals.css'
 
-const googleSans = Google_Sans({
+const inter = Inter({
   subsets: ['latin'],
   display: 'swap',
 })
@@ -36,7 +36,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en" suppressHydrationWarning>
-      <body className={`${googleSans.className} antialiased`} suppressHydrationWarning>
+      <body className={`${inter.className} antialiased`} suppressHydrationWarning>
         <ThemeProvider
           attribute="class"
           defaultTheme="dark"
