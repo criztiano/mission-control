@@ -538,7 +538,7 @@ function TaskDetailModal({
   const [loadingTurns, setLoadingTurns] = useState(false)
   const [turnText, setTurnText] = useState('')
   const [turnError, setTurnError] = useState<string | null>(null)
-  const [turnAssignee, setTurnAssignee] = useState('')
+  const [turnAssignee, setTurnAssignee] = useState(task.assigned_to || '')
   const [expandedRounds, setExpandedRounds] = useState<Set<number>>(new Set())
 
   const [saving, setSaving] = useState(false)
@@ -557,6 +557,7 @@ function TaskDetailModal({
     setProjectId(task.project_id || '')
     setTurnText('')
     setTurnError(null)
+    setTurnAssignee(task.assigned_to || '')
     setExpandedRounds(new Set())
 
   }, [task.id])
