@@ -76,6 +76,7 @@ export async function PUT(
       creator,
       project_id,
       plan_path,
+      blocked_by,
     } = body;
 
     if (status && !VALID_STATUSES.has(status)) {
@@ -127,6 +128,19 @@ export async function PUT(
     if (plan_path !== undefined) {
       fieldsToUpdate.push('plan_path = ?');
       updateParams.push(plan_path || null);
+    }
+    if (blocked_by !== undefined) {
+      if (!Array.isArray(blocked_by)) {
+        return NextResponse.json({ error: 'blocked_by must be an array of task IDs' }, { status: 400 });
+      }
+      fieldsToUpdate.push('blocked_by = ?');
+      updateParams.push(JSON.stringify(blocked_by));
+    }
+    if (body.blocked_by !== undefined) {
+      // Accept array of task IDs or empty array
+      const blockedBy = Array.isArray(body.blocked_by) ? JSON.stringify(body.blocked_by) : '[]';
+      fieldsToUpdate.push('blocked_by = ?');
+      updateParams.push(blockedBy);
     }
 
     if (fieldsToUpdate.length === 0) {
