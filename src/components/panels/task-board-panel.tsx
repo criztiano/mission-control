@@ -47,6 +47,9 @@ interface Task {
   seen_at?: number | null
   picked?: number
   picked_at?: number | null
+  blocked_by?: string[]
+  is_blocked?: boolean
+  blocker_details?: Array<{ id: string; title: string; status: string }>
 }
 
 const PRIORITY_ORDER: Record<string, number> = { urgent: 0, high: 1, medium: 2, low: 3 }
@@ -421,13 +424,16 @@ export function TaskBoardPanel() {
                           onClick={() => setSelectedTask(task)}
                           className={`flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1.5 sm:gap-4 px-4 py-2.5 border-b border-zinc-800/50 last:border-b-0 cursor-pointer hover:bg-zinc-800 transition-colors ${section.rowClass || ''} ${
                             isFocused ? 'bg-zinc-800' : ''
-                          }`}
+                          } ${task.is_blocked ? 'opacity-60' : ''}`}
                         >
                           <span className="flex-1 text-sm font-medium text-foreground truncate min-w-0 flex items-center gap-1.5">
                             {hasUnseenTurns(task) && (
                               <span title="New activity" className="inline-block size-2 rounded-full bg-blue-500 shrink-0" />
                             )}
                             {task.title}
+                            {task.is_blocked && (
+                              <span title="Blocked by another task" className="shrink-0 text-amber-500">🔒</span>
+                            )}
                             {isStale(task) && (
                               <span title="No activity in 2+ hours" className="inline-block size-1.5 rounded-full bg-amber-500 shrink-0" />
                             )}
@@ -528,6 +534,8 @@ function TaskDetailModal({
   // creator kept in DB for traceability but removed from UI
   const [projectId, setProjectId] = useState(task.project_id || '')
   const [projectLoading, setProjectLoading] = useState(false)
+  const [blockedBy, setBlockedBy] = useState<string[]>(task.blocked_by || [])
+  const [blockerDetails, setBlockerDetails] = useState<Array<{ id: string; title: string; status: string }>>(task.blocker_details || [])
 
   // Navigation
   const currentIndex = allTasks.findIndex(t => t.id === task.id)
@@ -539,6 +547,8 @@ function TaskDetailModal({
   const [turnText, setTurnText] = useState('')
   const [turnError, setTurnError] = useState<string | null>(null)
   const [turnAssignee, setTurnAssignee] = useState(task.assigned_to || '')
+  const [showToDropdown, setShowToDropdown] = useState(false)
+  const toDropdownRef = useRef<HTMLDivElement>(null)
   const [expandedRounds, setExpandedRounds] = useState<Set<number>>(new Set())
 
   const [saving, setSaving] = useState(false)
@@ -558,8 +568,22 @@ function TaskDetailModal({
     setTurnText('')
     setTurnError(null)
     setTurnAssignee(task.assigned_to || '')
+    setBlockedBy(task.blocked_by || [])
+    setBlockerDetails(task.blocker_details || [])
     setExpandedRounds(new Set())
 
+  }, [task.id])
+
+  // Fetch blocker details from single-task endpoint
+  useEffect(() => {
+    if ((task.blocked_by || []).length === 0 && blockedBy.length === 0) return
+    fetch(`/api/tasks/${task.id}`)
+      .then(r => r.json())
+      .then(data => {
+        if (data.task?.blocker_details) setBlockerDetails(data.task.blocker_details)
+        if (data.task?.blocked_by) setBlockedBy(data.task.blocked_by)
+      })
+      .catch(() => {})
   }, [task.id])
 
   // Keyboard navigation (← →)
@@ -577,6 +601,18 @@ function TaskDetailModal({
     window.addEventListener('keydown', handleKey)
     return () => window.removeEventListener('keydown', handleKey)
   }, [prevTask, nextTask, onNavigate])
+
+  // Click-outside for To... dropdown
+  useEffect(() => {
+    if (!showToDropdown) return
+    const handler = (e: MouseEvent) => {
+      if (toDropdownRef.current && !toDropdownRef.current.contains(e.target as Node)) {
+        setShowToDropdown(false)
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [showToDropdown])
 
   // --- Save a single field ---
   const saveField = async (field: string, value: string) => {
@@ -646,6 +682,25 @@ function TaskDetailModal({
   }
 
   const handleClose = () => { onUpdate(); onClose() }
+
+  const handleBlockedByChange = async (newBlockedBy: string[]) => {
+    setBlockedBy(newBlockedBy)
+    setSaving(true)
+    try {
+      const res = await fetch(`/api/tasks/${task.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ blocked_by: newBlockedBy }),
+      })
+      if (res.ok) {
+        // Re-fetch blocker details
+        const detailRes = await fetch(`/api/tasks/${task.id}`)
+        const data = await detailRes.json()
+        if (data.task?.blocker_details) setBlockerDetails(data.task.blocker_details)
+        onUpdate()
+      }
+    } catch {} finally { setSaving(false) }
+  }
 
   const [confirmDelete, setConfirmDelete] = useState(false)
   const handleDelete = async () => {
@@ -934,6 +989,55 @@ function TaskDetailModal({
             </Badge>
           </div>
 
+          {/* Blocked by section */}
+          {(blockedBy.length > 0 || status === 'open') && (
+            <div className="flex flex-wrap items-center gap-1.5 mt-2">
+              {blockerDetails.length > 0 && (
+                <>
+                  <span className="text-xs text-muted-foreground/60 mr-1">🔒 Blocked by</span>
+                  {blockerDetails.map(b => (
+                    <button
+                      key={b.id}
+                      type="button"
+                      onClick={() => {
+                        const blockerTask = allTasks.find(t => String(t.id) === b.id)
+                        if (blockerTask && onNavigate) onNavigate(blockerTask)
+                      }}
+                      className={`inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-md border transition-colors cursor-pointer ${
+                        b.status === 'closed'
+                          ? 'border-green-500/30 bg-green-500/10 text-green-400 line-through'
+                          : 'border-amber-500/30 bg-amber-500/10 text-amber-400 hover:bg-amber-500/20'
+                      }`}
+                    >
+                      {b.title}
+                      <span
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          handleBlockedByChange(blockedBy.filter(id => id !== b.id))
+                        }}
+                        className="ml-0.5 text-muted-foreground/40 hover:text-muted-foreground cursor-pointer"
+                      >×</span>
+                    </button>
+                  ))}
+                </>
+              )}
+              {status === 'open' && (
+                <PropertyChip
+                  value=""
+                  options={allTasks
+                    .filter(t => t.id !== task.id && t.status !== 'closed' && !blockedBy.includes(String(t.id)))
+                    .map(t => ({ value: String(t.id), label: t.title }))}
+                  onSelect={(taskId) => {
+                    if (taskId && !blockedBy.includes(taskId)) {
+                      handleBlockedByChange([...blockedBy, taskId])
+                    }
+                  }}
+                  searchable
+                  placeholder={<span className="text-muted-foreground/40 text-xs">+ blocker</span>}
+                />
+              )}
+            </div>
+          )}
 
         </div>
 
@@ -1041,13 +1145,26 @@ function TaskDetailModal({
               />
               <div className="flex items-center gap-2">
                 <Button type="submit" size="sm">Pass the ball</Button>
-                <PropertyChip
-                  value={turnAssignee}
-                  options={detailAssigneeOptions.filter(o => o.value !== '')}
-                  onSelect={(agent) => { setTurnAssignee(agent); submitTurn(agent) }}
-                  searchable
-                  placeholder={<span className="text-muted-foreground/40 text-xs">To...</span>}
-                />
+                <div className="relative" ref={toDropdownRef}>
+                  <Button variant="outline" size="sm" type="button" onClick={() => setShowToDropdown(!showToDropdown)}>
+                    To...
+                  </Button>
+                  {showToDropdown && (
+                    <div className="absolute bottom-full mb-1 left-0 bg-card border border-border rounded-lg shadow-lg py-1 min-w-[140px] z-50">
+                      {agents.filter(a => a.name.toLowerCase() !== 'cri').map(a => (
+                        <button
+                          key={a.name}
+                          type="button"
+                          className="w-full flex items-center gap-2 px-3 py-1.5 text-sm text-foreground hover:bg-surface-1 transition-colors"
+                          onClick={() => { submitTurn(a.name); setShowToDropdown(false) }}
+                        >
+                          <AgentAvatar agent={a.name} size="sm" />
+                          {a.name}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
                 <div className="flex-1" />
                 {status === 'open' && (
                   <Button variant="outline" size="sm" onClick={() => handleStatusChange('closed')} type="button">
