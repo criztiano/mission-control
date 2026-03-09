@@ -813,6 +813,13 @@ function TaskDetailModal({
   const roundNumbers = [...roundsMap.keys()].sort((a, b) => b - a) // newest first
   const maxRound = roundNumbers.length > 0 ? roundNumbers[0] : 0
 
+  const sortRoundTurns = (turns: Turn[]) => [...turns].sort((a, b) => {
+    const typeOrder: Record<string, number> = { result: 0, instruction: 1, note: 2 }
+    const typeDiff = (typeOrder[a.type] ?? 2) - (typeOrder[b.type] ?? 2)
+    if (typeDiff !== 0) return typeDiff
+    return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
+  })
+
   const renderTurnContent = (turn: Turn) => (
     <div className="text-sm text-muted-foreground mt-1 prose prose-sm prose-invert max-w-none
       prose-headings:text-foreground prose-headings:font-semibold prose-headings:mt-3 prose-headings:mb-1.5
@@ -1081,7 +1088,7 @@ function TaskDetailModal({
                     // Round 0 = migrated notes, always show inline
                     return (
                       <div key={roundNum} className="space-y-3">
-                        {roundTurns.map(turn => renderTurn(turn))}
+                        {sortRoundTurns(roundTurns).map(turn => renderTurn(turn))}
                       </div>
                     )
                   }
@@ -1114,7 +1121,7 @@ function TaskDetailModal({
                       </button>
                       {isExpanded && (
                         <div className="px-3 pb-3 space-y-3">
-                          {roundTurns.map(turn => renderTurn(turn))}
+                          {sortRoundTurns(roundTurns).map(turn => renderTurn(turn))}
                         </div>
                       )}
                     </div>
