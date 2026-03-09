@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireRole } from '@/lib/auth';
 import { logger } from '@/lib/logger';
-import { getCCDatabase, setTaskPicked, getTurns } from '@/lib/cc-db';
+import { getCCDatabase, setTaskPicked, getTurns, parseBlockedBy, getOpenBlockerIds } from '@/lib/cc-db';
 
 /**
  * POST /api/tasks/pick — automatic task assignment
@@ -47,8 +47,8 @@ export async function POST(request: NextRequest) {
 
     const placeholders = assignees.map(() => '?').join(',');
 
-    // Find highest priority, oldest task that's open and not already picked
-    const issue = db.prepare(`
+    // Find highest priority, oldest tasks that are open and not already picked
+    const candidates = db.prepare(`
       SELECT * FROM issues
       WHERE status = 'open'
         AND LOWER(assignee) IN (${assignees.map(a => '?').join(',')})
@@ -64,11 +64,23 @@ export async function POST(request: NextRequest) {
           ELSE 5
         END,
         created_at ASC
-      LIMIT 1
-    `).get(...assignees.map(a => a.toLowerCase())) as Record<string, unknown> | undefined;
+      LIMIT 20
+    `).all(...assignees.map(a => a.toLowerCase())) as Record<string, unknown>[];
+
+    // Filter out blocked tasks in JS (parse blocked_by, batch-check blocker statuses)
+    const allBlockerIds = new Set<string>();
+    for (const c of candidates) {
+      for (const bid of parseBlockedBy(c.blocked_by as string)) allBlockerIds.add(bid);
+    }
+    const openBlockers = getOpenBlockerIds([...allBlockerIds]);
+
+    const issue = candidates.find(c => {
+      const blockers = parseBlockedBy(c.blocked_by as string);
+      return blockers.length === 0 || !blockers.some(bid => openBlockers.has(bid));
+    });
 
     if (!issue) {
-      // No tasks available
+      // No unblocked tasks available
       return new NextResponse(null, { status: 204 });
     }
 
