@@ -130,6 +130,7 @@ export async function POST(request: NextRequest) {
         picked: 0,
         picked_at: null,
         picked_by: '',
+        blocked_by: '[]',
       },
       projectTitle,
     );

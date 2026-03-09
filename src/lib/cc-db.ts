@@ -136,6 +136,10 @@ export function runCCMigrations(): void {
       db.exec(`ALTER TABLE issues ADD COLUMN picked_by TEXT DEFAULT ''`);
       logger.info('cc-db migration: added picked_by column to issues');
     }
+    if (!issueColNames.has('blocked_by')) {
+      db.exec(`ALTER TABLE issues ADD COLUMN blocked_by TEXT DEFAULT '[]'`);
+      logger.info('cc-db migration: added blocked_by column to issues');
+    }
 
     // 5. Migrate existing comments to turns (as notes, round 0)
     const turnsExist = (db.prepare('SELECT COUNT(*) as c FROM turns').get() as { c: number }).c;
@@ -214,6 +218,7 @@ export interface CCIssue {
   picked: number;
   picked_at: string | null;
   picked_by: string;
+  blocked_by: string; // JSON array of task IDs e.g. '["uuid1","uuid2"]'
 }
 
 export interface CCProject {
@@ -545,6 +550,7 @@ export function mapIssueToTask(issue: CCIssue & { last_comment_at?: string | nul
     picked: issue.picked ?? 0,
     picked_at: issue.picked_at ? isoToUnix(issue.picked_at) : null,
     picked_by: issue.picked_by || '',
+    blocked_by: parseBlockedBy(issue.blocked_by),
   };
 }
 
@@ -570,6 +576,42 @@ export function mapCCComment(c: CCComment) {
     replies: [],
     attachments,
   };
+}
+
+// --- Blocked-by helpers ---
+
+export function parseBlockedBy(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch { return []; }
+}
+
+/**
+ * Batch-compute which blocker IDs are still open.
+ * Returns a Set of task IDs that are NOT closed (i.e. still blocking).
+ */
+export function getOpenBlockerIds(blockerIds: string[]): Set<string> {
+  if (blockerIds.length === 0) return new Set();
+  const db = getCCDatabase();
+  const placeholders = blockerIds.map(() => '?').join(',');
+  const rows = db.prepare(
+    `SELECT id FROM issues WHERE id IN (${placeholders}) AND status != 'closed'`
+  ).all(...blockerIds) as { id: string }[];
+  return new Set(rows.map(r => r.id));
+}
+
+/**
+ * Get blocker details (id, title, status) for a set of blocker IDs.
+ */
+export function getBlockerDetails(blockerIds: string[]): Array<{ id: string; title: string; status: string }> {
+  if (blockerIds.length === 0) return [];
+  const db = getCCDatabase();
+  const placeholders = blockerIds.map(() => '?').join(',');
+  return db.prepare(
+    `SELECT id, title, status FROM issues WHERE id IN (${placeholders})`
+  ).all(...blockerIds) as Array<{ id: string; title: string; status: string }>;
 }
 
 // --- Exports for priority mapping (used by API routes) ---
