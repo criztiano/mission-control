@@ -82,6 +82,14 @@ export async function PUT(
       return NextResponse.json({ error: `Invalid status: ${status}` }, { status: 400 });
     }
 
+    // API key users (agents) cannot change status — only humans via browser session can
+    if (status !== undefined && auth.user.username === 'api') {
+      return NextResponse.json(
+        { error: 'Status changes are restricted to human users. Use /api/tasks/{id}/update to report work.' },
+        { status: 403 }
+      );
+    }
+
     const now = new Date().toISOString();
 
     // Build dynamic update
