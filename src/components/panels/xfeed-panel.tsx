@@ -107,6 +107,14 @@ function extractTcoLinks(content: string): string[] {
   return [...new Set(matches)]
 }
 
+// --- Flash animation helper ---
+
+const FLASH_COLORS: Record<string, string> = {
+  fire: 'bg-green-500/10',
+  meh: 'bg-yellow-500/10',
+  noise: 'bg-red-500/10',
+}
+
 // --- Components ---
 
 function ThemeBadge({ theme }: { theme: string }) {

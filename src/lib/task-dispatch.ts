@@ -106,7 +106,7 @@ async function isLikelyBusy(assignee: string): Promise<boolean> {
 }
 
 // Agents that use spawn (no persistent main session)
-const SPAWN_AGENTS = new Set(['dumbo', 'uze', 'ralph', 'piem'])
+const SPAWN_AGENTS = new Set(['dumbo', 'uze', 'ralph', 'piem', 'cody'])
 
 async function sendOne(payload: DispatchParams) {
   const assignee = (payload.assignee || '').trim()
@@ -116,6 +116,16 @@ async function sendOne(payload: DispatchParams) {
   const compactContext = (payload.content || '').replace(/\s+/g, ' ').trim().slice(0, 240)
 
   if (SPAWN_AGENTS.has(agentId)) {
+    // Check if agent already has a picked task (busy) — queue drain will handle it later
+    const busyTask = getIssue(payload.taskId) // we need to check OTHER tasks
+    const db = getCCDatabase()
+    const alreadyBusy = db.prepare(
+      "SELECT id FROM issues WHERE assignee = ? AND status = 'open' AND picked = 1 AND id != ? LIMIT 1"
+    ).get(agentId, payload.taskId) as { id: string } | undefined
+    if (alreadyBusy) {
+      return { sent: false as const, reason: 'agent-busy' as const }
+    }
+
     // Fetch full task data, mark as picked, and embed everything in the message.
     // Agent wakes up knowing everything — zero API calls needed to start working.
     const issue = getIssue(payload.taskId)
