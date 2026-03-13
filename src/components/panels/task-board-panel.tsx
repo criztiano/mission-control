@@ -413,7 +413,9 @@ export function TaskBoardPanel() {
                 <div key={section.key}>
                   <div className="flex items-center gap-2 mb-2 px-1">
                     <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">{section.label}</span>
-                    <span className="text-[10px] text-muted-foreground/50">{section.tasks.length}</span>
+                    <span className="inline-flex items-center justify-center min-w-[20px] h-4 px-1.5 text-[10px] font-semibold bg-muted text-muted-foreground rounded-full tabular-nums">
+                      {section.tasks.length}
+                    </span>
                   </div>
                   <div className={`bg-card border rounded-lg overflow-hidden ${section.key === 'drafts' ? 'border-dashed border-border/60' : 'border-border'}`}>
                     {section.tasks.map(task => {
