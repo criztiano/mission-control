@@ -335,10 +335,17 @@ export function createTurn(
       roundNumber = currentMax
 
       // Agent-to-agent routing: if assigned_to is explicitly set, use it (enables pipelines)
-      // Otherwise fall back to instruction author (defaults to 'cri')
+      // Otherwise: team-aware routing — builders route to their PM, PMs route to cri
+      // Fallback: instruction author, then cri
+      const TEAM_ROUTING: Record<string, string> = {
+        dumbo: 'ralph', ralph: 'cri',   // Skunkworks
+        cody: 'piem',   piem: 'cri',    // Devz
+      }
       let reassignTo: string
       if (turn.assigned_to) {
         reassignTo = turn.assigned_to
+      } else if (TEAM_ROUTING[turn.author]) {
+        reassignTo = TEAM_ROUTING[turn.author]
       } else {
         const instructionRow = writeDb.prepare(
           'SELECT author FROM turns WHERE task_id = ? AND round_number = ? AND type = \'instruction\' LIMIT 1'
