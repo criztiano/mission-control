@@ -466,6 +466,117 @@ function TweetCard({ tweet, onUpdate, focused }: {
   )
 }
 
+// --- DigestRow ---
+
+function DigestRow({ tweet, onUpdate, focused }: {
+  tweet: Tweet
+  onUpdate: () => void
+  focused?: boolean
+}) {
+  const [updating, setUpdating] = useState(false)
+  const [flashClass, setFlashClass] = useState('')
+  const flashTimeoutRef = useRef<NodeJS.Timeout>(null)
+
+  const handleRate = async (rating: TweetRating) => {
+    setUpdating(true)
+    // Flash animation
+    const newRating = tweet.rating === rating ? null : rating
+    if (newRating) {
+      setFlashClass(FLASH_COLORS[newRating])
+      if (flashTimeoutRef.current) clearTimeout(flashTimeoutRef.current)
+      flashTimeoutRef.current = setTimeout(() => setFlashClass(''), 500)
+    }
+    try {
+      await fetch(`/api/xfeed/${tweet.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rating: newRating }),
+      })
+      onUpdate()
+    } finally {
+      setUpdating(false)
+    }
+  }
+
+  // Get summary: prefer verdict, fallback to title
+  const summary = tweet.verdict || tweet.title
+
+  return (
+    <div
+      className={`flex items-center justify-between py-2 border-b border-zinc-800/50 transition-colors duration-300 px-2 rounded-sm ${
+        flashClass
+      } ${
+        focused ? 'ring-2 ring-primary/50' : ''
+      }`}
+    >
+      <a
+        href={tweet.tweet_link}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="flex-1 min-w-0 mr-3 text-sm font-medium text-zinc-200 hover:text-zinc-50 transition-colors truncate"
+      >
+        {summary}
+        <span className="inline-block ml-1.5 text-zinc-600 align-middle">↗</span>
+      </a>
+      <div className="flex items-center gap-0.5 shrink-0">
+        <RatingButton rating="fire" current={tweet.rating} onRate={handleRate} />
+        <RatingButton rating="meh" current={tweet.rating} onRate={handleRate} />
+        <RatingButton rating="noise" current={tweet.rating} onRate={handleRate} />
+      </div>
+    </div>
+  )
+}
+
+// --- DigestView ---
+
+function DigestView({ tweets, onUpdate, focusedIndex, onFocusedIndexChange, scrollContainerRef }: {
+  tweets: Tweet[]
+  onUpdate: () => void
+  focusedIndex: number | null
+  onFocusedIndexChange: (idx: number | null) => void
+  scrollContainerRef: React.RefObject<HTMLDivElement | null>
+}) {
+  const rowVirtualizer = useVirtualizer({
+    count: tweets.length,
+    getScrollElement: () => scrollContainerRef.current,
+    estimateSize: () => 40,
+    overscan: 10,
+  })
+
+  // Scroll focused item into view
+  useEffect(() => {
+    if (focusedIndex !== null) {
+      rowVirtualizer.scrollToIndex(focusedIndex, { align: 'auto' })
+    }
+  }, [focusedIndex, rowVirtualizer])
+
+  return (
+    <div
+      className="max-w-3xl mx-auto relative"
+      style={{ height: `${rowVirtualizer.getTotalSize()}px` }}
+    >
+      {rowVirtualizer.getVirtualItems().map((virtualItem) => {
+        const tweet = tweets[virtualItem.index]
+        return (
+          <div
+            key={tweet.id}
+            data-index={virtualItem.index}
+            ref={rowVirtualizer.measureElement}
+            className="absolute left-0 w-full"
+            style={{ transform: `translateY(${virtualItem.start}px)` }}
+          >
+            <DigestRow
+              tweet={tweet}
+              onUpdate={onUpdate}
+              focused={focusedIndex === virtualItem.index}
+            />
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 // --- Main Panel ---
 
 const PAGE_SIZE = 50
@@ -480,6 +591,7 @@ export function XFeedPanel() {
   const [error, setError] = useState<string | null>(null)
   const [focusedIndex, setFocusedIndex] = useState<number | null>(null)
   const [digestRunning, setDigestRunning] = useState(false)
+  const [viewMode, setViewMode] = useState<'cards' | 'digest'>('digest')
 
   const scrollContainerRef = useRef<HTMLDivElement>(null)
 
@@ -543,20 +655,21 @@ export function XFeedPanel() {
     setFocusedIndex(null)
   }, [themeFilter, ratingFilter, digestFilter, search])
 
-  // Virtualizer
+  // Virtualizer (cards mode only — DigestView manages its own)
   const rowVirtualizer = useVirtualizer({
     count: tweets.length,
     getScrollElement: () => scrollContainerRef.current,
     estimateSize: () => 300,
     overscan: 3,
+    enabled: viewMode === 'cards',
   })
 
-  // Scroll focused item into view via virtualizer
+  // Scroll focused item into view via virtualizer (cards mode)
   useEffect(() => {
-    if (focusedIndex !== null) {
+    if (viewMode === 'cards' && focusedIndex !== null) {
       rowVirtualizer.scrollToIndex(focusedIndex, { align: 'auto' })
     }
-  }, [focusedIndex, rowVirtualizer])
+  }, [focusedIndex, rowVirtualizer, viewMode])
 
   // Keyboard navigation
   useEffect(() => {
@@ -668,11 +781,18 @@ export function XFeedPanel() {
         </div>
 
         {/* Curated/All tabs */}
-        <div className="mb-3">
+        <div className="mb-3 flex items-center gap-6">
           <Tabs value={mode} onValueChange={(v) => setMode(v as 'curated' | 'all')}>
             <TabsList>
               <TabsTab value="curated">Curated</TabsTab>
               <TabsTab value="all">All</TabsTab>
+            </TabsList>
+          </Tabs>
+          {/* View mode tabs */}
+          <Tabs value={viewMode} onValueChange={(v) => setViewMode(v as 'cards' | 'digest')}>
+            <TabsList>
+              <TabsTab value="cards">Cards</TabsTab>
+              <TabsTab value="digest">Digest</TabsTab>
             </TabsList>
           </Tabs>
         </div>
@@ -743,7 +863,7 @@ export function XFeedPanel() {
           </div>
         )}
 
-        {tweets.length > 0 && (
+        {tweets.length > 0 && viewMode === 'cards' && (
           <div
             className="max-w-3xl mx-auto relative"
             style={{ height: `${rowVirtualizer.getTotalSize()}px` }}
@@ -767,6 +887,16 @@ export function XFeedPanel() {
               )
             })}
           </div>
+        )}
+
+        {tweets.length > 0 && viewMode === 'digest' && (
+          <DigestView
+            tweets={tweets}
+            onUpdate={handleUpdate}
+            focusedIndex={focusedIndex}
+            onFocusedIndexChange={setFocusedIndex}
+            scrollContainerRef={scrollContainerRef}
+          />
         )}
 
         {/* Load more */}
