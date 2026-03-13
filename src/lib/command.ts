@@ -78,6 +78,23 @@ export function runOpenClaw(args: string[], options: CommandOptions = {}) {
   })
 }
 
+/**
+ * Fire-and-forget: spawn an OpenClaw command without waiting for it to finish.
+ * Returns immediately after the process starts. Used for agent dispatches that
+ * may take minutes (spawn-based agents like Dumbo).
+ */
+export function runOpenClawDetached(args: string[], options: Omit<CommandOptions, 'timeoutMs'> = {}) {
+  const child = spawn(config.openclawBin, args, {
+    cwd: options.cwd || config.openclawHome || process.cwd(),
+    env: options.env,
+    shell: false,
+    detached: true,
+    stdio: 'ignore',
+  })
+  child.unref()
+  return child.pid
+}
+
 export function runClawdbot(args: string[], options: CommandOptions = {}) {
   return runCommand(config.clawdbotBin, args, {
     ...options,

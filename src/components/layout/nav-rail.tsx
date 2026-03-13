@@ -25,6 +25,8 @@ interface AgentListItem {
   config?: any
 }
 
+const APP_VERSION = 'v1.2.0'
+
 const navGroups: NavGroup[] = [
   {
     id: 'core',
@@ -331,18 +333,23 @@ export function NavRail() {
         </div>
 
         {/* Connection indicator */}
-        <div className={`shrink-0 py-3 flex ${sidebarExpanded ? 'px-3 items-center gap-2' : 'flex-col items-center'}`}>
-          <div
-            className={`w-2.5 h-2.5 rounded-full shrink-0 ${
-              connection.isConnected ? 'bg-green-500 pulse-dot' : 'bg-red-500'
-            }`}
-            title={connection.isConnected ? 'Gateway connected' : 'Gateway disconnected'}
-          />
-          {sidebarExpanded && (
-            <span className="text-xs text-muted-foreground truncate">
-              {connection.isConnected ? 'Connected' : 'Disconnected'}
-            </span>
-          )}
+        <div className={`shrink-0 py-3 flex ${sidebarExpanded ? 'px-3 flex-col items-start gap-0.5' : 'flex-col items-center gap-0.5'}`}>
+          <div className={`flex items-center gap-2`}>
+            <div
+              className={`w-2.5 h-2.5 rounded-full shrink-0 ${
+                connection.isConnected ? 'bg-green-500 pulse-dot' : 'bg-red-500'
+              }`}
+              title={connection.isConnected ? 'Gateway connected' : 'Gateway disconnected'}
+            />
+            {sidebarExpanded && (
+              <span className="text-xs text-muted-foreground truncate">
+                {connection.isConnected ? 'Connected' : 'Disconnected'}
+              </span>
+            )}
+          </div>
+          <span className={`text-[10px] text-muted-foreground/60 ${sidebarExpanded ? '' : 'mt-1'}`}>
+            {APP_VERSION}
+          </span>
         </div>
       </nav>
 

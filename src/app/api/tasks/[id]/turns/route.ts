@@ -3,6 +3,7 @@ import { requireRole } from '@/lib/auth';
 import { mutationLimiter } from '@/lib/rate-limit';
 import { logger } from '@/lib/logger';
 import { getIssue, getTurns, createTurn, type TurnType } from '@/lib/cc-db';
+import { dispatchTaskNudge } from '@/lib/task-dispatch';
 
 const VALID_TURN_TYPES = new Set<string>(['instruction', 'result', 'note']);
 
@@ -81,6 +82,27 @@ export async function POST(
       links: links || [],
       assigned_to,
     });
+
+    // Dispatch to next agent:
+    // - instruction turns: always dispatch to assigned_to
+    // - result turns: dispatch only when explicitly routed to another agent (agent-to-agent pipeline)
+    const shouldDispatch =
+      (type === 'instruction' && assigned_to) ||
+      (type === 'result' && assigned_to);
+
+    if (shouldDispatch) {
+      try {
+        await dispatchTaskNudge({
+          taskId,
+          title: issue.title,
+          assignee: assigned_to,
+          reason: 'reassign',
+          content: content || '',
+        });
+      } catch (e) {
+        logger.warn({ err: e, taskId }, 'task dispatch nudge failed on turn');
+      }
+    }
 
     return NextResponse.json({ turn }, { status: 201 });
   } catch (error) {

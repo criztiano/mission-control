@@ -16,6 +16,7 @@ import {
   type KanbanColumn,
 } from '@/lib/cc-db';
 import { randomUUID } from 'crypto';
+import { dispatchTaskNudge } from '@/lib/task-dispatch';
 
 const VALID_STATUSES: Set<string> = new Set(['draft', 'open', 'closed']);
 
@@ -160,6 +161,17 @@ export async function POST(request: NextRequest) {
     });
 
     eventBus.broadcast('task.created', task);
+
+    // Event-driven dispatch (replaces Pinball polling for new assignments)
+    void dispatchTaskNudge({
+      taskId: id,
+      title,
+      assignee: assigned_to,
+      reason: 'create',
+      content: description,
+    }).catch((e) => {
+      logger.warn({ err: e, taskId: id }, 'task dispatch nudge failed on create');
+    });
 
     return NextResponse.json({ task }, { status: 201 });
   } catch (error) {

@@ -450,16 +450,18 @@ export function TaskBoardPanel() {
                                 <NavArrowUp width={14} height={14} />
                               </Button>
                             )}
-                            <PropertyChip
-                              value={task.assigned_to || ''}
-                              options={assigneeOptions}
-                              onSelect={(v) => {
-                                fetch(`/api/tasks/${task.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ assigned_to: v || null }) }).then(() => fetchData())
-                              }}
-                              searchable
-                              align="right"
-                              placeholder={<span className="flex items-center gap-1 text-muted-foreground/40"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="8" r="4"/><path d="M5 20c0-4 3.5-7 7-7s7 3 7 7"/></svg></span>}
-                            />
+                            {section.key !== 'my-tasks' && (
+                              <PropertyChip
+                                value={task.assigned_to || ''}
+                                options={assigneeOptions}
+                                onSelect={(v) => {
+                                  fetch(`/api/tasks/${task.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ assigned_to: v || null }) }).then(() => fetchData())
+                                }}
+                                searchable
+                                align="right"
+                                placeholder={<span className="flex items-center gap-1 text-muted-foreground/40"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="8" r="4"/><path d="M5 20c0-4 3.5-7 7-7s7 3 7 7"/></svg></span>}
+                              />
+                            )}
                             {/* Project chip */}
                             {task.project_id && (
                               <PropertyChip
@@ -984,6 +986,18 @@ function TaskDetailModal({
                 Reopen
               </Button>
             )}
+            {status === 'open' && assignee && agents.some(a => a.name.toLowerCase() === assignee.toLowerCase()) && (
+              <Button size="xs" variant="ghost" onClick={async () => {
+                try {
+                  const res = await fetch(`/api/tasks/${task.id}/poke`, { method: 'POST' })
+                  const data = await res.json()
+                  alert(res.ok ? `Poked ${data.assignee}!` : (data.error || 'Poke failed'))
+                } catch { alert('Poke failed') }
+              }}
+                className="text-amber-500/60 hover:text-amber-400">
+                👉 Poke {assignee}
+              </Button>
+            )}
             <Button
               variant={priority === 'high' ? 'default' : 'ghost'}
               size="xs"
@@ -1164,7 +1178,7 @@ function TaskDetailModal({
                 onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSubmitTurn(e) } }}
               />
               <div className="flex items-center gap-2">
-                <Button type="submit" size="sm">Pass the ball</Button>
+                <Button type="submit" size="sm">Pass the ball <span className="ml-1.5 text-[10px] text-muted-foreground/50 font-mono">[^]</span></Button>
                 <div className="relative" ref={toDropdownRef}>
                   <Button variant="outline" size="sm" type="button" onClick={() => setShowToDropdown(!showToDropdown)}>
                     To...
@@ -1188,7 +1202,7 @@ function TaskDetailModal({
                 <div className="flex-1" />
                 {status === 'open' && (
                   <Button variant="outline" size="sm" onClick={() => handleStatusChange('closed')} type="button">
-                    🏀 Dunk it
+                    🏀 Dunk it <span className="ml-1.5 text-[10px] text-muted-foreground/50 font-mono">[0]</span>
                   </Button>
                 )}
               </div>

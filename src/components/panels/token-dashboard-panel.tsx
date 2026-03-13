@@ -15,6 +15,7 @@ interface UsageStats {
   }
   models: Record<string, { totalTokens: number; totalCost: number; requestCount: number }>
   sessions: Record<string, { totalTokens: number; totalCost: number; requestCount: number }>
+  providers?: Record<string, { totalTokens: number; totalCost: number; requestCount: number }>
   timeframe: string
   recordCount: number
 }
@@ -36,7 +37,7 @@ export function TokenDashboardPanel() {
   const loadUsageStats = useCallback(async () => {
     setIsLoading(true)
     try {
-      const response = await fetch(`/api/tokens?action=stats&timeframe=${selectedTimeframe}`)
+      const response = await fetch(`/api/tokens?action=stats&timeframe=${selectedTimeframe}`, { cache: 'no-store' })
       const data = await response.json()
       setUsageStats(data)
     } catch (error) {
@@ -48,7 +49,7 @@ export function TokenDashboardPanel() {
 
   const loadTrendData = useCallback(async () => {
     try {
-      const response = await fetch(`/api/tokens?action=trends&timeframe=${selectedTimeframe}`)
+      const response = await fetch(`/api/tokens?action=trends&timeframe=${selectedTimeframe}`, { cache: 'no-store' })
       const data = await response.json()
       setTrendData(data)
     } catch (error) {
@@ -304,6 +305,29 @@ export function TokenDashboardPanel() {
               </div>
               <div className="text-sm text-muted-foreground">
                 Avg Tokens/Request
+              </div>
+            </div>
+          </div>
+
+          {/* Provider Breakdown (requested: Anthropic vs OpenAI) */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="bg-card border border-border rounded-lg p-6">
+              <div className="text-2xl font-bold text-foreground">
+                {formatCost(usageStats.providers?.anthropic?.totalCost || 0)}
+              </div>
+              <div className="text-sm text-muted-foreground">Anthropic Cost ({selectedTimeframe})</div>
+              <div className="text-xs text-muted-foreground mt-2">
+                {formatNumber(usageStats.providers?.anthropic?.totalTokens || 0)} tokens • {formatNumber(usageStats.providers?.anthropic?.requestCount || 0)} req
+              </div>
+            </div>
+
+            <div className="bg-card border border-border rounded-lg p-6">
+              <div className="text-2xl font-bold text-foreground">
+                {formatCost((usageStats.providers?.openai?.totalCost || 0) + (usageStats.providers?.['openai-codex']?.totalCost || 0))}
+              </div>
+              <div className="text-sm text-muted-foreground">OpenAI + Codex Cost ({selectedTimeframe})</div>
+              <div className="text-xs text-muted-foreground mt-2">
+                {formatNumber((usageStats.providers?.openai?.totalTokens || 0) + (usageStats.providers?.['openai-codex']?.totalTokens || 0))} tokens • {formatNumber((usageStats.providers?.openai?.requestCount || 0) + (usageStats.providers?.['openai-codex']?.requestCount || 0))} req
               </div>
             </div>
           </div>

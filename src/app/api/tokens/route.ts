@@ -5,6 +5,8 @@ import { config, ensureDirExists } from '@/lib/config'
 import { requireRole } from '@/lib/auth'
 import { getAllGatewaySessions } from '@/lib/sessions'
 
+export const dynamic = 'force-dynamic'
+
 const DATA_PATH = config.tokensPath
 
 interface TokenUsageRecord {
@@ -33,6 +35,7 @@ interface ExportData {
   summary: TokenStats
   models: Record<string, TokenStats>
   sessions: Record<string, TokenStats>
+  providers?: Record<string, TokenStats>
 }
 
 // Model pricing (cost per 1K tokens)
@@ -64,27 +67,37 @@ function getModelCost(modelName: string): number {
  * Load token data from persistent file, falling back to deriving from session stores.
  */
 async function loadTokenData(): Promise<TokenUsageRecord[]> {
-  // First try loading from persistent token file
+  // Prefer live gateway sessions for accurate, timeframe-sensitive stats.
+  const live = deriveFromSessions()
+  if (live.length > 0) return live
+
+  // Fallback to persisted token file only if no live session data is available.
   try {
     ensureDirExists(dirname(DATA_PATH))
     await access(DATA_PATH)
     const data = await readFile(DATA_PATH, 'utf-8')
     const records = JSON.parse(data)
-    if (Array.isArray(records) && records.length > 0) {
-      return records
-    }
+    if (Array.isArray(records)) return records
   } catch {
-    // File doesn't exist or is empty — derive from sessions
+    // ignore
   }
 
-  // Derive token usage from session stores
-  return deriveFromSessions()
+  return []
 }
 
 /**
  * Derive token usage records from OpenClaw session stores.
  * Each session has totalTokens, inputTokens, outputTokens, model, etc.
  */
+function getProviderFromModel(model: string): string {
+  const m = (model || '').toLowerCase()
+  if (m.startsWith('openai-codex/') || m.startsWith('openai/')) return 'openai'
+  if (m.startsWith('anthropic/')) return 'anthropic'
+  if (m.startsWith('nvidia-nim/')) return 'nvidia-nim'
+  if (m.startsWith('openrouter/')) return 'openrouter'
+  return (m.split('/')[0] || 'unknown')
+}
+
 function deriveFromSessions(): TokenUsageRecord[] {
   const sessions = getAllGatewaySessions(Infinity) // Get ALL sessions regardless of age
   const records: TokenUsageRecord[] = []
@@ -101,7 +114,7 @@ function deriveFromSessions(): TokenUsageRecord[] {
     records.push({
       id: `session-${session.agent}-${session.key}`,
       model: session.model || 'unknown',
-      sessionId: `${session.agent}:${session.chatType}`,
+      sessionId: session.key || `${session.agent}:${session.chatType}`,
       timestamp: session.updatedAt,
       inputTokens,
       outputTokens,
@@ -215,10 +228,23 @@ export async function GET(request: NextRequest) {
         sessionStats[sessionId] = calculateStats(records)
       }
 
+      const providerGroups = filteredData.reduce((acc, record) => {
+        const provider = getProviderFromModel(record.model)
+        if (!acc[provider]) acc[provider] = []
+        acc[provider].push(record)
+        return acc
+      }, {} as Record<string, TokenUsageRecord[]>)
+
+      const providerStats: Record<string, TokenStats> = {}
+      for (const [provider, records] of Object.entries(providerGroups)) {
+        providerStats[provider] = calculateStats(records)
+      }
+
       return NextResponse.json({
         summary: overallStats,
         models: modelStats,
         sessions: sessionStats,
+        providers: providerStats,
         timeframe,
         recordCount: filteredData.length,
       })
@@ -249,11 +275,24 @@ export async function GET(request: NextRequest) {
         sessionStats[sessionId] = calculateStats(records)
       }
 
+      const providerGroups = filteredData.reduce((acc, record) => {
+        const provider = getProviderFromModel(record.model)
+        if (!acc[provider]) acc[provider] = []
+        acc[provider].push(record)
+        return acc
+      }, {} as Record<string, TokenUsageRecord[]>)
+
+      const providerStats: Record<string, TokenStats> = {}
+      for (const [provider, records] of Object.entries(providerGroups)) {
+        providerStats[provider] = calculateStats(records)
+      }
+
       const exportData: ExportData = {
         usage: filteredData,
         summary: overallStats,
         models: modelStats,
         sessions: sessionStats,
+        providers: providerStats,
       }
 
       if (format === 'csv') {
@@ -291,9 +330,7 @@ export async function GET(request: NextRequest) {
     }
 
     if (action === 'trends') {
-      const now = Date.now()
-      const twentyFourHoursAgo = now - 24 * 60 * 60 * 1000
-      const recentData = filteredData.filter(r => r.timestamp >= twentyFourHoursAgo)
+      const recentData = filteredData
 
       const hourlyTrends: Record<string, { tokens: number; cost: number; requests: number }> = {}
 

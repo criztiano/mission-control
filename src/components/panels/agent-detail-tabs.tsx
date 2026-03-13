@@ -2,7 +2,6 @@
 
 import { useState, useEffect } from 'react'
 import { BlockEditor } from '@/components/ui/block-editor'
-import { PropertyChip } from '@/components/ui/property-chip'
 import { PixelLoader } from '@/components/ui/pixel-loader'
 
 interface Agent {
@@ -1479,12 +1478,6 @@ export function CreateAgentModal({
 }
 
 // Config Tab Component for Agent Detail Modal
-interface ModelInfo {
-  id: string
-  name: string
-  provider: string
-}
-
 export function ConfigTab({
   agent,
   onSave
@@ -1498,70 +1491,12 @@ export function ConfigTab({
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [jsonInput, setJsonInput] = useState('')
-  const [availableModels, setAvailableModels] = useState<ModelInfo[]>([])
-  const [modelSaving, setModelSaving] = useState(false)
-  const [modelSuccess, setModelSuccess] = useState<string | null>(null)
 
   useEffect(() => {
-    setConfig(agent.config || {})
-    setJsonInput(JSON.stringify(agent.config || {}, null, 2))
+    const nextConfig = agent.config || {}
+    setConfig(nextConfig)
+    setJsonInput(JSON.stringify(nextConfig, null, 2))
   }, [agent.config])
-
-  // Fetch available models
-  useEffect(() => {
-    fetch('/api/models')
-      .then(res => res.ok ? res.json() : null)
-      .then(data => { if (data?.models) setAvailableModels(data.models) })
-      .catch(() => {})
-  }, [])
-
-  // Change model via gateway config
-  const handleModelChange = async (newModelId: string) => {
-    setModelSaving(true)
-    setError(null)
-    setModelSuccess(null)
-    try {
-      // Find agent index in gateway config
-      const gwRes = await fetch('/api/gateway-config')
-      if (!gwRes.ok) throw new Error('Failed to read gateway config')
-      const gwData = await gwRes.json()
-      const agentList = gwData.config?.agents?.list
-      if (!Array.isArray(agentList)) throw new Error('No agents.list in gateway config')
-
-      const agentName = agent.config?.identity?.name || agent.name
-      const idx = agentList.findIndex((a: any) =>
-        a.identity?.name === agentName ||
-        a.openclawId === agent.config?.openclawId
-      )
-      if (idx === -1) throw new Error(`Agent "${agentName}" not found in gateway config`)
-
-      // Save via dot-notation: agents.list.{idx}.model
-      const res = await fetch('/api/gateway-config', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          updates: { [`agents.list.${idx}.model`]: newModelId }
-        }),
-      })
-      if (!res.ok) {
-        const data = await res.json()
-        throw new Error(data.error || 'Failed to update model')
-      }
-
-      // Update local config state to reflect the change
-      setConfig((prev: any) => ({
-        ...prev,
-        model: newModelId,
-      }))
-      setModelSuccess('Model updated. Restart gateway to apply.')
-      setTimeout(() => setModelSuccess(null), 5000)
-      onSave()
-    } catch (err: any) {
-      setError(err.message)
-    } finally {
-      setModelSaving(false)
-    }
-  }
 
   const handleSave = async (writeToGateway: boolean = false) => {
     setSaving(true)
@@ -1662,34 +1597,10 @@ export function ConfigTab({
           <div className="bg-surface-1/50 rounded-lg p-4">
             <h5 className="text-sm font-medium text-foreground mb-2">Model</h5>
             <div className="text-sm space-y-2">
-              <div className="flex items-center gap-2">
-                <span className="text-muted-foreground">Primary:</span>
-                {availableModels.length > 0 ? (
-                  <div className="flex items-center gap-2">
-                    <PropertyChip
-                      value={model.primary || ''}
-                      options={availableModels.map(m => ({
-                        value: m.id,
-                        label: m.name,
-                        group: m.provider,
-                      }))}
-                      onSelect={handleModelChange}
-                      searchable
-                      readOnly={modelSaving}
-                    />
-                    {modelSaving && (
-                      <PixelLoader size={12} speed={120} />
-                    )}
-                  </div>
-                ) : (
-                  <span className="text-foreground font-mono">{model.primary || 'N/A'}</span>
-                )}
+              <div className="text-muted-foreground">
+                Manage the primary model from the header picker.
               </div>
-              {modelSuccess && (
-                <div className="text-xs text-green-400 bg-green-500/10 border border-green-500/20 rounded px-2 py-1">
-                  {modelSuccess}
-                </div>
-              )}
+              <div className="text-foreground font-mono text-xs">{model.primary || 'N/A'}</div>
               {model.fallbacks && model.fallbacks.length > 0 && (
                 <div>
                   <span className="text-muted-foreground">Fallbacks:</span>

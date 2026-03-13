@@ -2,6 +2,8 @@
 
 import { useState, useEffect, useCallback } from 'react'
 import { AgentAvatar } from '@/components/ui/agent-avatar'
+import { Button } from '@/components/ui/button'
+import { PropertyChip } from '@/components/ui/property-chip'
 import { Tabs, TabsList, TabsTab, TabsPanel } from '@/components/ui/tabs'
 import { useMissionControl } from '@/store'
 import { Refresh, NavArrowLeft } from 'iconoir-react'
@@ -59,6 +61,12 @@ interface SoulTemplate {
   size: number
 }
 
+interface ModelInfo {
+  id: string
+  name: string
+  provider: string
+}
+
 const statusColors: Record<string, string> = {
   offline: 'bg-zinc-500',
   idle: 'bg-green-500',
@@ -86,6 +94,13 @@ export function AgentDetailPage({ agentName }: { agentName: string }) {
   const [heartbeatData, setHeartbeatData] = useState<HeartbeatResponse | null>(null)
   const [loadingHeartbeat, setLoadingHeartbeat] = useState(false)
   const [restartingSession, setRestartingSession] = useState(false)
+  const [availableModels, setAvailableModels] = useState<ModelInfo[]>([])
+  const [modelDraft, setModelDraft] = useState('')
+  const [modelDirty, setModelDirty] = useState(false)
+  const [modelSavedPendingApply, setModelSavedPendingApply] = useState(false)
+  const [modelSaving, setModelSaving] = useState(false)
+  const [modelApplying, setModelApplying] = useState(false)
+  const [modelError, setModelError] = useState<string | null>(null)
 
   // Fetch agent details
   const fetchAgent = useCallback(async () => {
@@ -103,6 +118,13 @@ export function AgentDetailPage({ agentName }: { agentName: string }) {
       }
 
       setAgent(foundAgent)
+      const currentModel = typeof foundAgent.config?.model === 'string'
+        ? foundAgent.config.model
+        : (foundAgent.config?.model?.primary || '')
+      setModelDraft(currentModel)
+      setModelDirty(false)
+      setModelSavedPendingApply(false)
+      setModelError(null)
       setFormData({
         role: foundAgent.role,
         session_key: foundAgent.session_key || '',
@@ -119,6 +141,13 @@ export function AgentDetailPage({ agentName }: { agentName: string }) {
   useEffect(() => {
     fetchAgent()
   }, [fetchAgent])
+
+  useEffect(() => {
+    fetch('/api/models')
+      .then(res => res.ok ? res.json() : null)
+      .then(data => { if (data?.models) setAvailableModels(data.models) })
+      .catch(() => {})
+  }, [])
 
   // Load SOUL content from disk-first API + templates
   useEffect(() => {
@@ -351,6 +380,76 @@ export function AgentDetailPage({ agentName }: { agentName: string }) {
     { id: 'activity', label: 'Activity', icon: '>' }
   ]
 
+  const currentModel = typeof agent?.config?.model === 'string'
+    ? agent?.config?.model
+    : (agent?.config?.model?.primary || '')
+
+  const handleModelSelect = (value: string) => {
+    setModelDraft(value)
+    setModelDirty(value !== currentModel)
+    setModelSavedPendingApply(false)
+    setModelError(null)
+  }
+
+  const handleModelSave = async () => {
+    if (!agent || !modelDraft) return
+    setModelSaving(true)
+    setModelError(null)
+    try {
+      const gwRes = await fetch('/api/gateway-config')
+      if (!gwRes.ok) throw new Error('Failed to read gateway config')
+      const gwData = await gwRes.json()
+      const agentList = gwData.config?.agents?.list
+      if (!Array.isArray(agentList)) throw new Error('No agents.list in gateway config')
+
+      const idx = agentList.findIndex((a: any) =>
+        a.identity?.name === agent.name ||
+        a.id === agent.name ||
+        a.id === agent.config?.openclawId ||
+        a.openclawId === agent.config?.openclawId
+      )
+      if (idx === -1) throw new Error(`Agent "${agent.name}" not found in gateway config`)
+
+      const res = await fetch('/api/gateway-config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ updates: { [`agents.list.${idx}.model`]: modelDraft } }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Failed to update model')
+
+      setAgent(prev => prev ? ({
+        ...prev,
+        config: {
+          ...(prev.config || {}),
+          model: modelDraft,
+        },
+      }) : prev)
+      setModelDraft(modelDraft)
+      setModelDirty(false)
+      setModelSavedPendingApply(true)
+    } catch (err: any) {
+      setModelError(err.message || 'Failed to save model')
+    } finally {
+      setModelSaving(false)
+    }
+  }
+
+  const handleModelApply = async () => {
+    setModelApplying(true)
+    setModelError(null)
+    try {
+      const res = await fetch('/api/gateway-config/apply', { method: 'POST' })
+      const data = await res.json()
+      if (!res.ok || data?.ok === false) throw new Error(data.error || 'Failed to apply config')
+      setModelSavedPendingApply(false)
+    } catch (err: any) {
+      setModelError(err.message || 'Failed to apply model config')
+    } finally {
+      setModelApplying(false)
+    }
+  }
+
   if (loading) {
     return (
       <div className="h-full flex flex-col items-center justify-center gap-3">
@@ -406,12 +505,6 @@ export function AgentDetailPage({ agentName }: { agentName: string }) {
               <div>
                 <div className="flex items-center gap-2 mb-1">
                   <h3 className="text-xl font-bold text-foreground">{agent.name}</h3>
-                  {/* Model badge */}
-                  {agent.config?.model?.primary && (
-                    <span className="px-2 py-0.5 text-xs font-mono bg-surface-1 text-muted-foreground border border-border rounded">
-                      {agent.config.model.primary.replace(/^[^/]+\//, '')}
-                    </span>
-                  )}
                   {/* Heartbeat interval badge */}
                   {agent.config?.heartbeat?.every && (
                     <span className="px-2 py-0.5 text-xs bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 rounded" title="Heartbeat interval">
@@ -428,7 +521,39 @@ export function AgentDetailPage({ agentName }: { agentName: string }) {
                     </span>
                   )}
                 </div>
-                <p className="text-muted-foreground">{agent.role}</p>
+                <div className="flex items-center gap-2 flex-wrap min-h-7">
+                  <PropertyChip
+                    value={modelDraft || currentModel || ''}
+                    options={availableModels.map(m => ({
+                      value: m.id,
+                      label: m.name,
+                      group: m.provider,
+                    }))}
+                    onSelect={handleModelSelect}
+                    searchable
+                    readOnly={modelSaving || modelApplying}
+                  />
+                  {modelSaving || modelApplying ? <PixelLoader size={12} speed={120} /> : null}
+                  {modelDirty && (
+                    <Button size="sm" onClick={handleModelSave} disabled={modelSaving || modelApplying}>
+                      {modelSaving ? 'Saving…' : 'Save'}
+                    </Button>
+                  )}
+                  {!modelDirty && modelSavedPendingApply && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={handleModelApply}
+                      disabled={modelApplying}
+                      className="border-amber-500/40 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20 animate-pulse"
+                    >
+                      {modelApplying ? 'Applying…' : 'Apply'}
+                    </Button>
+                  )}
+                </div>
+                {modelError && (
+                  <p className="text-xs text-red-400">{modelError}</p>
+                )}
               </div>
             </div>
             <div className="flex items-center gap-3">

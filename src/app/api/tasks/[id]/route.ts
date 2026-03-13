@@ -14,6 +14,7 @@ import {
   getBlockerDetails,
   type IssueStatus,
 } from '@/lib/cc-db';
+import { dispatchTaskNudge } from '@/lib/task-dispatch';
 
 const VALID_STATUSES: Set<string> = new Set(['draft', 'open', 'closed']);
 
@@ -91,10 +92,10 @@ export async function PUT(
       return NextResponse.json({ error: `Invalid status: ${status}` }, { status: 400 });
     }
 
-    // API key users (agents) cannot change status — only humans via browser session can
+    // Agents cannot change status — only humans can. Agents report work via turns.
     if (status !== undefined && auth.user.username === 'api') {
       return NextResponse.json(
-        { error: 'Status changes are restricted to human users. Use /api/tasks/{id}/update to report work.' },
+        { error: 'Agents cannot change task status. Use /api/tasks/{id}/turns to report work.' },
         { status: 403 }
       );
     }
@@ -206,6 +207,25 @@ export async function PUT(
     const task = mapIssueToTask(updatedIssue, projectTitle);
 
     eventBus.broadcast('task.updated', task);
+
+    // Event-driven dispatch:
+    // 1. On reassignment (new assignee)
+    // 2. On status change to 'open' with an existing assignee (e.g. draft→open)
+    const assigneeChanged = assigned_to !== undefined && assigned_to !== currentIssue.assignee;
+    const becameOpen = status === 'open' && currentIssue.status !== 'open';
+    const effectiveAssignee = assigned_to !== undefined ? assigned_to : currentIssue.assignee;
+
+    if (effectiveAssignee && (assigneeChanged || becameOpen)) {
+      void dispatchTaskNudge({
+        taskId: issueId,
+        title: updatedIssue.title,
+        assignee: effectiveAssignee,
+        reason: assigneeChanged ? 'reassign' : 'create',
+        content: typeof description === 'string' ? description : (currentIssue.description || undefined),
+      }).catch((e) => {
+        logger.warn({ err: e, taskId: issueId }, 'task dispatch nudge failed on update');
+      });
+    }
 
     return NextResponse.json({ task });
   } catch (error) {

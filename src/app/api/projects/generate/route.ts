@@ -40,7 +40,7 @@ async function callWebhook(taskTitle: string, taskDescription: string, sessionKe
       message: prompt,
       name: 'ProjectGen',
       sessionKey,
-      model: 'anthropic/claude-haiku-3.5',
+      model: 'nvidia-nim/moonshotai/kimi-k2.5',
       deliver: false,
       wakeMode: 'next-heartbeat',
       timeoutSeconds: 30,

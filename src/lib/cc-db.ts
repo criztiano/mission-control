@@ -334,11 +334,17 @@ export function createTurn(
       ).get(taskId) as { max_round: number | null })?.max_round ?? 1
       roundNumber = currentMax
 
-      // Find instruction author for this round to reassign back
-      const instructionRow = writeDb.prepare(
-        'SELECT author FROM turns WHERE task_id = ? AND round_number = ? AND type = \'instruction\' LIMIT 1'
-      ).get(taskId, currentMax) as { author: string } | undefined
-      const reassignTo = instructionRow?.author || 'cri'
+      // Agent-to-agent routing: if assigned_to is explicitly set, use it (enables pipelines)
+      // Otherwise fall back to instruction author (defaults to 'cri')
+      let reassignTo: string
+      if (turn.assigned_to) {
+        reassignTo = turn.assigned_to
+      } else {
+        const instructionRow = writeDb.prepare(
+          'SELECT author FROM turns WHERE task_id = ? AND round_number = ? AND type = \'instruction\' LIMIT 1'
+        ).get(taskId, currentMax) as { author: string } | undefined
+        reassignTo = instructionRow?.author || 'cri'
+      }
 
       writeDb.prepare(
         'UPDATE issues SET assignee = ?, picked = 0, picked_at = NULL, last_turn_at = ?, updated_at = ? WHERE id = ?'
