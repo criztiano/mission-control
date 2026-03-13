@@ -115,7 +115,7 @@ export async function generateTaskLabel(rawText: string): Promise<LabelResult> {
         message: prompt,
         name: 'TaskLabel',
         sessionKey,
-        model: 'anthropic/claude-haiku-3.5',
+        model: 'anthropic/claude-haiku-4-5',
         deliver: false,
         wakeMode: 'next-heartbeat',
         timeoutSeconds: 15,

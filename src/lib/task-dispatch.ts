@@ -270,10 +270,9 @@ curl -s -X POST "http://localhost:3333/api/tasks/${payload.taskId}/turns" \\
     const nudgeMsg = `# Task Assignment
 
 **Task ID:** ${payload.taskId}
-**Title:** ${issue.title}
 **Priority:** ${issue.priority}${projectPath}
 
-## Description
+## Description (this is the spec — follow this, not the title)
 
 ${issue.description || '(no description)'}
 
