@@ -292,6 +292,16 @@ ${workflowBlock}
       }
     } catch { /* dir may not exist yet */ }
 
+    // Record dispatch time for watchdog (detect dead sessions)
+    const dispatchRecord = { taskId: payload.taskId, agentId, dispatchedAt: Date.now(), turnCountAtDispatch: turns.length }
+    try {
+      const watchdogPath = `${process.env.HOME}/.openclaw/dispatch-watchdog.json`
+      const existing = existsSync(watchdogPath) ? JSON.parse(readFileSync(watchdogPath, 'utf8')) : []
+      existing.push(dispatchRecord)
+      // Keep only last 20
+      writeFileSync(watchdogPath, JSON.stringify(existing.slice(-20), null, 2))
+    } catch { /* best-effort */ }
+
     runOpenClawDetached([
       'agent',
       '--agent', agentId,
