@@ -106,7 +106,7 @@ async function isLikelyBusy(assignee: string): Promise<boolean> {
 }
 
 // Agents that use spawn (no persistent main session)
-const SPAWN_AGENTS = new Set(['dumbo', 'uze', 'ralph', 'piem', 'cody'])
+const SPAWN_AGENTS = new Set(['dumbo', 'uze', 'ralph', 'piem'])
 
 async function sendOne(payload: DispatchParams) {
   const assignee = (payload.assignee || '').trim()
