@@ -152,31 +152,53 @@ async function sendOne(payload: DispatchParams) {
       ? (isPM ? 'cri' : pmTarget)   // PM→cri, builder→pm
       : 'cri'
 
+    // Skunkworks PMs delegate directly; Main Crew PMs send plan to Cri for approval
+    const isAutonomous = team && (team.pm === 'ralph') // only skunkworks is autonomous
+    const planTarget = isAutonomous ? builderTarget : 'cri'
+    const planNote = isAutonomous
+      ? `Delegate to ${builderTarget}`
+      : `Send to Cri for approval (Main Crew policy)`
+
+    const approvalBlock = !isAutonomous ? [
+      '',
+      `### If Cri APPROVED your plan (instruction turn from Cri):`,
+      `Delegate to ${builderTarget}:`,
+      '',
+      '```bash',
+      `curl -s -X POST "http://localhost:3333/api/tasks/${payload.taskId}/turns" \\`,
+      `  -H "Content-Type: application/json" \\`,
+      `  -H "x-api-key: mc-api-key-local-dev" \\`,
+      `  -d '{"type":"result","author":"${agentId}","assigned_to":"${builderTarget}","content":"Plan approved by Cri. Implementing."}'`,
+      '```',
+    ].join('\n') : ''
+
     let workflowBlock: string
     if (isPM) {
-      workflowBlock = `## Your workflow (PM — fully autonomous)
+      const taskBranchPM = `task/${payload.taskId.slice(0, 8)}`
+      workflowBlock = `## Your workflow (PM${isAutonomous ? ' — fully autonomous' : ' — plan needs Cri approval'})
 
 ### If this is a NEW task (no prior turns from ${builderTarget}):
-1. Write a proper plan with acceptance criteria
+1. Read the task and write a proper plan with acceptance criteria
 2. Update the task description via PUT with your plan
-3. Delegate to ${builderTarget} by posting a result turn:
+3. ${planNote} by posting a result turn:
 
 \`\`\`bash
 curl -s -X POST "http://localhost:3333/api/tasks/${payload.taskId}/turns" \\
   -H "Content-Type: application/json" \\
   -H "x-api-key: mc-api-key-local-dev" \\
-  -d '{"type":"result","author":"${agentId}","assigned_to":"${builderTarget}","content":"Plan written. See task description for spec."}'
+  -d '{"type":"result","author":"${agentId}","assigned_to":"${planTarget}","content":"Plan written. See task description for spec."}'
 \`\`\`
+${approvalBlock}
 
 ### If this is a REVIEW (${builderTarget} posted a result turn):
 1. cd into the project path and review the Git diff:
-   \`git diff main..task/${payload.taskId.slice(0, 8)}\`
+   \`git diff main..${taskBranchPM}\`
 2. Run the build, run tests, verify against spec
 3. If it **passes**: create a PR, then deliver to Cri with the PR link:
 
 \`\`\`bash
 cd <project_path>
-gh pr create --base main --head task/${payload.taskId.slice(0, 8)} --title "${issue.title}" --body "Task: ${payload.taskId}"
+gh pr create --base main --head ${taskBranchPM} --title "${issue.title}" --body "Task: ${payload.taskId}"
 \`\`\`
 
 Then post:
