@@ -61,12 +61,7 @@ export async function POST(
       );
     }
 
-    if (type === 'instruction' && !assigned_to) {
-      return NextResponse.json(
-        { error: 'assigned_to is required for instruction turns' },
-        { status: 400 }
-      );
-    }
+    // assigned_to is optional for instructions — auto-routes to last result author
 
     const issue = getIssue(taskId);
     if (!issue) {
@@ -83,24 +78,53 @@ export async function POST(
       assigned_to,
     });
 
-    // Dispatch to next agent:
-    // - instruction turns: always dispatch to assigned_to
-    // - result turns: dispatch only when explicitly routed to another agent (agent-to-agent pipeline)
+    // Dispatch to next agent (assigned_to from turn or auto-routed in createTurn)
+    // Re-read the issue to get the updated assignee after createTurn ran
+    const updatedIssue = getIssue(taskId);
+    const newAssignee = updatedIssue?.assignee || '';
+
     const shouldDispatch =
-      (type === 'instruction' && assigned_to) ||
-      (type === 'result' && assigned_to);
+      (type === 'instruction' || type === 'result') && newAssignee && newAssignee !== turnAuthor;
 
     if (shouldDispatch) {
       try {
         await dispatchTaskNudge({
           taskId,
           title: issue.title,
-          assignee: assigned_to,
+          assignee: newAssignee,
           reason: 'reassign',
           content: content || '',
         });
       } catch (e) {
         logger.warn({ err: e, taskId }, 'task dispatch nudge failed on turn');
+      }
+    }
+
+    // Queue drain: if the agent just finished (result turn), check for their next open task
+    if (type === 'result' && turnAuthor !== 'cri') {
+      try {
+        const { getCCDatabase } = await import('@/lib/cc-db');
+        const db = getCCDatabase();
+        const nextTask = db.prepare(`
+          SELECT id, title FROM issues
+          WHERE assignee = ? AND status = 'open' AND (picked = 0 OR picked IS NULL) AND id != ?
+          ORDER BY
+            CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END,
+            created_at ASC
+          LIMIT 1
+        `).get(turnAuthor, taskId) as { id: string; title: string } | undefined;
+
+        if (nextTask) {
+          logger.info({ agent: turnAuthor, nextTaskId: nextTask.id, nextTitle: nextTask.title }, 'Queue drain: dispatching next task');
+          await dispatchTaskNudge({
+            taskId: nextTask.id,
+            title: nextTask.title,
+            assignee: turnAuthor,
+            reason: 'reassign',
+          });
+        }
+      } catch (e) {
+        logger.warn({ err: e, agent: turnAuthor }, 'Queue drain failed');
       }
     }
 
