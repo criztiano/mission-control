@@ -322,10 +322,19 @@ export function createTurn(
       ).get(taskId) as { max_round: number | null })?.max_round ?? 0
       roundNumber = currentMax + 1
 
+      // Auto-route: if no assigned_to, send back to whoever posted the last result
+      let instructionTarget = turn.assigned_to || ''
+      if (!instructionTarget) {
+        const lastResult = writeDb.prepare(
+          'SELECT author FROM turns WHERE task_id = ? AND type = \'result\' ORDER BY created_at DESC LIMIT 1'
+        ).get(taskId) as { author: string } | undefined
+        instructionTarget = lastResult?.author || ''
+      }
+
       // Reassign task + reset picked
       writeDb.prepare(
         'UPDATE issues SET assignee = ?, picked = 0, picked_at = NULL, last_turn_at = ?, updated_at = ? WHERE id = ?'
-      ).run(turn.assigned_to || '', now, now, taskId)
+      ).run(instructionTarget, now, now, taskId)
 
     } else if (turn.type === 'result') {
       // Result completes current round
