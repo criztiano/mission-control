@@ -1,7 +1,8 @@
 import { readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync } from 'node:fs'
 import { execSync } from 'node:child_process'
 import { runOpenClaw, runOpenClawDetached } from '@/lib/command'
-import { getIssue, getTurns, setTaskPicked, getCCDatabase } from '@/lib/cc-db'
+import { getIssue, getTurns, setTaskPicked, getCCDatabase, getCCDatabaseWrite } from '@/lib/cc-db'
+import { logger } from '@/lib/logger'
 
 type DispatchParams = {
   taskId: string
@@ -320,14 +321,14 @@ ${workflowBlock}
       env: withOpenClawEnv(),
     })
   } else {
-    // Send to persistent main session
-    const header = payload.reason === 'create' ? 'New task assigned' : 'Task reassigned to you'
-    const msg = `${header} ${payload.taskId} | ${payload.title}${compactContext ? ` | ${compactContext}` : ''}. Open in Eden and start now.`
-
-    await runOpenClaw(['agent', '--agent', agentId, '--message', msg], {
-      timeoutMs: 20000,
-      env: withOpenClawEnv(),
-    })
+    // For persistent agents (main/cseno), skip CLI dispatch entirely.
+    // Main agent checks tasks via heartbeats and direct Telegram messages.
+    // CLI dispatch conflicts with active sessions and times out.
+    logger.info({ agentId, taskId: payload.taskId }, 'Persistent agent — task marked, skipping CLI dispatch (checked via heartbeat)')
+    // Just mark it picked so the agent finds it on next check
+    const writeDb = getCCDatabaseWrite()
+    writeDb.prepare("UPDATE issues SET picked = 1, picked_at = ?, picked_by = ? WHERE id = ?")
+      .run(new Date().toISOString(), agentId, payload.taskId)
   }
 
   return { sent: true as const, agentId }
