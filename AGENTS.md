@@ -6,8 +6,10 @@ Eden is the web dashboard for managing OpenClaw agents, tasks, garden items, and
 
 - **Repo:** `github.com/builderz-labs/mission-control`
 - **Local URL:** `http://localhost:3333`
-- **Build/deploy:** `npx next build && npx next start -p 3333 -H 0.0.0.0`
+- **Build/deploy:** `rm -rf .next && npx next build` then restart with `kill -9 $(/usr/sbin/lsof -ti :3333); sleep 2; cd ~/Projects/mission-control && NODE_ENV=production nohup node server.mjs > /tmp/eden.log 2>&1 &`
+- **⚠️ ALWAYS `rm -rf .next` before building** — incremental builds leave stale chunk references that cause ChunkLoadError in the browser. Every. Single. Time.
 - **Env vars require rebuild** — Next.js Turbopack bakes them at build time
+- **DO NOT use `npx next start`** — use `node server.mjs` (custom server has WS proxy)
 
 ## Tech Stack
 
