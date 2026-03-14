@@ -458,6 +458,9 @@ export function TaskBoardPanel() {
                             {isStale(task) && (
                               <span title="No activity in 2+ hours" className="inline-block size-1.5 rounded-full bg-amber-500 shrink-0" />
                             )}
+                            {section.key === 'my-tasks' && task.last_turn_by && (
+                              <span className="text-xs text-muted-foreground/50 shrink-0">from {task.last_turn_by}</span>
+                            )}
                           </span>
                           <div className="flex items-center gap-1.5 sm:shrink-0 sm:justify-end" onClick={e => e.stopPropagation()}>
                             {task.priority === 'high' && (
