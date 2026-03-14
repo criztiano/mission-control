@@ -14,6 +14,10 @@ type DispatchParams = {
 
 const PENDING_PATH = `${process.env.HOME}/.openclaw/dispatch-pending.json`
 const retryTimers = new Map<string, NodeJS.Timeout>()
+const dispatchWatchdogs = new Map<string, NodeJS.Timeout>()
+const DISPATCH_TIMEOUT_MS = 5 * 60 * 1000 // 5 min to post a turn or we auto-retry
+const MAX_RETRIES = 3
+const dispatchRetryCount = new Map<string, number>()
 
 // Known agent IDs that can receive dispatches.
 // Human assignees (cri, etc.) are NOT agents and should not be dispatched to.
@@ -79,6 +83,54 @@ function popPending(assignee: string): DispatchParams[] {
     writePending(data)
   }
   return list
+}
+
+function scheduleDispatchWatchdog(taskId: string, agentId: string, turnCountAtDispatch: number) {
+  const key = `${taskId}:${agentId}`
+
+  // Clear any existing watchdog for this task
+  if (dispatchWatchdogs.has(key)) {
+    clearTimeout(dispatchWatchdogs.get(key)!)
+  }
+
+  const timer = setTimeout(async () => {
+    dispatchWatchdogs.delete(key)
+    try {
+      // Check if agent posted a turn since dispatch
+      const currentTurns = getTurns(taskId)
+      if (currentTurns.length > turnCountAtDispatch) {
+        logger.info({ taskId, agentId }, 'dispatch-watchdog: agent posted turn — healthy')
+        dispatchRetryCount.delete(key)
+        return
+      }
+
+      // No turn — agent is stuck
+      const retries = dispatchRetryCount.get(key) || 0
+      if (retries >= MAX_RETRIES) {
+        logger.warn({ taskId, agentId, retries }, 'dispatch-watchdog: max retries reached — giving up, resetting picked')
+        dispatchRetryCount.delete(key)
+        // Reset picked so it shows as stale in the UI
+        const writeDb = getCCDatabaseWrite()
+        writeDb.prepare('UPDATE issues SET picked = 0, picked_at = NULL WHERE id = ?').run(taskId)
+        return
+      }
+
+      logger.warn({ taskId, agentId, retries: retries + 1 }, 'dispatch-watchdog: no turn after 5min — auto-retrying')
+      dispatchRetryCount.set(key, retries + 1)
+
+      // Re-dispatch
+      await dispatchTaskNudge({
+        taskId,
+        title: '',
+        assignee: agentId,
+        reason: 'reassign',
+      })
+    } catch (e) {
+      logger.error({ err: e, taskId, agentId }, 'dispatch-watchdog: retry failed')
+    }
+  }, DISPATCH_TIMEOUT_MS)
+
+  dispatchWatchdogs.set(key, timer)
 }
 
 async function isLikelyBusy(assignee: string): Promise<boolean> {
@@ -327,6 +379,9 @@ ${workflowBlock}
     ], {
       env: withOpenClawEnv(),
     })
+
+    // Schedule inline watchdog — auto-retry if no turn arrives within 5 min
+    scheduleDispatchWatchdog(payload.taskId, agentId, turns.length)
   } else {
     // For persistent agents (main/cseno), skip CLI dispatch entirely.
     // Main agent checks tasks via heartbeats and direct Telegram messages.
