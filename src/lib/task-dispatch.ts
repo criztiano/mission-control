@@ -104,7 +104,15 @@ function scheduleDispatchWatchdog(taskId: string, agentId: string, turnCountAtDi
         return
       }
 
-      // No turn — agent is stuck
+      // No turn yet — check if agent is still actively working
+      const agentIsActive = await isSessionActive(agentId)
+      if (agentIsActive) {
+        logger.info({ taskId, agentId }, 'dispatch-watchdog: agent session active — rescheduling check')
+        scheduleDispatchWatchdog(taskId, agentId, turnCountAtDispatch)
+        return
+      }
+
+      // No turn AND no active session — agent is dead
       const retries = dispatchRetryCount.get(key) || 0
       if (retries >= MAX_RETRIES) {
         logger.warn({ taskId, agentId, retries }, 'dispatch-watchdog: max retries reached — giving up, resetting picked')
@@ -131,6 +139,26 @@ function scheduleDispatchWatchdog(taskId: string, agentId: string, turnCountAtDi
   }, DISPATCH_TIMEOUT_MS)
 
   dispatchWatchdogs.set(key, timer)
+}
+
+/** Check if an agent has an active session (updated in last 5 min) */
+async function isSessionActive(agentId: string): Promise<boolean> {
+  try {
+    const out = await runOpenClaw(['sessions', '--agent', agentId, '--json'], {
+      timeoutMs: 8000,
+      env: withOpenClawEnv(),
+    })
+    const parsed = JSON.parse(out.stdout || '{}')
+    const sessions = parsed?.sessions || []
+    if (sessions.length === 0) return false
+    const now = Date.now()
+    return sessions.some((s: any) => {
+      const updatedAt = Number(s.updatedAt || 0)
+      return updatedAt > 0 && (now - updatedAt) < 5 * 60 * 1000
+    })
+  } catch {
+    return false
+  }
 }
 
 async function isLikelyBusy(assignee: string): Promise<boolean> {
