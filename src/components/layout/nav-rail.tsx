@@ -37,6 +37,7 @@ const navGroups: NavGroup[] = [
       { id: 'garden', label: 'Garden', icon: <GardenIcon />, priority: true },
       { id: 'xfeed', label: 'Feed', icon: <XFeedIcon />, priority: true },
       { id: 'projects', label: 'Projects', icon: <ProjectsIcon />, priority: false },
+      { id: 'team', label: 'Team', icon: <TeamIcon />, priority: false },
     ],
   },
   {
@@ -823,6 +824,17 @@ function ProjectsIcon() {
   return (
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
       <path d="M3 2h5l2 2h4a1 1 0 011 1v8a1 1 0 01-1 1H3a1 1 0 01-1-1V3a1 1 0 011-1z" />
+    </svg>
+  )
+}
+
+function TeamIcon() {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="8" cy="3.5" r="2" />
+      <circle cx="3.5" cy="10" r="1.75" />
+      <circle cx="12.5" cy="10" r="1.75" />
+      <path d="M8 5.5v2M6.5 8.5l-2 1.5M9.5 8.5l2 1.5" />
     </svg>
   )
 }

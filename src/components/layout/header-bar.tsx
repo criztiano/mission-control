@@ -42,6 +42,7 @@ export function HeaderBar() {
     users: 'Users',
     'gateway-config': 'Gateway Config',
     settings: 'Settings',
+    team: 'Team',
   }
 
   // Search state
