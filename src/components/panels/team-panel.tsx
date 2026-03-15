@@ -478,16 +478,22 @@ function ToolToggles({
   const denySet = new Set(denyList)
   const allowSet = new Set(alsoAllow)
 
-  // Default tools = allTools minus the "extra" ones that need alsoAllow
+  // Extra tools aren't in the default set — they need alsoAllow to be enabled
   const extraTools = ['browser', 'canvas', 'tts', 'nodes', 'gateway']
-  const defaultTools = allTools.filter((t) => !extraTools.includes(t))
+  const standardTools = allTools.filter((t) => !extraTools.includes(t))
+
+  // If agent has NO deny list AND NO alsoAllow, they have full access (main agent)
+  const hasFullAccess = denyList.length === 0 && alsoAllow.length === 0
 
   return (
     <div className="space-y-2">
+      {hasFullAccess && (
+        <p className="text-[10px] text-muted-foreground italic">Full access — all tools enabled</p>
+      )}
       <div>
-        <span className="text-[10px] text-muted-foreground uppercase tracking-wider">Standard Tools</span>
+        <span className="text-[10px] text-muted-foreground uppercase tracking-wider">Standard</span>
         <div className="flex flex-wrap gap-1 mt-1">
-          {defaultTools.map((tool) => {
+          {standardTools.map((tool) => {
             const denied = denySet.has(tool)
             return (
               <button
@@ -507,16 +513,24 @@ function ToolToggles({
         </div>
       </div>
       <div>
-        <span className="text-[10px] text-muted-foreground uppercase tracking-wider">Extra Tools</span>
+        <span className="text-[10px] text-muted-foreground uppercase tracking-wider">Extra</span>
         <div className="flex flex-wrap gap-1 mt-1">
           {extraTools.map((tool) => {
-            const allowed = allowSet.has(tool)
             const denied = denySet.has(tool)
-            const active = allowed && !denied
+            // Active if: full access and not denied, OR explicitly in alsoAllow and not denied
+            const active = (!denied) && (hasFullAccess || allowSet.has(tool))
             return (
               <button
                 key={tool}
-                onClick={() => onToggleAllow(tool, !active)}
+                onClick={() => {
+                  if (hasFullAccess) {
+                    // For full-access agents, toggling off means adding to deny
+                    onToggleDeny(tool, !denied)
+                  } else {
+                    // For restricted agents, toggle alsoAllow
+                    onToggleAllow(tool, !active)
+                  }
+                }}
                 className={`text-[10px] font-mono px-1.5 py-0.5 rounded border transition-all cursor-pointer ${
                   active
                     ? 'bg-blue-500/10 text-blue-400 border-blue-500/20'
