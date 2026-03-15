@@ -9,16 +9,28 @@ interface ServerEvent {
   timestamp: number
 }
 
+// Reconnection backoff: 2s → 4s → 8s → max 30s
+const RECONNECT_DELAYS = [2000, 4000, 8000, 15000, 30000]
+const MAX_RECONNECT_DELAY = 30000
+
 /**
  * Hook that connects to the SSE endpoint (/api/events) and dispatches
  * real-time DB mutation events to the Zustand store.
  *
  * SSE provides instant updates for all local-DB data (tasks, agents,
  * chat, activities, notifications), making REST polling a fallback.
+ *
+ * Features:
+ * - Exponential backoff on reconnection (2s → 30s max)
+ * - Manual reconnection trigger if EventSource fails
+ * - Connection health tracking via sseConnected state
+ * - Proper cleanup on unmount
  */
 export function useServerEvents() {
   const eventSourceRef = useRef<EventSource | null>(null)
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | undefined>(undefined)
+  const reconnectAttemptsRef = useRef(0)
+  const mountedRef = useRef(true)
 
   const {
     setConnection,
@@ -33,43 +45,60 @@ export function useServerEvents() {
   } = useMissionControl()
 
   useEffect(() => {
-    let mounted = true
+    mountedRef.current = true
 
     function connect() {
-      if (!mounted) return
+      if (!mountedRef.current) return
       if (eventSourceRef.current) {
         eventSourceRef.current.close()
-      }
-
-      const es = new EventSource('/api/events')
-      eventSourceRef.current = es
-
-      es.onopen = () => {
-        if (!mounted) return
-        setConnection({ sseConnected: true })
-      }
-
-      es.onmessage = (event) => {
-        if (!mounted) return
-        try {
-          const payload = JSON.parse(event.data) as ServerEvent
-          dispatch(payload)
-        } catch {
-          // Ignore malformed events
-        }
-      }
-
-      es.onerror = () => {
-        if (!mounted) return
-        setConnection({ sseConnected: false })
-        es.close()
         eventSourceRef.current = null
+      }
 
-        // Reconnect after 3s (EventSource auto-reconnects, but we handle
-        // it explicitly to control the sseConnected state)
+      try {
+        const es = new EventSource('/api/events')
+        eventSourceRef.current = es
+
+        es.onopen = () => {
+          if (!mountedRef.current) { es.close(); return }
+          reconnectAttemptsRef.current = 0 // Reset backoff on successful connect
+          setConnection({ sseConnected: true })
+        }
+
+        es.onmessage = (event) => {
+          if (!mountedRef.current) return
+          try {
+            const payload = JSON.parse(event.data) as ServerEvent
+            dispatch(payload)
+          } catch {
+            // Ignore malformed events
+          }
+        }
+
+        es.onerror = () => {
+          if (!mountedRef.current) return
+          setConnection({ sseConnected: false })
+          es.close()
+          eventSourceRef.current = null
+
+          // Exponential backoff reconnection
+          const attempt = Math.min(reconnectAttemptsRef.current, RECONNECT_DELAYS.length - 1)
+          const delay = RECONNECT_DELAYS[attempt] || MAX_RECONNECT_DELAY
+          reconnectAttemptsRef.current++
+
+          console.log(`[SSE] Reconnecting in ${delay}ms (attempt ${reconnectAttemptsRef.current})`)
+          reconnectTimeoutRef.current = setTimeout(() => {
+            if (mountedRef.current) connect()
+          }, delay)
+        }
+      } catch (err) {
+        // EventSource constructor failed (rare, but possible)
+        console.error('[SSE] Failed to create EventSource:', err)
+        setConnection({ sseConnected: false })
+        const delay = RECONNECT_DELAYS[Math.min(reconnectAttemptsRef.current, RECONNECT_DELAYS.length - 1)]
+        reconnectAttemptsRef.current++
         reconnectTimeoutRef.current = setTimeout(() => {
-          if (mounted) connect()
-        }, 3000)
+          if (mountedRef.current) connect()
+        }, delay)
       }
     }
 
@@ -167,7 +196,7 @@ export function useServerEvents() {
     connect()
 
     return () => {
-      mounted = false
+      mountedRef.current = false
       if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current)
       if (eventSourceRef.current) {
         eventSourceRef.current.close()

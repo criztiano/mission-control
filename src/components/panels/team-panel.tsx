@@ -18,6 +18,7 @@ import '@xyflow/react/dist/style.css'
 import { Button } from '@/components/ui/button'
 import { AgentAvatar } from '@/components/ui/agent-avatar'
 import { PropertyChip, type PropertyOption } from '@/components/ui/property-chip'
+import { BlockEditor } from '@/components/ui/block-editor'
 import { Refresh, Xmark, FloppyDisk } from 'iconoir-react'
 import { useSmartPoll } from '@/lib/use-smart-poll'
 
@@ -551,16 +552,42 @@ function ToolToggles({
   )
 }
 
-// Markdown document viewer (slides in)
-function DocViewer({
+// Editable document viewer (slides in, uses BlockNote)
+function DocEditor({
   title,
   content,
+  agentId,
+  fileName,
   onClose,
+  onSaved,
 }: {
   title: string
   content: string
+  agentId: string
+  fileName: string
   onClose: () => void
+  onSaved: () => void
 }) {
+  const [dirty, setDirty] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [currentContent, setCurrentContent] = useState(content)
+
+  const handleSave = async () => {
+    setSaving(true)
+    try {
+      const res = await fetch('/api/team/doc', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agentId, file: fileName, content: currentContent }),
+      })
+      if (res.ok) {
+        setDirty(false)
+        onSaved()
+      }
+    } catch {}
+    setSaving(false)
+  }
+
   return (
     <div
       className="absolute inset-0 z-10 bg-card flex flex-col"
@@ -572,21 +599,29 @@ function DocViewer({
             <path d="M10 3l-5 5 5 5" />
           </svg>
         </Button>
-        <h3 className="text-sm font-bold text-foreground">{title}</h3>
+        <h3 className="text-sm font-bold text-foreground flex-1">{title}</h3>
+        {dirty && (
+          <Button
+            size="sm"
+            onClick={handleSave}
+            disabled={saving}
+            className="gap-1.5"
+          >
+            <FloppyDisk className="w-3.5 h-3.5" />
+            {saving ? 'Saving...' : 'Save'}
+          </Button>
+        )}
       </div>
-      <div className="flex-1 overflow-y-auto px-4 py-3">
-        <div className="prose prose-invert prose-xs max-w-none text-[12px] leading-relaxed">
-          {content.split('\n').map((line, i) => {
-            if (line.startsWith('# ')) return <h1 key={i} className="text-base font-bold text-foreground mt-3 mb-1">{line.slice(2)}</h1>
-            if (line.startsWith('## ')) return <h2 key={i} className="text-sm font-bold text-foreground mt-3 mb-1">{line.slice(3)}</h2>
-            if (line.startsWith('### ')) return <h3 key={i} className="text-xs font-bold text-foreground mt-2 mb-0.5">{line.slice(4)}</h3>
-            if (line.startsWith('- ') || line.startsWith('* ')) return <li key={i} className="text-xs text-foreground/80 ml-3">{line.slice(2)}</li>
-            if (line.startsWith('```')) return <hr key={i} className="border-border/30 my-1" />
-            if (line.trim() === '') return <div key={i} className="h-2" />
-            if (line.startsWith('**') && line.endsWith('**')) return <p key={i} className="text-xs font-bold text-foreground">{line.slice(2, -2)}</p>
-            return <p key={i} className="text-xs text-foreground/70">{line}</p>
-          })}
-        </div>
+      <div className="flex-1 overflow-y-auto">
+        <BlockEditor
+          initialMarkdown={content}
+          onChange={(md) => {
+            setCurrentContent(md)
+            setDirty(true)
+          }}
+          placeholder="Write documentation..."
+          compact
+        />
       </div>
     </div>
   )
@@ -673,12 +708,19 @@ function AgentDetailSlideout({
           onClose={() => setSkillBrowserOpen(false)}
         />
       )}
-      {/* Doc viewer overlay */}
+      {/* Doc editor overlay */}
       {docView && (
-        <DocViewer
+        <DocEditor
           title={docView.title}
           content={docView.content}
+          agentId={agent.id}
+          fileName={docView.title.includes('SOUL') ? 'SOUL.md' : 'AGENTS.md'}
           onClose={() => setDocView(null)}
+          onSaved={() => {
+            onRefresh()
+            // Rebuild manifest after save
+            fetch('/api/team/manifest').catch(() => {})
+          }}
         />
       )}
       {/* Header */}
@@ -809,7 +851,7 @@ function AgentDetailSlideout({
 
         {/* Duties */}
         {duties.length > 0 && (
-          <AccordionSection title="Duties" count={duties.length}>
+          <AccordionSection title="Duties" count={duties.length} defaultOpen={false}>
             <ul className="space-y-1">
               {duties.map((d, i) => (
                 <li key={i} className="text-xs text-foreground flex gap-1.5">
@@ -823,7 +865,7 @@ function AgentDetailSlideout({
 
         {/* Policies */}
         {policies.length > 0 && (
-          <AccordionSection title="Policies" count={policies.length}>
+          <AccordionSection title="Policies" count={policies.length} defaultOpen={false}>
             <ul className="space-y-1">
               {policies.map((p, i) => (
                 <li key={i} className="text-xs text-foreground flex gap-1.5">
@@ -892,7 +934,7 @@ function AgentDetailSlideout({
 
         {/* Channels */}
         {channels.length > 0 && (
-          <AccordionSection title="Channels" count={channels.length}>
+          <AccordionSection title="Channels" count={channels.length} defaultOpen={false}>
             <div className="space-y-1.5">
               {channels.map((ch, i) => (
                 <div key={i} className="flex items-start gap-2">
@@ -910,7 +952,7 @@ function AgentDetailSlideout({
 
         {/* Crons */}
         {crons.length > 0 && (
-          <AccordionSection title="Crons" count={crons.length}>
+          <AccordionSection title="Crons" count={crons.length} defaultOpen={false}>
             <div className="space-y-2">
               {crons.map((cron) => (
                 <div key={cron.id} className="flex items-start justify-between gap-2">
@@ -937,7 +979,7 @@ function AgentDetailSlideout({
         )}
 
         {/* Config */}
-        <AccordionSection title="Config">
+        <AccordionSection title="Config" defaultOpen={false}>
           <div className="space-y-2">
             <div>
               <span className="text-[10px] text-muted-foreground uppercase tracking-wider">Model</span>
@@ -1051,7 +1093,10 @@ export function TeamPanel() {
     fetchManifest()
   }, [fetchManifest])
 
-  useSmartPoll(fetchManifest, 30000)
+  // Poll every 60s (was 30s) — reduces connection pressure over Tailscale
+  const manifestPoll = useSmartPoll(fetchManifest, 60000, {
+    pauseWhenDisconnected: true, // Don't hammer the server if WS is down
+  })
 
   // Track node position changes
   const handleNodesChange = useCallback((changes: any) => {
@@ -1119,10 +1164,22 @@ export function TeamPanel() {
     return (
       <div className="h-full flex items-center justify-center">
         <div className="text-center">
-          <p className="text-sm text-red-400 mb-2">{error}</p>
-          <Button variant="outline" size="sm" onClick={fetchManifest}>
-            Retry
-          </Button>
+          {manifestPoll.retrying ? (
+            <>
+              <div className="flex items-center gap-2 mb-2 justify-center">
+                <div className="w-1.5 h-1.5 rounded-full bg-yellow-500 animate-pulse" />
+                <p className="text-sm text-yellow-400">Retrying... (attempt {manifestPoll.retryCount})</p>
+              </div>
+              <p className="text-xs text-muted-foreground">Connection will be restored automatically</p>
+            </>
+          ) : (
+            <>
+              <p className="text-sm text-red-400 mb-2">{error}</p>
+              <Button variant="outline" size="sm" onClick={fetchManifest}>
+                Retry
+              </Button>
+            </>
+          )}
         </div>
       </div>
     )

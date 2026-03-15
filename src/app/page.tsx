@@ -161,7 +161,12 @@ function ContentRouter({ tab }: { tab: string }) {
     case 'memory':
       return <MemoryBrowserPanel />
     case 'tokens':
-      return <TokenDashboardPanel />
+      // Wrap charts in dedicated error boundary
+      return (
+        <ErrorBoundary name="TokenDashboard">
+          <TokenDashboardPanel />
+        </ErrorBoundary>
+      )
     case 'users':
       return <UserManagementPanel />
     case 'history':
@@ -189,7 +194,12 @@ function ContentRouter({ tab }: { tab: string }) {
     case 'projects':
       return <ProjectsPanel />
     case 'team':
-      return <TeamPanel />
+      // Wrap ReactFlow in dedicated error boundary
+      return (
+        <ErrorBoundary name="TeamPanel">
+          <TeamPanel />
+        </ErrorBoundary>
+      )
     default:
       return <Dashboard />
   }
