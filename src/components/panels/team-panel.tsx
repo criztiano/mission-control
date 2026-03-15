@@ -17,6 +17,7 @@ import {
 import '@xyflow/react/dist/style.css'
 import { Button } from '@/components/ui/button'
 import { AgentAvatar } from '@/components/ui/agent-avatar'
+import { PropertyChip, type PropertyOption } from '@/components/ui/property-chip'
 import { Refresh, Xmark, FloppyDisk } from 'iconoir-react'
 import { useSmartPoll } from '@/lib/use-smart-poll'
 
@@ -51,6 +52,8 @@ interface ManifestAgent {
     last_seen: number | null
     last_activity: string | null
   }
+  soul_md?: string
+  agents_md?: string
 }
 
 interface Relationship {
@@ -548,6 +551,47 @@ function ToolToggles({
   )
 }
 
+// Markdown document viewer (slides in)
+function DocViewer({
+  title,
+  content,
+  onClose,
+}: {
+  title: string
+  content: string
+  onClose: () => void
+}) {
+  return (
+    <div
+      className="absolute inset-0 z-10 bg-card flex flex-col"
+      style={{ animation: 'slideInRight 0.2s ease-out' }}
+    >
+      <div className="flex items-center gap-2 p-3 border-b border-border shrink-0">
+        <Button variant="ghost" size="icon-xs" onClick={onClose} title="Back">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4">
+            <path d="M10 3l-5 5 5 5" />
+          </svg>
+        </Button>
+        <h3 className="text-sm font-bold text-foreground">{title}</h3>
+      </div>
+      <div className="flex-1 overflow-y-auto px-4 py-3">
+        <div className="prose prose-invert prose-xs max-w-none text-[12px] leading-relaxed">
+          {content.split('\n').map((line, i) => {
+            if (line.startsWith('# ')) return <h1 key={i} className="text-base font-bold text-foreground mt-3 mb-1">{line.slice(2)}</h1>
+            if (line.startsWith('## ')) return <h2 key={i} className="text-sm font-bold text-foreground mt-3 mb-1">{line.slice(3)}</h2>
+            if (line.startsWith('### ')) return <h3 key={i} className="text-xs font-bold text-foreground mt-2 mb-0.5">{line.slice(4)}</h3>
+            if (line.startsWith('- ') || line.startsWith('* ')) return <li key={i} className="text-xs text-foreground/80 ml-3">{line.slice(2)}</li>
+            if (line.startsWith('```')) return <hr key={i} className="border-border/30 my-1" />
+            if (line.trim() === '') return <div key={i} className="h-2" />
+            if (line.startsWith('**') && line.endsWith('**')) return <p key={i} className="text-xs font-bold text-foreground">{line.slice(2, -2)}</p>
+            return <p key={i} className="text-xs text-foreground/70">{line}</p>
+          })}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function AgentDetailSlideout({
   agent,
   onClose,
@@ -590,21 +634,28 @@ function AgentDetailSlideout({
     setSaving(false)
   }, [agent.id, onRefresh])
 
-  // Catalog (all available skills/tools)
+  // Catalog (all available skills/tools/models)
   const [catalog, setCatalog] = useState<{ tools: string[]; skills: string[] }>({ tools: [], skills: [] })
+  const [modelOptions, setModelOptions] = useState<PropertyOption[]>([])
   useEffect(() => {
     fetch('/api/team/catalog')
       .then((r) => r.ok ? r.json() : { tools: [], skills: [] })
       .then(setCatalog)
       .catch(() => {})
+    fetch('/api/models')
+      .then((r) => r.ok ? r.json() : { models: [] })
+      .then((d) => {
+        const models = (d.models || [])
+          .filter((m: any) => m.id && !m.id.includes('[object'))
+          .map((m: any) => ({ value: m.id, label: m.name || m.id, group: m.provider || '' }))
+        setModelOptions(models)
+      })
+      .catch(() => {})
   }, [])
 
-  // Skill browser
+  // Sub-views (skill browser / doc viewer)
   const [skillBrowserOpen, setSkillBrowserOpen] = useState(false)
-
-  // Editable model state
-  const [editingModel, setEditingModel] = useState(false)
-  const [modelDraft, setModelDraft] = useState(fullModel)
+  const [docView, setDocView] = useState<{ title: string; content: string } | null>(null)
 
   return (
     <div className="w-[380px] h-full bg-card border-l border-border flex flex-col shrink-0 shadow-xl relative overflow-hidden">
@@ -620,6 +671,14 @@ function AgentDetailSlideout({
             updateAgent('skills', newSkills)
           }}
           onClose={() => setSkillBrowserOpen(false)}
+        />
+      )}
+      {/* Doc viewer overlay */}
+      {docView && (
+        <DocViewer
+          title={docView.title}
+          content={docView.content}
+          onClose={() => setDocView(null)}
         />
       )}
       {/* Header */}
@@ -667,6 +726,82 @@ function AgentDetailSlideout({
               <div>
                 <span className="text-[10px] text-muted-foreground uppercase tracking-wider">Reports To</span>
                 <p className="text-xs text-foreground mt-0.5">{agent.identity.reports_to}</p>
+              </div>
+            )}
+          </div>
+        </AccordionSection>
+
+        {/* Documents */}
+        <AccordionSection title="Documents" defaultOpen>
+          <div className="space-y-1">
+            {/* SOUL.md */}
+            <button
+              onClick={() => agent.soul_md ? setDocView({ title: `${name} — SOUL.md`, content: agent.soul_md }) : undefined}
+              className={`w-full flex items-center justify-between px-2 py-1.5 rounded text-left transition-colors ${
+                agent.soul_md ? 'hover:bg-secondary/50 cursor-pointer' : 'opacity-40 cursor-default'
+              }`}
+            >
+              <div className="flex items-center gap-2">
+                <span className="text-[11px]">🧠</span>
+                <span className="text-xs text-foreground">SOUL.md</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                {agent.identity.emoji && <span className="text-[10px]">{agent.identity.emoji}</span>}
+                {agent.identity.goal && <span className="text-[10px] text-muted-foreground truncate max-w-[120px]">{agent.identity.goal}</span>}
+                {agent.soul_md ? (
+                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="w-3 h-3 text-muted-foreground">
+                    <path d="M6 3l5 5-5 5" />
+                  </svg>
+                ) : (
+                  <span className="text-[10px] text-muted-foreground/50">missing</span>
+                )}
+              </div>
+            </button>
+
+            {/* AGENTS.md */}
+            <button
+              onClick={() => agent.agents_md ? setDocView({ title: `${name} — AGENTS.md`, content: agent.agents_md }) : undefined}
+              className={`w-full flex items-center justify-between px-2 py-1.5 rounded text-left transition-colors ${
+                agent.agents_md ? 'hover:bg-secondary/50 cursor-pointer' : 'opacity-40 cursor-default'
+              }`}
+            >
+              <div className="flex items-center gap-2">
+                <span className="text-[11px]">📋</span>
+                <span className="text-xs text-foreground">AGENTS.md</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                {duties.length > 0 && <span className="text-[10px] text-muted-foreground">{duties.length} duties</span>}
+                {agent.agents_md ? (
+                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="w-3 h-3 text-muted-foreground">
+                    <path d="M6 3l5 5-5 5" />
+                  </svg>
+                ) : (
+                  <span className="text-[10px] text-muted-foreground/50">missing</span>
+                )}
+              </div>
+            </button>
+
+            {/* Frontmatter summary */}
+            {(agent.identity.reports_to || agent.identity.emoji || agent.identity.goal) && (
+              <div className="mt-2 px-2 space-y-1">
+                {agent.identity.reports_to && (
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[10px] text-muted-foreground w-16">Reports to</span>
+                    <span className="text-[10px] text-foreground">{agent.identity.reports_to}</span>
+                  </div>
+                )}
+                {agent.identity.emoji && (
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[10px] text-muted-foreground w-16">Emoji</span>
+                    <span className="text-[10px]">{agent.identity.emoji}</span>
+                  </div>
+                )}
+                {agent.identity.goal && (
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[10px] text-muted-foreground w-16">Goal</span>
+                    <span className="text-[10px] text-foreground">{agent.identity.goal}</span>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -806,38 +941,14 @@ function AgentDetailSlideout({
           <div className="space-y-2">
             <div>
               <span className="text-[10px] text-muted-foreground uppercase tracking-wider">Model</span>
-              {editingModel ? (
-                <form
-                  onSubmit={(e) => {
-                    e.preventDefault()
-                    if (modelDraft.trim()) {
-                      const newModel = typeof agent.config.model === 'string'
-                        ? modelDraft.trim()
-                        : { ...(agent.config.model as any), primary: modelDraft.trim() }
-                      updateAgent('model', newModel)
-                      setEditingModel(false)
-                    }
-                  }}
-                  className="mt-0.5"
-                >
-                  <input
-                    type="text"
-                    value={modelDraft}
-                    onChange={(e) => setModelDraft(e.target.value)}
-                    autoFocus
-                    onBlur={() => setEditingModel(false)}
-                    className="text-xs font-mono px-2 py-1 rounded border border-border bg-secondary text-foreground w-full outline-none focus:border-primary"
-                  />
-                </form>
-              ) : (
-                <p
-                  className="text-xs font-mono text-foreground mt-0.5 cursor-pointer hover:text-primary transition-colors"
-                  onClick={() => { setModelDraft(fullModel); setEditingModel(true) }}
-                  title="Click to edit"
-                >
-                  {fullModel || model} ✎
-                </p>
-              )}
+              <div className="mt-1">
+                <PropertyChip
+                  value={fullModel}
+                  options={modelOptions}
+                  onSelect={(v) => updateAgent('model', v)}
+                  searchable
+                />
+              </div>
             </div>
             {fallbacks.length > 0 && (
               <div>
