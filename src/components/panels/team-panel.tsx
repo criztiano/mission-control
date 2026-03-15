@@ -1114,6 +1114,7 @@ export function TeamPanel() {
         {/* Detail slideout */}
         {selectedAgent && (
           <AgentDetailSlideout
+            key={selectedAgent.id}
             agent={selectedAgent}
             onClose={() => setSelectedAgent(null)}
             onRefresh={fetchManifest}
