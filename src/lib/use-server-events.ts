@@ -53,6 +53,11 @@ export function useServerEvents() {
         eventSourceRef.current.close()
         eventSourceRef.current = null
       }
+      // Clear any pending reconnect timeout
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current)
+        reconnectTimeoutRef.current = undefined
+      }
 
       try {
         const es = new EventSource('/api/events')
@@ -195,8 +200,25 @@ export function useServerEvents() {
 
     connect()
 
+    // Reconnect SSE when tab becomes visible after being hidden.
+    // Proxies (Tailscale, nginx) often drop idle SSE connections,
+    // so we eagerly reconnect on visibility to avoid stale state.
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        // Only reconnect if not already connected
+        if (!eventSourceRef.current || eventSourceRef.current.readyState === EventSource.CLOSED) {
+          console.log('[SSE] Tab visible, reconnecting...')
+          reconnectAttemptsRef.current = 0 // Reset backoff for manual reconnect
+          connect()
+        }
+      }
+    }
+
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+
     return () => {
       mountedRef.current = false
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
       if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current)
       if (eventSourceRef.current) {
         eventSourceRef.current.close()

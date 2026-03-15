@@ -38,14 +38,15 @@ export async function GET(request: NextRequest) {
 
       eventBus.on('server-event', handler)
 
-      // Heartbeat every 30s to keep connection alive through proxies
+      // Heartbeat every 15s to keep connection alive through proxies (Tailscale, nginx, etc.)
+      // 15s is well within most proxy idle timeout thresholds (typically 30–60s)
       const heartbeat = setInterval(() => {
         try {
           controller.enqueue(encoder.encode(': heartbeat\n\n'))
         } catch {
           clearInterval(heartbeat)
         }
-      }, 30_000)
+      }, 15_000)
 
       cleanup = () => {
         eventBus.off('server-event', handler)

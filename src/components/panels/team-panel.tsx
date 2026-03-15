@@ -1117,6 +1117,8 @@ export function TeamPanel() {
       setError(null)
     } catch (err: any) {
       setError(err.message)
+      // Re-throw so useSmartPoll can track error state and trigger retries
+      throw err
     } finally {
       setLoading(false)
     }
