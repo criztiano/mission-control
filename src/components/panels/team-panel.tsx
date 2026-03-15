@@ -380,18 +380,59 @@ function SkillBrowser({
   onClose: () => void
 }) {
   const [search, setSearch] = useState('')
-  const activeSet = new Set(activeSkills)
+  // Local state for immediate UI feedback
+  const [localActive, setLocalActive] = useState<Set<string>>(new Set(activeSkills))
+
+  const handleToggle = (skill: string, enabled: boolean) => {
+    // Update local state immediately for UI
+    setLocalActive((prev) => {
+      const next = new Set(prev)
+      if (enabled) next.add(skill)
+      else next.delete(skill)
+      return next
+    })
+    // Persist to config
+    onToggle(skill, enabled)
+  }
+
   const filtered = search
     ? allSkills.filter((s) => s.toLowerCase().includes(search.toLowerCase()))
     : allSkills
 
-  // Group skills by first letter
+  // Split into active and inactive
+  const activeFiltered = filtered.filter((s) => localActive.has(s)).sort()
+  const inactiveFiltered = filtered.filter((s) => !localActive.has(s))
+
+  // Group inactive skills by first letter
   const groups = new Map<string, string[]>()
-  for (const s of filtered) {
+  for (const s of inactiveFiltered) {
     const letter = s[0].toUpperCase()
     if (!groups.has(letter)) groups.set(letter, [])
     groups.get(letter)!.push(s)
   }
+
+  const renderSkillRow = (skill: string, active: boolean) => (
+    <button
+      key={skill}
+      onClick={() => handleToggle(skill, !active)}
+      className={`w-full flex items-center justify-between px-2 py-1.5 rounded text-left transition-colors ${
+        active
+          ? 'bg-blue-500/10 hover:bg-blue-500/15'
+          : 'hover:bg-secondary/50'
+      }`}
+    >
+      <span className={`text-[11px] font-mono ${active ? 'text-blue-400' : 'text-muted-foreground'}`}>
+        {skill}
+      </span>
+      <div className={`w-7 h-4 rounded-full transition-colors flex items-center ${
+        active ? 'bg-blue-500 justify-end' : 'bg-zinc-700 justify-start'
+      }`}>
+        <div className={`w-3 h-3 rounded-full mx-0.5 transition-colors ${
+          active ? 'bg-white' : 'bg-zinc-500'
+        }`} />
+      </div>
+    </button>
+  )
 
   return (
     <div
@@ -407,7 +448,7 @@ function SkillBrowser({
         </Button>
         <h3 className="text-sm font-bold text-foreground">Skills</h3>
         <span className="text-[10px] text-muted-foreground ml-auto">
-          {activeSkills.length} active / {allSkills.length} available
+          {localActive.size} active / {allSkills.length} available
         </span>
       </div>
 
@@ -425,40 +466,32 @@ function SkillBrowser({
 
       {/* Skill list */}
       <div className="flex-1 overflow-y-auto px-3 py-2">
+        {/* Active skills at the top */}
+        {activeFiltered.length > 0 && (
+          <div className="mb-3">
+            <div className="text-[10px] font-bold text-blue-400 uppercase tracking-widest mb-1">
+              Active ({activeFiltered.length})
+            </div>
+            <div className="space-y-0.5">
+              {activeFiltered.map((skill) => renderSkillRow(skill, true))}
+            </div>
+          </div>
+        )}
+
+        {/* Inactive skills grouped by letter */}
+        {activeFiltered.length > 0 && inactiveFiltered.length > 0 && (
+          <div className="border-t border-border/30 my-2" />
+        )}
         {Array.from(groups.entries()).map(([letter, skills]) => (
           <div key={letter} className="mb-3">
             <div className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest mb-1">{letter}</div>
             <div className="space-y-0.5">
-              {skills.map((skill) => {
-                const active = activeSet.has(skill)
-                return (
-                  <button
-                    key={skill}
-                    onClick={() => onToggle(skill, !active)}
-                    className={`w-full flex items-center justify-between px-2 py-1.5 rounded text-left transition-colors ${
-                      active
-                        ? 'bg-blue-500/10 hover:bg-blue-500/15'
-                        : 'hover:bg-secondary/50'
-                    }`}
-                  >
-                    <span className={`text-[11px] font-mono ${active ? 'text-blue-400' : 'text-muted-foreground'}`}>
-                      {skill}
-                    </span>
-                    <div className={`w-7 h-4 rounded-full transition-colors flex items-center ${
-                      active ? 'bg-blue-500 justify-end' : 'bg-zinc-700 justify-start'
-                    }`}>
-                      <div className={`w-3 h-3 rounded-full mx-0.5 transition-colors ${
-                        active ? 'bg-white' : 'bg-zinc-500'
-                      }`} />
-                    </div>
-                  </button>
-                )
-              })}
+              {skills.map((skill) => renderSkillRow(skill, false))}
             </div>
           </div>
         ))}
         {filtered.length === 0 && (
-          <p className="text-xs text-muted-foreground text-center py-4">No skills matching "{search}"</p>
+          <p className="text-xs text-muted-foreground text-center py-4">No skills matching &quot;{search}&quot;</p>
         )}
       </div>
     </div>
