@@ -269,6 +269,42 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    if (action === 'update-model') {
+      const id = jobId || jobName
+      if (!id) {
+        return NextResponse.json({ error: 'Job ID or name required' }, { status: 400 })
+      }
+
+      const { model } = body
+      if (model === undefined) {
+        return NextResponse.json({ error: 'Model value required' }, { status: 400 })
+      }
+
+      const cronFile = loadCronFile()
+      if (!cronFile) {
+        return NextResponse.json({ error: 'Cron file not found' }, { status: 404 })
+      }
+
+      const job = cronFile.jobs.find(j => j.id === id || j.name === id)
+      if (!job) {
+        return NextResponse.json({ error: 'Job not found' }, { status: 404 })
+      }
+
+      // Set model — empty string clears it (inherits agent default)
+      if (model === '' || model === null) {
+        delete job.payload.model
+      } else {
+        job.payload.model = model
+      }
+      job.updatedAtMs = Date.now()
+
+      if (!saveCronFile(cronFile)) {
+        return NextResponse.json({ error: 'Failed to save cron file' }, { status: 500 })
+      }
+
+      return NextResponse.json({ success: true, model: job.payload.model || null })
+    }
+
     if (action === 'remove') {
       const id = jobId || jobName
       if (!id) {

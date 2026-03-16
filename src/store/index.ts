@@ -39,6 +39,8 @@ export interface CronJob {
   nextRun?: number
   lastStatus?: 'success' | 'error' | 'running'
   lastError?: string
+  model?: string
+  agentId?: string
 }
 
 export interface SpawnRequest {

@@ -45,7 +45,7 @@ interface ManifestAgent {
   policies: string[]
   channels: { channel: string; purpose: string }[]
   references: string[]
-  crons?: { id: string; name: string; schedule: any; enabled: boolean }[]
+  crons?: { id: string; name: string; schedule: any; enabled: boolean; model?: string }[]
   discord?: { bot_name: string; account_key: string }
   live: {
     status: string
@@ -781,6 +781,44 @@ function AgentDetailSlideout({
       .catch(() => {})
   }, [])
 
+  // Enriched cron data from cron API (includes model field)
+  const [cronJobsData, setCronJobsData] = useState<Record<string, { model?: string }>>({})
+  useEffect(() => {
+    fetch('/api/cron?action=list')
+      .then((r) => r.ok ? r.json() : { jobs: [] })
+      .then((d) => {
+        const map: Record<string, { model?: string }> = {}
+        for (const job of d.jobs || []) {
+          if (job.id) map[job.id] = { model: job.model }
+          if (job.name) map[job.name] = { model: job.model }
+        }
+        setCronJobsData(map)
+      })
+      .catch(() => {})
+  }, [agent.id])
+
+  const updateCronModel = useCallback(async (cronId: string, model: string) => {
+    try {
+      const res = await fetch('/api/cron', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'update-model', jobId: cronId, model }),
+      })
+      if (res.ok) {
+        setCronJobsData(prev => ({
+          ...prev,
+          [cronId]: { model: model || undefined },
+        }))
+      }
+    } catch {}
+  }, [])
+
+  // Merge manifest crons with cron API data
+  const enrichedCrons = crons.map(c => ({
+    ...c,
+    model: c.model ?? cronJobsData[c.id]?.model ?? cronJobsData[c.name]?.model,
+  }))
+
   // Sub-views (skill browser / doc viewer)
   const [skillBrowserOpen, setSkillBrowserOpen] = useState(false)
   const [docView, setDocView] = useState<{ title: string; content: string } | null>(null)
@@ -1066,29 +1104,62 @@ function AgentDetailSlideout({
         )}
 
         {/* Crons */}
-        {crons.length > 0 && (
-          <AccordionSection title="Crons" count={crons.length} defaultOpen={false}>
-            <div className="space-y-2">
-              {crons.map((cron) => (
-                <div key={cron.id} className="flex items-start justify-between gap-2">
-                  <div className="min-w-0">
-                    <p className="text-xs text-foreground truncate">{cron.name}</p>
-                    <p className="text-[10px] font-mono text-muted-foreground">
-                      {typeof cron.schedule === 'object' ? cron.schedule.expr : cron.schedule}
-                      {cron.schedule?.tz && <span className="text-muted-foreground/50 ml-1">({cron.schedule.tz})</span>}
-                    </p>
+        {enrichedCrons.length > 0 && (
+          <AccordionSection title="Crons" count={enrichedCrons.length} defaultOpen={false}>
+            <div className="space-y-2.5">
+              {enrichedCrons.map((cron) => {
+                const cronModel = cron.model
+                const modelOptionsWithDefault = [
+                  { value: '', label: 'Default (inherit agent)' },
+                  ...modelOptions,
+                ]
+                return (
+                  <div key={cron.id} className="space-y-1.5">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="text-xs text-foreground truncate">{cron.name}</p>
+                        <p className="text-[10px] font-mono text-muted-foreground">
+                          {typeof cron.schedule === 'object' ? cron.schedule.expr : cron.schedule}
+                          {cron.schedule?.tz && <span className="text-muted-foreground/50 ml-1">({cron.schedule.tz})</span>}
+                        </p>
+                      </div>
+                      <span
+                        className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 ${
+                          cron.enabled
+                            ? 'bg-green-500/10 text-green-400 border border-green-500/20'
+                            : 'bg-zinc-500/10 text-zinc-400 border border-zinc-500/20'
+                        }`}
+                      >
+                        {cron.enabled ? 'on' : 'off'}
+                      </span>
+                    </div>
+                    {/* Model chip */}
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[9px] text-muted-foreground/60 uppercase tracking-wider">model</span>
+                      <div className="relative group/model">
+                        <select
+                          value={cronModel || ''}
+                          onChange={(e) => updateCronModel(cron.id, e.target.value)}
+                          className={`text-[10px] font-mono px-1.5 py-0.5 rounded cursor-pointer outline-none transition-colors appearance-none pr-4 ${
+                            cronModel
+                              ? 'bg-blue-500/10 text-blue-400 border border-blue-500/20 hover:bg-blue-500/15'
+                              : 'bg-transparent text-muted-foreground/50 border border-dashed border-muted-foreground/30 hover:border-muted-foreground/50 hover:text-muted-foreground/70'
+                          }`}
+                          title={cronModel ? `Model: ${cronModel}` : 'No model override — click to configure'}
+                        >
+                          {!modelOptionsWithDefault.find(m => m.value === (cronModel || '')) && cronModel && (
+                            <option value={cronModel}>{cronModel}</option>
+                          )}
+                          {modelOptionsWithDefault.map(m => (
+                            <option key={m.value} value={m.value}>{m.label}</option>
+                          ))}
+                        </select>
+                        <span className="absolute right-1 top-1/2 -translate-y-1/2 pointer-events-none text-[8px] text-muted-foreground/40">▾</span>
+                      </div>
+                    </div>
                   </div>
-                  <span
-                    className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 ${
-                      cron.enabled
-                        ? 'bg-green-500/10 text-green-400 border border-green-500/20'
-                        : 'bg-zinc-500/10 text-zinc-400 border border-zinc-500/20'
-                    }`}
-                  >
-                    {cron.enabled ? 'on' : 'off'}
-                  </span>
-                </div>
-              ))}
+                )
+              })}
             </div>
           </AccordionSection>
         )}
