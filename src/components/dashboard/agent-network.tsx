@@ -18,6 +18,7 @@ import '@xyflow/react/dist/style.css'
 import { Agent, Session } from '@/types'
 import { sessionToAgent, generateNodePosition } from '@/lib/utils'
 import { AgentCoreNode } from '@/components/ui/agent-core-node'
+import { ErrorBoundary } from '@/components/ErrorBoundary'
 
 interface AgentNetworkProps {
   agents: Agent[]
@@ -287,30 +288,32 @@ export function AgentNetwork({ agents, sessions }: AgentNetworkProps) {
       </div>
 
       <div className="h-96">
-        <ReactFlow
-          nodes={nodes}
-          edges={edges}
-          onNodesChange={onNodesChange}
-          onEdgesChange={onEdgesChange}
-          onConnect={onConnect}
-          nodeTypes={nodeTypes}
-          fitView
-          className="bg-transparent"
-        >
-          <Controls
-            style={{
-              background: 'hsl(var(--surface-1))',
-              border: '1px solid hsl(var(--surface-3))',
-              borderRadius: '10px',
-            }}
-          />
-          <Background
-            variant={BackgroundVariant.Dots}
-            gap={40}
-            size={0.6}
-            color="hsl(var(--void-cyan) / 0.12)"
-          />
-        </ReactFlow>
+        <ErrorBoundary>
+          <ReactFlow
+            nodes={nodes}
+            edges={edges}
+            onNodesChange={onNodesChange}
+            onEdgesChange={onEdgesChange}
+            onConnect={onConnect}
+            nodeTypes={nodeTypes}
+            fitView
+            className="bg-transparent"
+          >
+            <Controls
+              style={{
+                background: 'hsl(var(--surface-1))',
+                border: '1px solid hsl(var(--surface-3))',
+                borderRadius: '10px',
+              }}
+            />
+            <Background
+              variant={BackgroundVariant.Dots}
+              gap={40}
+              size={0.6}
+              color="hsl(var(--void-cyan) / 0.12)"
+            />
+          </ReactFlow>
+        </ErrorBoundary>
       </div>
     </div>
   )

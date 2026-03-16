@@ -10,6 +10,7 @@ import {
   PieChart, Pie, Cell, LineChart, Line, XAxis, YAxis, CartesianGrid,
   Tooltip, Legend, ResponsiveContainer, BarChart, Bar,
 } from 'recharts'
+import { ErrorBoundary } from '@/components/ErrorBoundary'
 
 const log = createClientLogger('CostTracker')
 
@@ -366,15 +367,17 @@ function OverviewView({
             {trendChartData.length === 0 ? (
               <div className="h-full flex items-center justify-center text-muted-foreground text-sm">{t('noTrendData')}</div>
             ) : (
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={trendChartData}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="time" /><YAxis />
-                  <Tooltip /><Legend />
-                  <Line type="monotone" dataKey="tokens" stroke="#8884d8" strokeWidth={2} name="Tokens" />
-                  <Line type="monotone" dataKey="requests" stroke="#82ca9d" strokeWidth={2} name="Requests" />
-                </LineChart>
-              </ResponsiveContainer>
+              <ErrorBoundary>
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={trendChartData}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="time" /><YAxis />
+                    <Tooltip /><Legend />
+                    <Line type="monotone" dataKey="tokens" stroke="#8884d8" strokeWidth={2} name="Tokens" />
+                    <Line type="monotone" dataKey="requests" stroke="#82ca9d" strokeWidth={2} name="Requests" />
+                  </LineChart>
+                </ResponsiveContainer>
+              </ErrorBoundary>
             )}
           </div>
         </div>
