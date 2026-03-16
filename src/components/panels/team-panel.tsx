@@ -1133,28 +1133,36 @@ function AgentDetailSlideout({
                         {cron.enabled ? 'on' : 'off'}
                       </span>
                     </div>
-                    {/* Model chip */}
+                    {/* Model chip — always visible as a reminder per-cron model config exists */}
                     <div className="flex items-center gap-1.5">
                       <span className="text-[9px] text-muted-foreground/60 uppercase tracking-wider">model</span>
-                      <div className="relative group/model">
+                      <div className="relative">
+                        {/* Visual chip overlay — shows "No model" or the model name */}
+                        <div
+                          className={`text-[10px] font-mono px-2 py-0.5 rounded cursor-pointer select-none transition-colors ${
+                            cronModel
+                              ? 'bg-blue-500/10 text-blue-400 border border-blue-500/20 hover:bg-blue-500/15'
+                              : 'bg-transparent text-muted-foreground/40 border border-dashed border-muted-foreground/25 hover:border-muted-foreground/50 hover:text-muted-foreground/60'
+                          }`}
+                          title={cronModel ? `Model: ${cronModel}` : 'No model — click to configure'}
+                        >
+                          {cronModel || 'No model'}
+                          <span className="ml-1.5 text-[8px] opacity-50">▾</span>
+                        </div>
+                        {/* Invisible select positioned over the chip for interaction */}
                         <select
                           value={cronModel || ''}
                           onChange={(e) => updateCronModel(cron.id, e.target.value)}
-                          className={`text-[10px] font-mono px-1.5 py-0.5 rounded cursor-pointer outline-none transition-colors appearance-none pr-4 ${
-                            cronModel
-                              ? 'bg-blue-500/10 text-blue-400 border border-blue-500/20 hover:bg-blue-500/15'
-                              : 'bg-transparent text-muted-foreground/50 border border-dashed border-muted-foreground/30 hover:border-muted-foreground/50 hover:text-muted-foreground/70'
-                          }`}
-                          title={cronModel ? `Model: ${cronModel}` : 'No model override — click to configure'}
+                          className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                          title={cronModel ? `Model: ${cronModel}` : 'No model — click to configure'}
                         >
                           {!modelOptionsWithDefault.find(m => m.value === (cronModel || '')) && cronModel && (
                             <option value={cronModel}>{cronModel}</option>
                           )}
                           {modelOptionsWithDefault.map(m => (
-                            <option key={m.value} value={m.value}>{m.label}</option>
+                            <option key={m.value} value={m.value}>{m.label === 'Default (inherit agent)' ? 'No model (inherit agent)' : m.label}</option>
                           ))}
                         </select>
-                        <span className="absolute right-1 top-1/2 -translate-y-1/2 pointer-events-none text-[8px] text-muted-foreground/40">▾</span>
                       </div>
                     </div>
                   </div>
