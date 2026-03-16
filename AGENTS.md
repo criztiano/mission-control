@@ -213,8 +213,8 @@ This project uses **Tailwind CSS v3.4**, NOT v4. Key differences:
 
 ## ⛔ Git Rules (NON-NEGOTIABLE)
 
-- **NEVER run `git pull`, `git merge`, `git rebase` from upstream/origin** without explicit approval from Cri
+- This repo is **detached from upstream** (builderz-labs/mission-control). There is no `upstream` remote.
+- **NEVER add an upstream remote or pull from the original repo** without Cri's explicit approval
 - **NEVER force-push** to main
-- This repo has custom files that diverge from upstream Eden. Pulling upstream will cause 50+ merge conflicts and destroy our custom work.
-- All work happens on feature branches, merged to main via PR or fast-forward only
-- If upstream updates are needed, **Cri decides** when and how to integrate them
+- Work on feature branches, merge to main via fast-forward or PR
+- If upstream has something we want, Cri decides — we cherry-pick specific commits, never bulk merge
