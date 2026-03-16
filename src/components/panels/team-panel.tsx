@@ -17,8 +17,7 @@ import {
 import '@xyflow/react/dist/style.css'
 import { Button } from '@/components/ui/button'
 import { AgentAvatar } from '@/components/ui/agent-avatar'
-import { PropertyChip, type PropertyOption } from '@/components/ui/property-chip'
-import { BlockEditor } from '@/components/ui/block-editor'
+// PropertyChip and BlockEditor removed — inline alternatives used
 import { Refresh, Xmark, FloppyDisk } from 'iconoir-react'
 import { useSmartPoll } from '@/lib/use-smart-poll'
 
@@ -367,64 +366,80 @@ function AccordionSection({
   )
 }
 
-// Full-panel skill browser (slides in from right)
+// Full-panel skill browser with categories
+interface SkillEntry { id: string; category: string; tags: string[] }
+interface CategoryDef { label: string; icon: string; description: string }
+
 function SkillBrowser({
   allSkills,
   activeSkills,
+  categories,
   onToggle,
   onClose,
 }: {
-  allSkills: string[]
+  allSkills: SkillEntry[]
   activeSkills: string[]
+  categories: Record<string, CategoryDef>
   onToggle: (skill: string, enabled: boolean) => void
   onClose: () => void
 }) {
   const [search, setSearch] = useState('')
-  // Local state for immediate UI feedback
+  const [activeCategory, setActiveCategory] = useState<string | null>(null)
   const [localActive, setLocalActive] = useState<Set<string>>(new Set(activeSkills))
 
   const handleToggle = (skill: string, enabled: boolean) => {
-    // Update local state immediately for UI
     setLocalActive((prev) => {
       const next = new Set(prev)
       if (enabled) next.add(skill)
       else next.delete(skill)
       return next
     })
-    // Persist to config
     onToggle(skill, enabled)
   }
 
-  const filtered = search
-    ? allSkills.filter((s) => s.toLowerCase().includes(search.toLowerCase()))
-    : allSkills
+  // Filter by search and category
+  const filtered = allSkills.filter((s) => {
+    if (search) {
+      const q = search.toLowerCase()
+      if (!s.id.toLowerCase().includes(q) && !s.tags.some((t) => t.toLowerCase().includes(q))) return false
+    }
+    if (activeCategory && s.category !== activeCategory) return false
+    return true
+  })
 
-  // Split into active and inactive
-  const activeFiltered = filtered.filter((s) => localActive.has(s)).sort()
-  const inactiveFiltered = filtered.filter((s) => !localActive.has(s))
+  // Split active/inactive
+  const activeFiltered = filtered.filter((s) => localActive.has(s.id))
+  const inactiveFiltered = filtered.filter((s) => !localActive.has(s.id))
 
-  // Group inactive skills by first letter
-  const groups = new Map<string, string[]>()
+  // Group inactive by category
+  const groups = new Map<string, SkillEntry[]>()
   for (const s of inactiveFiltered) {
-    const letter = s[0].toUpperCase()
-    if (!groups.has(letter)) groups.set(letter, [])
-    groups.get(letter)!.push(s)
+    const cat = s.category || 'uncategorized'
+    if (!groups.has(cat)) groups.set(cat, [])
+    groups.get(cat)!.push(s)
   }
 
-  const renderSkillRow = (skill: string, active: boolean) => (
+  const renderSkillRow = (skill: SkillEntry, active: boolean) => (
     <button
-      key={skill}
-      onClick={() => handleToggle(skill, !active)}
+      key={skill.id}
+      onClick={() => handleToggle(skill.id, !active)}
       className={`w-full flex items-center justify-between px-2 py-1.5 rounded text-left transition-colors ${
-        active
-          ? 'bg-blue-500/10 hover:bg-blue-500/15'
-          : 'hover:bg-secondary/50'
+        active ? 'bg-blue-500/10 hover:bg-blue-500/15' : 'hover:bg-secondary/50'
       }`}
     >
-      <span className={`text-[11px] font-mono ${active ? 'text-blue-400' : 'text-muted-foreground'}`}>
-        {skill}
-      </span>
-      <div className={`w-7 h-4 rounded-full transition-colors flex items-center ${
+      <div className="min-w-0 flex-1">
+        <span className={`text-[11px] font-mono ${active ? 'text-blue-400' : 'text-muted-foreground'}`}>
+          {skill.id}
+        </span>
+        {skill.tags.length > 0 && (
+          <div className="flex flex-wrap gap-0.5 mt-0.5">
+            {skill.tags.slice(0, 3).map((t) => (
+              <span key={t} className="text-[9px] text-muted-foreground/50">{t}</span>
+            ))}
+          </div>
+        )}
+      </div>
+      <div className={`w-7 h-4 rounded-full transition-colors flex items-center shrink-0 ${
         active ? 'bg-blue-500 justify-end' : 'bg-zinc-700 justify-start'
       }`}>
         <div className={`w-3 h-3 rounded-full mx-0.5 transition-colors ${
@@ -433,6 +448,8 @@ function SkillBrowser({
       </div>
     </button>
   )
+
+  const catEntries = Object.entries(categories)
 
   return (
     <div
@@ -448,7 +465,7 @@ function SkillBrowser({
         </Button>
         <h3 className="text-sm font-bold text-foreground">Skills</h3>
         <span className="text-[10px] text-muted-foreground ml-auto">
-          {localActive.size} active / {allSkills.length} available
+          {localActive.size} active / {allSkills.length} total
         </span>
       </div>
 
@@ -458,38 +475,77 @@ function SkillBrowser({
           type="text"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          autoFocus
           className="text-xs font-mono px-2.5 py-1.5 rounded border border-border bg-secondary text-foreground w-full outline-none focus:border-primary"
-          placeholder="Search skills..."
+          placeholder="Search skills or tags..."
         />
+      </div>
+
+      {/* Category filter pills */}
+      <div className="px-3 py-2 border-b border-border shrink-0 overflow-x-auto">
+        <div className="flex gap-1 flex-nowrap">
+          <button
+            onClick={() => setActiveCategory(null)}
+            className={`text-[10px] px-2 py-1 rounded-full whitespace-nowrap transition-colors ${
+              !activeCategory ? 'bg-primary text-primary-foreground' : 'bg-secondary text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            All
+          </button>
+          {catEntries.map(([key, cat]) => (
+            <button
+              key={key}
+              onClick={() => setActiveCategory(activeCategory === key ? null : key)}
+              className={`text-[10px] px-2 py-1 rounded-full whitespace-nowrap transition-colors ${
+                activeCategory === key ? 'bg-primary text-primary-foreground' : 'bg-secondary text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              {cat.icon} {cat.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* Skill list */}
       <div className="flex-1 overflow-y-auto px-3 py-2">
-        {/* Active skills at the top */}
+        {/* Active skills */}
         {activeFiltered.length > 0 && (
           <div className="mb-3">
             <div className="text-[10px] font-bold text-blue-400 uppercase tracking-widest mb-1">
               Active ({activeFiltered.length})
             </div>
             <div className="space-y-0.5">
-              {activeFiltered.map((skill) => renderSkillRow(skill, true))}
+              {activeFiltered.map((s) => renderSkillRow(s, true))}
             </div>
           </div>
         )}
 
-        {/* Inactive skills grouped by letter */}
         {activeFiltered.length > 0 && inactiveFiltered.length > 0 && (
           <div className="border-t border-border/30 my-2" />
         )}
-        {Array.from(groups.entries()).map(([letter, skills]) => (
-          <div key={letter} className="mb-3">
-            <div className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest mb-1">{letter}</div>
-            <div className="space-y-0.5">
-              {skills.map((skill) => renderSkillRow(skill, false))}
-            </div>
+
+        {/* Inactive grouped by category */}
+        {activeCategory ? (
+          // Single category view — flat list
+          <div className="space-y-0.5">
+            {inactiveFiltered.map((s) => renderSkillRow(s, false))}
           </div>
-        ))}
+        ) : (
+          // All categories view
+          Array.from(groups.entries()).sort(([a], [b]) => a.localeCompare(b)).map(([cat, skills]) => {
+            const catDef = categories[cat]
+            return (
+              <div key={cat} className="mb-3">
+                <div className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest mb-1">
+                  {catDef ? `${catDef.icon} ${catDef.label}` : cat} ({skills.length})
+                </div>
+                <div className="space-y-0.5">
+                  {skills.map((s) => renderSkillRow(s, false))}
+                </div>
+              </div>
+            )
+          })
+        )}
+
         {filtered.length === 0 && (
           <p className="text-xs text-muted-foreground text-center py-4">No skills matching &quot;{search}&quot;</p>
         )}
@@ -645,15 +701,15 @@ function DocEditor({
           </Button>
         )}
       </div>
-      <div className="flex-1 overflow-y-auto">
-        <BlockEditor
-          initialMarkdown={content}
-          onChange={(md) => {
-            setCurrentContent(md)
+      <div className="flex-1 overflow-y-auto p-3">
+        <textarea
+          defaultValue={content}
+          onChange={(e) => {
+            setCurrentContent(e.target.value)
             setDirty(true)
           }}
+          className="w-full h-full min-h-[400px] text-xs font-mono leading-relaxed bg-transparent text-foreground/80 border border-border/30 rounded p-3 outline-none focus:border-primary resize-none"
           placeholder="Write documentation..."
-          compact
         />
       </div>
     </div>
@@ -703,8 +759,10 @@ function AgentDetailSlideout({
   }, [agent.id, onRefresh])
 
   // Catalog (all available skills/tools/models)
-  const [catalog, setCatalog] = useState<{ tools: string[]; skills: string[] }>({ tools: [], skills: [] })
-  const [modelOptions, setModelOptions] = useState<PropertyOption[]>([])
+  interface EnrichedSkill { id: string; category: string; tags: string[] }
+  interface CatalogCategory { label: string; icon: string; description: string }
+  const [catalog, setCatalog] = useState<{ tools: string[]; skills: EnrichedSkill[]; categories: Record<string, CatalogCategory> }>({ tools: [], skills: [], categories: {} })
+  const [modelOptions, setModelOptions] = useState<{ value: string; label: string; group: string }[]>([])
   useEffect(() => {
     fetch('/api/team/catalog')
       .then((r) => r.ok ? r.json() : { tools: [], skills: [] })
@@ -730,8 +788,9 @@ function AgentDetailSlideout({
       {/* Skill browser overlay */}
       {skillBrowserOpen && (
         <SkillBrowser
-          allSkills={catalog.skills}
+          allSkills={catalog.skills as unknown as SkillEntry[]}
           activeSkills={skills}
+          categories={catalog.categories as unknown as Record<string, CategoryDef>}
           onToggle={(skill, enabled) => {
             const newSkills = enabled
               ? [...skills, skill]
@@ -932,11 +991,11 @@ function AgentDetailSlideout({
         </AccordionSection>
 
         {/* Skills */}
-        <AccordionSection title="Skills" count={skills.length > 0 ? skills.length : catalog.skills.length} defaultOpen>
+        <AccordionSection title="Skills" count={skills.length > 0 ? skills.length : (catalog.skills as any[]).length} defaultOpen>
           <div className="space-y-2">
             {skills.length === 0 && (
               <p className="text-[10px] text-muted-foreground italic mb-1">
-                Auto-discovery — all {catalog.skills.length} skills available
+                Auto-discovery — all {(catalog.skills as any[]).length} skills available
               </p>
             )}
             <div className="flex flex-wrap gap-1">
@@ -1017,12 +1076,18 @@ function AgentDetailSlideout({
             <div>
               <span className="text-[10px] text-muted-foreground uppercase tracking-wider">Model</span>
               <div className="mt-1">
-                <PropertyChip
+                <select
                   value={fullModel}
-                  options={modelOptions}
-                  onSelect={(v) => updateAgent('model', v)}
-                  searchable
-                />
+                  onChange={(e) => updateAgent('model', e.target.value)}
+                  className="text-xs font-mono px-2 py-1.5 rounded border border-border bg-secondary text-foreground w-full outline-none focus:border-primary"
+                >
+                  {!modelOptions.find((m) => m.value === fullModel) && (
+                    <option value={fullModel}>{fullModel}</option>
+                  )}
+                  {modelOptions.map((m) => (
+                    <option key={m.value} value={m.value}>{m.label} ({m.group})</option>
+                  ))}
+                </select>
               </div>
             </div>
             {fallbacks.length > 0 && (

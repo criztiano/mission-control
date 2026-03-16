@@ -54,8 +54,27 @@ export async function GET(request: NextRequest) {
     } catch {}
   }
 
+  // Load skills catalog (categories + tags)
+  let skillsCatalog: Record<string, any> = {}
+  let categories: Record<string, any> = {}
+  try {
+    const catalogPath = path.join(os.homedir(), '.openclaw/workspaces/main/data/skills-catalog.json')
+    if (fs.existsSync(catalogPath)) {
+      const catalog = JSON.parse(fs.readFileSync(catalogPath, 'utf-8'))
+      skillsCatalog = catalog.skills || {}
+      categories = catalog.categories || {}
+    }
+  } catch {}
+
+  // Merge disk skills with catalog metadata
+  const enrichedSkills = Array.from(skills).sort().map((id) => ({
+    id,
+    ...(skillsCatalog[id] || { category: 'uncategorized', tags: [] }),
+  }))
+
   return NextResponse.json({
     tools: ALL_TOOLS.sort(),
-    skills: Array.from(skills).sort(),
+    skills: enrichedSkills,
+    categories,
   })
 }
