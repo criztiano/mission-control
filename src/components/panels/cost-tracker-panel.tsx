@@ -389,14 +389,16 @@ function OverviewView({
             {modelData.length === 0 ? (
               <div className="h-full flex items-center justify-center text-muted-foreground text-sm">{t('noModelData')}</div>
             ) : (
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={modelData}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="name" angle={-45} textAnchor="end" height={80} interval={0} />
-                  <YAxis /><Tooltip formatter={(v, n) => [formatNumber(Number(v)), n]} />
-                  <Bar dataKey="tokens" fill="#8884d8" name="Tokens" />
-                </BarChart>
-              </ResponsiveContainer>
+              <ErrorBoundary>
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={modelData}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="name" angle={-45} textAnchor="end" height={80} interval={0} />
+                    <YAxis /><Tooltip formatter={(v, n) => [formatNumber(Number(v)), n]} />
+                    <Bar dataKey="tokens" fill="#8884d8" name="Tokens" />
+                  </BarChart>
+                </ResponsiveContainer>
+              </ErrorBoundary>
             )}
           </div>
         </div>
@@ -408,14 +410,16 @@ function OverviewView({
             {pieData.length === 0 ? (
               <div className="h-full flex items-center justify-center text-muted-foreground text-sm">{t('noCostData')}</div>
             ) : (
-              <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                  <Pie data={pieData} cx="50%" cy="50%" innerRadius={40} outerRadius={80} paddingAngle={5} dataKey="value">
-                    {pieData.map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
-                  </Pie>
-                  <Tooltip formatter={(v) => formatCost(Number(v))} /><Legend />
-                </PieChart>
-              </ResponsiveContainer>
+              <ErrorBoundary>
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie data={pieData} cx="50%" cy="50%" innerRadius={40} outerRadius={80} paddingAngle={5} dataKey="value">
+                      {pieData.map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
+                    </Pie>
+                    <Tooltip formatter={(v) => formatCost(Number(v))} /><Legend />
+                  </PieChart>
+                </ResponsiveContainer>
+              </ErrorBoundary>
             )}
           </div>
         </div>
@@ -530,17 +534,19 @@ function AgentsView({
       <div className="bg-card border border-border rounded-lg p-6">
         <h2 className="text-xl font-semibold mb-4">{t('perAgentCost')}</h2>
         <div className="h-64">
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={agents.slice(0, 12).map(a => ({
-              name: a.agent.length > 12 ? a.agent.slice(0, 11) + '\u2026' : a.agent,
-              cost: Number(a.total_cost.toFixed(4)),
-            }))}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="name" tick={{ fontSize: 11 }} /><YAxis tick={{ fontSize: 11 }} />
-              <Tooltip formatter={(v) => formatCost(Number(v))} />
-              <Bar dataKey="cost" fill="#0088FE" name="Cost ($)" />
-            </BarChart>
-          </ResponsiveContainer>
+          <ErrorBoundary>
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={agents.slice(0, 12).map(a => ({
+                name: a.agent.length > 12 ? a.agent.slice(0, 11) + '\u2026' : a.agent,
+                cost: Number(a.total_cost.toFixed(4)),
+              }))}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="name" tick={{ fontSize: 11 }} /><YAxis tick={{ fontSize: 11 }} />
+                <Tooltip formatter={(v) => formatCost(Number(v))} />
+                <Bar dataKey="cost" fill="#0088FE" name="Cost ($)" />
+              </BarChart>
+            </ResponsiveContainer>
+          </ErrorBoundary>
         </div>
       </div>
 

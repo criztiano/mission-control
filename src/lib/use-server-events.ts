@@ -185,8 +185,23 @@ export function useServerEvents() {
 
     connect()
 
+    // Reconnect SSE when tab regains visibility (Tailscale/network hiccup recovery)
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible' && mounted) {
+        const es = eventSourceRef.current
+        if (!es || es.readyState === EventSource.CLOSED) {
+          log.info('Tab visible — reconnecting SSE')
+          sseReconnectAttemptsRef.current = 0
+          if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current)
+          connect()
+        }
+      }
+    }
+    document.addEventListener('visibilitychange', handleVisibility)
+
     return () => {
       mounted = false
+      document.removeEventListener('visibilitychange', handleVisibility)
       if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current)
       if (eventSourceRef.current) {
         eventSourceRef.current.close()

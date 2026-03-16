@@ -416,7 +416,8 @@ export function TaskBoardPanel() {
   }, [loading, selectedTask, selectedTaskIdFromUrl, setSelectedTask, tasks])
 
   // Poll as SSE fallback — pauses when SSE is delivering events
-  useSmartPoll(fetchData, 30000, { pauseWhenSseConnected: true })
+  // 60s interval: reduces connection pressure over Tailscale; SSE handles real-time updates
+  useSmartPoll(fetchData, 60000, { pauseWhenSseConnected: true })
 
   // Group tasks by status
   const tasksByStatus = statusColumns.reduce((acc, column) => {

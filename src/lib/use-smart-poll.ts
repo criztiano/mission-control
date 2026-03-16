@@ -3,9 +3,6 @@
 import { useEffect, useRef, useCallback, useState } from 'react'
 import { useMissionControl } from '@/store'
 
-const MAX_RETRIES = 3
-const RETRY_DELAYS_MS = [2000, 4000, 8000]
-
 interface SmartPollOptions {
   /** Pause polling when WebSocket is connected (data comes via WS anyway) */
   pauseWhenConnected?: boolean
@@ -19,13 +16,28 @@ interface SmartPollOptions {
   maxBackoffMultiplier?: number
   /** Only poll when this returns true */
   enabled?: boolean
+  /**
+   * Number of automatic retries on fetch error before propagating error state.
+   * Retries use exponential backoff: 2s, 4s, 8s.
+   * Default: 3
+   */
+  retries?: number
 }
 
-interface SmartPollState {
+interface SmartPollResult {
+  /** Manual trigger for an immediate poll */
+  trigger: () => void
+  /** Last error from the callback (cleared on next successful poll or by clearError) */
   error: Error | null
+  /** True while auto-retrying after an error */
   retrying: boolean
+  /** Current retry attempt count */
   retryCount: number
+  /** Clear the error state manually (useful for retry buttons) */
+  clearError: () => void
 }
+
+const RETRY_BASE_DELAY_MS = 2000
 
 /**
  * Visibility-aware polling hook that pauses when the browser tab is hidden
@@ -34,19 +46,17 @@ interface SmartPollState {
  * Always fires an initial fetch on mount (regardless of SSE/WS state)
  * to bootstrap component data. Subsequent polls respect pause options.
  *
- * Features:
- * - Request deduplication: skips polling if previous request still in-flight
- * - Exponential backoff retry: 3 retries with 2s/4s/8s delays on fetch errors
- * - Error state: returns { error, retrying, retryCount, clearError } for UI
- * - AbortController cleanup: cancels pending requests on unmount
+ * Adds request deduplication (skips poll if previous is still in-flight),
+ * exponential backoff on errors (up to `retries` attempts), and returns
+ * error state for UI retry affordances.
  *
- * Returns a function to manually trigger an immediate poll, plus error state.
+ * Returns a SmartPollResult with manual trigger and error state.
  */
 export function useSmartPoll(
   callback: () => void | Promise<void>,
   intervalMs: number,
   options: SmartPollOptions = {}
-) {
+): SmartPollResult {
   const {
     pauseWhenConnected = false,
     pauseWhenDisconnected = false,
@@ -54,22 +64,23 @@ export function useSmartPoll(
     backoff = false,
     maxBackoffMultiplier = 3,
     enabled = true,
+    retries = 3,
   } = options
 
   const callbackRef = useRef(callback)
   const intervalRef = useRef<NodeJS.Timeout | undefined>(undefined)
+  const retryTimeoutRef = useRef<NodeJS.Timeout | undefined>(undefined)
   const backoffMultiplierRef = useRef(1)
   const isVisibleRef = useRef(true)
   const initialFiredRef = useRef(false)
+  /** True while a poll callback Promise is pending (deduplicate) */
   const inflightRef = useRef(false)
-  const mountedRef = useRef(true)
-  const retryTimeoutRef = useRef<NodeJS.Timeout | undefined>(undefined)
+  /** True while scheduled retries are running (prevent premature inflight clear) */
+  const retryingRef = useRef(false)
 
-  const [pollState, setPollState] = useState<SmartPollState>({
-    error: null,
-    retrying: false,
-    retryCount: 0,
-  })
+  const [error, setError] = useState<Error | null>(null)
+  const [retrying, setRetrying] = useState(false)
+  const [retryCount, setRetryCount] = useState(0)
 
   const { connection } = useMissionControl()
 
@@ -77,6 +88,13 @@ export function useSmartPoll(
   useEffect(() => {
     callbackRef.current = callback
   }, [callback])
+
+  const clearError = useCallback(() => {
+    setError(null)
+    setRetryCount(0)
+    setRetrying(false)
+    retryingRef.current = false
+  }, [])
 
   // Determine if ongoing polling should be active
   const shouldPoll = useCallback(() => {
@@ -88,73 +106,64 @@ export function useSmartPoll(
     return true
   }, [enabled, pauseWhenConnected, pauseWhenDisconnected, pauseWhenSseConnected, connection.isConnected, connection.sseConnected])
 
-  // Retry with exponential backoff — call chain, up to MAX_RETRIES attempts
-  const scheduleRetry = useCallback((attempt: number) => {
-    if (!mountedRef.current) return
-    if (attempt >= MAX_RETRIES) {
-      setPollState(prev => ({ ...prev, retrying: false, retryCount: 0 }))
+  /**
+   * Run callback with retry logic on failure.
+   * Skips if a previous call is still in-flight (deduplication).
+   */
+  const runWithRetry = useCallback((attempt = 0): void => {
+    if (inflightRef.current) return
+    inflightRef.current = true
+
+    const result = callbackRef.current()
+    if (!(result instanceof Promise)) {
       inflightRef.current = false
       return
     }
 
-    const delay = RETRY_DELAYS_MS[attempt] ?? RETRY_DELAYS_MS[RETRY_DELAYS_MS.length - 1]
-    setPollState(prev => ({ ...prev, retrying: true, retryCount: attempt + 1 }))
-
-    retryTimeoutRef.current = setTimeout(async () => {
-      if (!mountedRef.current) { inflightRef.current = false; return }
-      try {
-        await callbackRef.current()
-        // Success — clear error
-        setPollState({ error: null, retrying: false, retryCount: 0 })
-        backoffMultiplierRef.current = 1
+    result
+      .then(() => {
         inflightRef.current = false
-      } catch (err) {
-        const error = err instanceof Error ? err : new Error(String(err))
-        setPollState(prev => ({ ...prev, error }))
-        scheduleRetry(attempt + 1)
-      }
-    }, delay)
-  }, [])
+        retryingRef.current = false
+        setError(null)
+        setRetrying(false)
+        setRetryCount(0)
+        if (backoff) {
+          backoffMultiplierRef.current = 1
+        }
+      })
+      .catch((err: unknown) => {
+        if (attempt < retries) {
+          // Schedule retry with exponential backoff
+          const delay = RETRY_BASE_DELAY_MS * Math.pow(2, attempt)
+          retryingRef.current = true
+          setRetrying(true)
+          setRetryCount(attempt + 1)
+          inflightRef.current = false
+          retryTimeoutRef.current = setTimeout(() => {
+            if (inflightRef.current) return
+            runWithRetry(attempt + 1)
+          }, delay)
+        } else {
+          // All retries exhausted — surface error
+          inflightRef.current = false
+          retryingRef.current = false
+          setRetrying(false)
+          setRetryCount(attempt)
+          setError(err instanceof Error ? err : new Error(String(err)))
+          if (backoff) {
+            backoffMultiplierRef.current = Math.min(
+              backoffMultiplierRef.current + 0.5,
+              maxBackoffMultiplier
+            )
+          }
+        }
+      })
+  }, [retries, backoff, maxBackoffMultiplier])
 
   const fire = useCallback(() => {
     if (!shouldPoll()) return
-    // Request deduplication: skip if previous poll still in-flight
-    if (inflightRef.current) return
-
-    inflightRef.current = true
-
-    try {
-      const result = callbackRef.current()
-      if (result instanceof Promise) {
-        result
-          .then(() => {
-            if (!mountedRef.current) { inflightRef.current = false; return }
-            setPollState({ error: null, retrying: false, retryCount: 0 })
-            backoffMultiplierRef.current = 1
-            inflightRef.current = false
-          })
-          .catch((err) => {
-            if (!mountedRef.current) { inflightRef.current = false; return }
-            const error = err instanceof Error ? err : new Error(String(err))
-            setPollState(prev => ({ ...prev, error }))
-            if (backoff) {
-              backoffMultiplierRef.current = Math.min(
-                backoffMultiplierRef.current + 0.5,
-                maxBackoffMultiplier
-              )
-            }
-            // Kick off retry chain (inflightRef cleared inside scheduleRetry chain)
-            scheduleRetry(0)
-          })
-      } else {
-        inflightRef.current = false
-      }
-    } catch (err) {
-      const error = err instanceof Error ? err : new Error(String(err))
-      setPollState(prev => ({ ...prev, error }))
-      scheduleRetry(0)
-    }
-  }, [shouldPoll, backoff, maxBackoffMultiplier, scheduleRetry])
+    runWithRetry(0)
+  }, [shouldPoll, runWithRetry])
 
   const startInterval = useCallback(() => {
     if (intervalRef.current) clearInterval(intervalRef.current)
@@ -165,23 +174,22 @@ export function useSmartPoll(
       : intervalMs
 
     intervalRef.current = setInterval(() => {
-      if (shouldPoll() && !inflightRef.current) {
-        fire()
+      if (shouldPoll()) {
+        runWithRetry(0)
       }
     }, effectiveInterval)
-  }, [intervalMs, shouldPoll, backoff, fire])
+  }, [intervalMs, shouldPoll, backoff, runWithRetry])
 
   // Main effect: set up polling + visibility listener
   useEffect(() => {
-    mountedRef.current = true
-
     // Always fire initial fetch to bootstrap data, even if SSE/WS is connected.
     // SSE delivers events (agent.updated, etc.) but not the full initial state.
     if (!initialFiredRef.current && enabled) {
       initialFiredRef.current = true
-      fire()
+      runWithRetry(0)
     }
 
+    // Start interval polling (respects shouldPoll for ongoing polls)
     startInterval()
 
     const handleVisibilityChange = () => {
@@ -193,10 +201,16 @@ export function useSmartPoll(
         fire()
         startInterval()
       } else {
-        // Tab hidden: stop polling
+        // Tab hidden: stop polling (cancel retry timers too)
         if (intervalRef.current) {
           clearInterval(intervalRef.current)
           intervalRef.current = undefined
+        }
+        if (retryTimeoutRef.current) {
+          clearTimeout(retryTimeoutRef.current)
+          retryTimeoutRef.current = undefined
+          retryingRef.current = false
+          inflightRef.current = false
         }
       }
     }
@@ -204,7 +218,6 @@ export function useSmartPoll(
     document.addEventListener('visibilitychange', handleVisibilityChange)
 
     return () => {
-      mountedRef.current = false
       document.removeEventListener('visibilitychange', handleVisibilityChange)
       if (intervalRef.current) {
         clearInterval(intervalRef.current)
@@ -214,25 +227,13 @@ export function useSmartPoll(
         clearTimeout(retryTimeoutRef.current)
         retryTimeoutRef.current = undefined
       }
-      inflightRef.current = false
     }
-  }, [fire, startInterval, enabled])
+  }, [fire, startInterval, enabled, runWithRetry])
 
   // Restart interval when connection state changes (WS or SSE)
   useEffect(() => {
     startInterval()
   }, [connection.isConnected, connection.sseConnected, startInterval])
 
-  const clearError = useCallback(() => {
-    setPollState({ error: null, retrying: false, retryCount: 0 })
-    backoffMultiplierRef.current = 1
-  }, [])
-
-  // Return manual trigger with error state attached for UI consumption
-  return Object.assign(fire, {
-    error: pollState.error,
-    retrying: pollState.retrying,
-    retryCount: pollState.retryCount,
-    clearError,
-  })
+  return { trigger: fire, error, retrying, retryCount, clearError }
 }
