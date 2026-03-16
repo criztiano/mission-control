@@ -54,6 +54,7 @@ interface ManifestAgent {
   }
   soul_md?: string
   agents_md?: string
+  modes?: { mode: string; trigger: string; cost: string; scouts: string; use_when: string }[]
 }
 
 interface Relationship {
@@ -741,6 +742,7 @@ function AgentDetailSlideout({
   const crons = agent.crons || []
   const heartbeat = agent.config.heartbeat || {}
   const subagents = agent.config.subagents?.allowAgents || []
+  const modes = agent.modes || []
   const [saving, setSaving] = useState(false)
 
   const updateAgent = useCallback(async (field: string, value: any) => {
@@ -940,6 +942,27 @@ function AgentDetailSlideout({
             )}
           </div>
         </AccordionSection>
+
+        {/* Modes (e.g. Rover) */}
+        {modes.length > 0 && (
+          <AccordionSection title="Modes" count={modes.length} defaultOpen>
+            <div className="space-y-1.5">
+              {modes.map((m) => (
+                <div key={m.mode} className="flex items-start gap-2 px-1 py-1">
+                  <span className="text-[11px] shrink-0">{m.cost.includes('🟢') ? '🟢' : m.cost.includes('🔴') ? '🔴' : '🟡'}</span>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-xs font-semibold text-foreground">{m.mode}</span>
+                      <span className="text-[10px] font-mono text-muted-foreground/60">{m.trigger}</span>
+                    </div>
+                    <p className="text-[10px] text-muted-foreground mt-0.5">{m.use_when}</p>
+                    <p className="text-[10px] text-muted-foreground/50">{m.scouts}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </AccordionSection>
+        )}
 
         {/* Duties */}
         {duties.length > 0 && (
