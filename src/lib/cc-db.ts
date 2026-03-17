@@ -305,7 +305,7 @@ export function getCurrentRound(taskId: string): number {
 
 export function createTurn(
   taskId: string,
-  turn: { type: TurnType; author: string; content: string; links?: Turn['links']; assigned_to?: string }
+  turn: { assigned_to: string; content: string; links?: Turn['links']; type?: TurnType; author?: string }
 ): Turn {
   const writeDb = getCCDatabaseWrite()
   try {
@@ -313,70 +313,61 @@ export function createTurn(
     const now = new Date().toISOString()
     const linksJson = JSON.stringify(turn.links || [])
 
-    let roundNumber: number
+    // Infer author from current issue assignee if not provided
+    const issue = getIssue(taskId)
+    const turnAuthor = turn.author || issue?.assignee || 'system'
 
-    if (turn.type === 'instruction') {
-      // New instruction = new round
+    // Note handling — kept for backward compat but not exposed in API
+    if (turn.type === 'note') {
       const currentMax = (writeDb.prepare(
         'SELECT MAX(round_number) as max_round FROM turns WHERE task_id = ?'
       ).get(taskId) as { max_round: number | null })?.max_round ?? 0
-      roundNumber = currentMax + 1
 
-      // Reassign task + reset picked + reopen if done/closed
-      writeDb.prepare(
-        `UPDATE issues SET assignee = ?, picked = 0, picked_at = NULL, last_turn_at = ?, updated_at = ?,
-         status = CASE WHEN status IN ('done', 'closed') THEN 'open' ELSE status END
-         WHERE id = ?`
-      ).run(turn.assigned_to || '', now, now, taskId)
-
-    } else if (turn.type === 'result') {
-      // Result completes current round
-      const currentMax = (writeDb.prepare(
-        'SELECT MAX(round_number) as max_round FROM turns WHERE task_id = ? AND type = \'instruction\''
-      ).get(taskId) as { max_round: number | null })?.max_round ?? 1
-      roundNumber = currentMax
-
-      // Route result back to whoever wrote the instruction for this round
-      // If assigned_to is explicitly set in the turn, use that (enables manual overrides)
-      // Otherwise: always go back to the instruction author — the person who passed the ball
-      let reassignTo: string
-      if (turn.assigned_to) {
-        reassignTo = turn.assigned_to
-      } else {
-        const instructionRow = writeDb.prepare(
-          'SELECT author FROM turns WHERE task_id = ? AND round_number = ? AND type = \'instruction\' LIMIT 1'
-        ).get(taskId, currentMax) as { author: string } | undefined
-        reassignTo = instructionRow?.author || 'cri'
-      }
-
-      writeDb.prepare(
-        'UPDATE issues SET assignee = ?, picked = 0, picked_at = NULL, last_turn_at = ?, updated_at = ? WHERE id = ?'
-      ).run(reassignTo, now, now, taskId)
-
-    } else {
-      // Note — use current round (or 0 if none)
-      const currentMax = (writeDb.prepare(
-        'SELECT MAX(round_number) as max_round FROM turns WHERE task_id = ?'
-      ).get(taskId) as { max_round: number | null })?.max_round ?? 0
-      roundNumber = currentMax
-
-      // Just update last_turn_at
       writeDb.prepare(
         'UPDATE issues SET last_turn_at = ?, updated_at = ? WHERE id = ?'
       ).run(now, now, taskId)
+
+      writeDb.prepare(`
+        INSERT INTO turns (id, task_id, round_number, type, author, content, links, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(id, taskId, currentMax, 'note', turnAuthor, turn.content, linksJson, now, now)
+
+      return {
+        id,
+        task_id: taskId,
+        round_number: currentMax,
+        type: 'note',
+        author: turnAuthor,
+        content: turn.content,
+        links: turn.links || [],
+        created_at: now,
+        updated_at: now,
+      }
     }
 
+    // Unified logic: every turn reassigns, resets picked, reopens if closed/done
+    const roundNumber = ((writeDb.prepare(
+      'SELECT MAX(round_number) as max_round FROM turns WHERE task_id = ?'
+    ).get(taskId) as { max_round: number | null })?.max_round ?? 0) + 1
+
+    writeDb.prepare(
+      `UPDATE issues SET assignee = ?, picked = 0, picked_at = NULL, last_turn_at = ?, updated_at = ?,
+       status = CASE WHEN status IN ('done', 'closed') THEN 'open' ELSE status END
+       WHERE id = ?`
+    ).run(turn.assigned_to, now, now, taskId)
+
+    // Always write 'result' to DB for backward compat (CHECK constraint stays)
     writeDb.prepare(`
       INSERT INTO turns (id, task_id, round_number, type, author, content, links, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(id, taskId, roundNumber, turn.type, turn.author, turn.content, linksJson, now, now)
+    `).run(id, taskId, roundNumber, 'result', turnAuthor, turn.content, linksJson, now, now)
 
     return {
       id,
       task_id: taskId,
       round_number: roundNumber,
-      type: turn.type,
-      author: turn.author,
+      type: 'result',
+      author: turnAuthor,
       content: turn.content,
       links: turn.links || [],
       created_at: now,

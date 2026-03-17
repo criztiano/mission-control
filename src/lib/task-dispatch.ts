@@ -252,14 +252,14 @@ async function sendOne(payload: DispatchParams) {
 
     const approvalBlock = !isAutonomous ? [
       '',
-      `### If Cri APPROVED your plan (instruction turn from Cri):`,
+      `### If Cri APPROVED your plan (turn from Cri):`,
       `Delegate to ${builderTarget}:`,
       '',
       '```bash',
       `curl -s -X POST "http://localhost:3333/api/tasks/${payload.taskId}/turns" \\`,
       `  -H "Content-Type: application/json" \\`,
       `  -H "x-api-key: mc-api-key-local-dev" \\`,
-      `  -d '{"type":"result","author":"${agentId}","assigned_to":"${builderTarget}","content":"Plan approved by Cri. Implementing."}'`,
+      `  -d '{"assigned_to":"${builderTarget}","content":"Plan approved by Cri. Implementing."}'`,
       '```',
     ].join('\n') : ''
 
@@ -277,19 +277,19 @@ async function sendOne(payload: DispatchParams) {
 curl -s -X POST "http://localhost:3333/api/tasks/${payload.taskId}/turns" \\
   -H "Content-Type: application/json" \\
   -H "x-api-key: mc-api-key-local-dev" \\
-  -d '{"type":"result","author":"${agentId}","assigned_to":"${planTarget}","content":"Plan written. See task description for spec."}'
+  -d '{"assigned_to":"${planTarget}","content":"Plan written. See task description for spec."}'
 \`\`\`
 ${approvalBlock}
 
 ### If this is a REVIEW (${builderTarget} posted a result turn):
 1. cd into the project path and review the Git diff:
-   \`git diff main..${taskBranchPM}\`
+   \`git diff develop..${taskBranchPM}\`
 2. Run the build, run tests, verify against spec
 3. If it **passes**: create a PR, then deliver to Cri with the PR link:
 
 \`\`\`bash
 cd <project_path>
-gh pr create --base main --head ${taskBranchPM} --title "${issue.title}" --body "Task: ${payload.taskId}"
+gh pr create --base develop --head ${taskBranchPM} --title "${issue.title}" --body "Task: ${payload.taskId}"
 \`\`\`
 
 Then post (include **links** array for clickable buttons in the UI):
@@ -297,7 +297,7 @@ Then post (include **links** array for clickable buttons in the UI):
 curl -s -X POST "http://localhost:3333/api/tasks/${payload.taskId}/turns" \\
   -H "Content-Type: application/json" \\
   -H "x-api-key: mc-api-key-local-dev" \\
-  -d '{"type":"result","author":"${agentId}","assigned_to":"cri","content":"## ✅ Done\\n\\nReviewed and approved. Changes look clean.","links":[{"url":"<PR_URL>","title":"Pull Request","type":"pr"},{"url":"<DIFF_URL>","title":"View Diff","type":"diff"}]}'
+  -d '{"assigned_to":"cri","content":"## ✅ Done\\n\\nReviewed and approved. Changes look clean.","links":[{"url":"<PR_URL>","title":"Pull Request","type":"pr"},{"url":"<DIFF_URL>","title":"View Diff","type":"diff"}]}'
 \`\`\`
 
 4. If it **fails**: send back with specific fixes (cite the diff):
@@ -306,7 +306,7 @@ curl -s -X POST "http://localhost:3333/api/tasks/${payload.taskId}/turns" \\
 curl -s -X POST "http://localhost:3333/api/tasks/${payload.taskId}/turns" \\
   -H "Content-Type: application/json" \\
   -H "x-api-key: mc-api-key-local-dev" \\
-  -d '{"type":"instruction","author":"${agentId}","assigned_to":"${builderTarget}","content":"## ❌ Review Failed\\n\\n**Issues:**\\n\\n1. ...\\n\\n2. ...\\n\\n**Fix these and re-push to the same branch.**"}'
+  -d '{"assigned_to":"${builderTarget}","content":"## ❌ Review Failed\\n\\n**Issues:**\\n\\n1. ...\\n\\n2. ...\\n\\n**Fix these and re-push to the same branch.**"}'
 \`\`\``
     } else {
       const taskBranch = `task/${payload.taskId.slice(0, 8)}`
@@ -315,7 +315,7 @@ curl -s -X POST "http://localhost:3333/api/tasks/${payload.taskId}/turns" \\
 1. cd into the **project path** (see above) — NEVER work in your home directory
 2. Create a feature branch:
 \`\`\`bash
-git checkout main && git pull
+git checkout develop && git pull
 git checkout -b ${taskBranch}
 \`\`\`
 3. Implement the changes
@@ -328,13 +328,13 @@ git push -u origin ${taskBranch}
 
 ## How to report back
 
-When done, post a **result** turn (routes to **${resultTarget}**). Include the branch name and links:
+When done, post a turn (routes to **${resultTarget}**). Include the branch name and links:
 
 \`\`\`bash
 curl -s -X POST "http://localhost:3333/api/tasks/${payload.taskId}/turns" \\
   -H "Content-Type: application/json" \\
   -H "x-api-key: mc-api-key-local-dev" \\
-  -d '{"type":"result","author":"${agentId}","assigned_to":"${resultTarget}","content":"## ✅ Done\\n\\n**Branch:** \\\`${taskBranch}\\\`\\n\\n**Changes:**\\n\\n- File1 — what changed\\n\\n- File2 — what changed\\n\\n**Build:** Passing","links":[{"url":"https://github.com/criztiano/mission-control/compare/main...${taskBranch}","title":"View Diff","type":"diff"}]}'
+  -d '{"assigned_to":"${resultTarget}","content":"## ✅ Done\\n\\n**Branch:** \\\`${taskBranch}\\\`\\n\\n**Changes:**\\n\\n- File1 — what changed\\n\\n- File2 — what changed\\n\\n**Build:** Passing","links":[{"url":"https://github.com/criztiano/mission-control/compare/develop...${taskBranch}","title":"View Diff","type":"diff"}]}'
 \`\`\`
 
 If you need clarification:
@@ -343,7 +343,7 @@ If you need clarification:
 curl -s -X POST "http://localhost:3333/api/tasks/${payload.taskId}/turns" \\
   -H "Content-Type: application/json" \\
   -H "x-api-key: mc-api-key-local-dev" \\
-  -d '{"type":"instruction","author":"${agentId}","assigned_to":"cri","content":"## ❓ Need Clarification\\n\\n1. Question one\\n\\n2. Question two"}'
+  -d '{"assigned_to":"cri","content":"## ❓ Need Clarification\\n\\n1. Question one\\n\\n2. Question two"}'
 \`\`\``
     }
 

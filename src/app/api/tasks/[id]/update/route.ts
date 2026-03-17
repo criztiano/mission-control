@@ -101,12 +101,12 @@ export async function POST(
       }
     }
 
-    // Create the result turn
+    // Create the result turn — route back to cri by default
     const turn = createTurn(taskId, {
-      type: 'result',
-      author: agent,
+      assigned_to: 'cri',
       content: report,
       links: links || [],
+      author: agent,
     });
 
     // Reset picked state (ball is passed)

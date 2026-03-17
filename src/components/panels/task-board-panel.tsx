@@ -89,13 +89,14 @@ function isStale(task: Task): boolean {
 const AGENT_NAMES = new Set(['cseno', 'cody', 'ralph', 'dumbo', 'piem', 'worm', 'ops', 'pinball', 'uze', 'bookworm'])
 function agentTaskState(task: Task): 'dispatched' | 'working' | 'delivered' | null {
   const assignee = (task.assigned_to || '').toLowerCase()
+  if (task.status === 'draft') return null
+
+  // Delivered = assigned to Cri (ball in his court)
+  if (assignee === 'cri') return 'delivered'
+
   if (!assignee || !AGENT_NAMES.has(assignee)) return null
   if (task.status !== 'open') return null
 
-  // If last turn is a result from an agent → delivered (ball passed back)
-  if (task.last_turn_type === 'result' && task.last_turn_by && AGENT_NAMES.has(task.last_turn_by.toLowerCase())) {
-    return 'delivered'
-  }
   // If picked → working
   if (task.picked === 1) return 'working'
   // Otherwise → dispatched (waiting for pickup)
@@ -830,9 +831,7 @@ function TaskDetailModal({
     try {
       setTurnError(null)
       const body: Record<string, unknown> = {
-        type: 'instruction',
         content: turnText.trim(),
-        author: 'cri',
         assigned_to: target,
       }
       const response = await fetch(`/api/tasks/${task.id}/turns`, {
@@ -864,10 +863,11 @@ function TaskDetailModal({
     return 'text-foreground/80'
   }
 
-  const turnTypeLabel = (type: string) => {
-    if (type === 'instruction') return { text: 'Instruction', color: 'bg-blue-500/15 text-blue-400' }
-    if (type === 'result') return { text: 'Result', color: 'bg-green-500/15 text-green-400' }
-    return { text: 'Note', color: 'bg-zinc-500/15 text-zinc-400' }
+  const turnAuthorLabel = (author: string) => {
+    const agentNames = new Set(['dumbo', 'cody', 'ralph', 'piem', 'worm', 'uze', 'cseno', 'pinball'])
+    if (author === 'cri') return { text: 'Cri', color: 'bg-purple-500/15 text-purple-400' }
+    if (agentNames.has(author.toLowerCase())) return { text: author, color: 'bg-blue-500/15 text-blue-400' }
+    return { text: author, color: 'bg-zinc-500/15 text-zinc-400' }
   }
 
   // Group turns by round
@@ -881,10 +881,7 @@ function TaskDetailModal({
   const maxRound = roundNumbers.length > 0 ? roundNumbers[0] : 0
 
   const sortRoundTurns = (turns: Turn[]) => [...turns].sort((a, b) => {
-    const typeOrder: Record<string, number> = { result: 0, instruction: 1, note: 2 }
-    const typeDiff = (typeOrder[a.type] ?? 2) - (typeOrder[b.type] ?? 2)
-    if (typeDiff !== 0) return typeDiff
-    return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
+    return new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
   })
 
   const renderTurnContent = (turn: Turn) => (
@@ -935,7 +932,7 @@ function TaskDetailModal({
   }
 
   const renderTurn = (turn: Turn) => {
-    const label = turnTypeLabel(turn.type)
+    const label = turnAuthorLabel(turn.author)
     const edited = turn.updated_at !== turn.created_at
     return (
       <div key={turn.id} className="border-l-2 border-border pl-3 group/turn">
