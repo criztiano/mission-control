@@ -653,6 +653,27 @@ function TaskDetailModal({
     return () => window.removeEventListener('keydown', handleKey)
   }, [prevTask, nextTask, onNavigate])
 
+  // Action keyboard shortcuts (Cmd+Enter, Cmd+Shift+Enter, Ctrl+Enter)
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement
+      if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target?.isContentEditable) return
+
+      if (e.key === 'Enter' && e.metaKey && !e.shiftKey) {
+        e.preventDefault()
+        submitTurn()
+      } else if (e.key === 'Enter' && e.metaKey && e.shiftKey) {
+        e.preventDefault()
+        setShowToDropdown(true)
+      } else if (e.key === 'Enter' && e.ctrlKey && !e.metaKey && !e.shiftKey) {
+        e.preventDefault()
+        if (status === 'open') handleStatusChange('closed')
+      }
+    }
+    window.addEventListener('keydown', handleKey)
+    return () => window.removeEventListener('keydown', handleKey)
+  }, [turnAssignee, status])
+
   // Click-outside for To... dropdown
   useEffect(() => {
     if (!showToDropdown) return
@@ -1220,7 +1241,7 @@ function TaskDetailModal({
                 onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSubmitTurn(e) } }}
               />
               <div className="flex items-center gap-2">
-                <Button type="submit" size="sm">Pass the ball <span className="ml-1.5 text-[10px] text-muted-foreground/50 font-mono">[^]</span></Button>
+                <Button type="submit" size="sm">Pass the ball <span className="ml-1.5 text-[10px] text-muted-foreground/50 font-mono">[⌘↵]</span></Button>
                 <div className="relative" ref={toDropdownRef}>
                   <Button variant="outline" size="sm" type="button" onClick={() => setShowToDropdown(!showToDropdown)}>
                     To...
@@ -1244,7 +1265,7 @@ function TaskDetailModal({
                 <div className="flex-1" />
                 {status === 'open' && (
                   <Button variant="outline" size="sm" onClick={() => handleStatusChange('closed')} type="button">
-                    🏀 Dunk it <span className="ml-1.5 text-[10px] text-muted-foreground/50 font-mono">[0]</span>
+                    🏀 Dunk it <span className="ml-1.5 text-[10px] text-muted-foreground/50 font-mono">[⌃↵]</span>
                   </Button>
                 )}
               </div>
