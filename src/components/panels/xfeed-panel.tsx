@@ -499,6 +499,20 @@ function DigestRow({ tweet, onUpdate, focused }: {
     }
   }
 
+  const handlePin = async () => {
+    setUpdating(true)
+    try {
+      await fetch(`/api/xfeed/${tweet.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pinned: !tweet.pinned }),
+      })
+      onUpdate()
+    } finally {
+      setUpdating(false)
+    }
+  }
+
   // Get summary: prefer verdict, fallback to title
   const summary = tweet.verdict || tweet.title
 
@@ -520,6 +534,16 @@ function DigestRow({ tweet, onUpdate, focused }: {
         <span className="inline-block ml-1.5 text-zinc-600 align-middle">↗</span>
       </a>
       <div className="flex items-center gap-0.5 shrink-0">
+        <Button
+          variant="ghost"
+          size="xs"
+          onClick={handlePin}
+          disabled={updating}
+          title={tweet.pinned ? 'Unpin' : 'Pin'}
+          className={tweet.pinned ? 'text-amber-400' : 'text-muted-foreground'}
+        >
+          📌
+        </Button>
         <RatingButton rating="fire" current={tweet.rating} onRate={handleRate} />
         <RatingButton rating="meh" current={tweet.rating} onRate={handleRate} />
         <RatingButton rating="noise" current={tweet.rating} onRate={handleRate} />
