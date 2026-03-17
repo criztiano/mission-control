@@ -76,6 +76,7 @@ export default function Home() {
       <div className="flex items-center justify-center min-h-screen">
         <div className="flex flex-col items-center gap-3">
           <div className="w-10 h-10 rounded-xl overflow-hidden">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src="/eden-icon.png" alt="Eden" className="w-full h-full object-cover" />
           </div>
           <div className="flex items-center gap-2">

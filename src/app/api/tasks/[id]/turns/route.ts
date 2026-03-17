@@ -5,7 +5,7 @@ import { logger } from '@/lib/logger';
 import { getIssue, getTurns, createTurn, type TurnType } from '@/lib/cc-db';
 import { dispatchTaskNudge } from '@/lib/task-dispatch';
 
-const VALID_TURN_TYPES = new Set<string>(['instruction', 'result', 'note']);
+const SPAWN_AGENTS = new Set(['dumbo', 'uze', 'ralph', 'piem', 'cody']);
 
 /**
  * GET /api/tasks/[id]/turns — all turns for a task, ordered by round ASC, created_at ASC
@@ -36,7 +36,8 @@ export async function GET(
 
 /**
  * POST /api/tasks/[id]/turns — create a new turn
- * Body: { type, content, links?, assigned_to?, author? }
+ * Body: { assigned_to, content, links? }
+ * Legacy fields (type, author) are accepted but optional — inferred if missing.
  */
 export async function POST(
   request: NextRequest,
@@ -52,41 +53,40 @@ export async function POST(
     const { id: taskId } = await params;
     const body = await request.json();
 
-    const { type, content, links, assigned_to, author } = body;
+    const { content, links, assigned_to, type, author } = body;
 
-    if (!type || !VALID_TURN_TYPES.has(type)) {
+    // assigned_to is required
+    if (!assigned_to) {
       return NextResponse.json(
-        { error: `Invalid turn type. Valid: ${[...VALID_TURN_TYPES].join(', ')}` },
+        { error: 'assigned_to is required' },
         { status: 400 }
       );
     }
-
-    // assigned_to is optional for instructions — auto-routes to last result author
 
     const issue = getIssue(taskId);
     if (!issue) {
       return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     }
 
-    const turnAuthor = author || auth.user?.username || 'system';
+    // Infer author from current assignee if not provided
+    const turnAuthor = author || issue.assignee || auth.user?.username || 'system';
+
+    // Default type to 'result' if not provided
+    const turnType: TurnType = type || 'result';
 
     const turn = createTurn(taskId, {
-      type: type as TurnType,
-      author: turnAuthor,
+      assigned_to,
       content: content || '',
       links: links || [],
-      assigned_to,
+      type: turnType,
+      author: turnAuthor,
     });
 
-    // Dispatch to next agent (assigned_to from turn or auto-routed in createTurn)
-    // Re-read the issue to get the updated assignee after createTurn ran
+    // Dispatch on every turn (not just instruction/result)
     const updatedIssue = getIssue(taskId);
     const newAssignee = updatedIssue?.assignee || '';
 
-    const shouldDispatch =
-      (type === 'instruction' || type === 'result') && newAssignee && newAssignee !== turnAuthor;
-
-    if (shouldDispatch) {
+    if (newAssignee && newAssignee !== turnAuthor) {
       try {
         await dispatchTaskNudge({
           taskId,
@@ -100,8 +100,8 @@ export async function POST(
       }
     }
 
-    // Queue drain: if the agent just finished (result turn), check for their next open task
-    if (type === 'result' && turnAuthor !== 'cri') {
+    // Queue drain: if the author is a known spawn agent, check for their next open task
+    if (SPAWN_AGENTS.has(turnAuthor.toLowerCase())) {
       try {
         const { getCCDatabase } = await import('@/lib/cc-db');
         const db = getCCDatabase();

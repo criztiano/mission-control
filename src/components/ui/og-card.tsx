@@ -79,6 +79,7 @@ export function OGCard({ url }: OGCardProps) {
         {/* Image */}
         {data.image && !imageBroken && (
           <div className="w-20 h-20 flex-shrink-0 rounded overflow-hidden bg-muted">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
               src={data.image}
               alt=""

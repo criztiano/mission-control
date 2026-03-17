@@ -89,8 +89,8 @@ export function middleware(request: NextRequest) {
     }
   }
 
-  // Allow login page, auth API, media proxy, and garden classify (Discord button links) without session
-  if (pathname === '/login' || pathname.startsWith('/api/auth/') || pathname === '/api/media-proxy' || pathname.match(/^\/api\/garden\/[^/]+\/classify$/)) {
+  // Allow login page, auth API, media proxy, garden classify (Discord button links), and Discord interactions without session
+  if (pathname === '/login' || pathname.startsWith('/api/auth/') || pathname === '/api/media-proxy' || pathname === '/api/discord/interactions' || pathname.match(/^\/api\/garden\/[^/]+\/classify$/)) {
     return applySecurityHeaders(NextResponse.next())
   }
 

@@ -14,11 +14,12 @@ import { AgentAvatar } from '@/components/ui/agent-avatar'
 import { BlockEditor } from '@/components/ui/block-editor'
 import { Badge } from '@/components/ui/badge'
 import { AnimatedModal } from '@/components/ui/animated-modal'
-import { motion } from 'motion/react'
+import { motion, AnimatePresence } from 'motion/react'
 import { PixelLoader, pixelLoaderPatterns } from '@/components/ui/pixel-loader'
 
 function timeAgo(ts: number): string {
   const diff = Math.floor(Date.now() / 1000) - ts
+  if (diff < 0) return 'just now'
   if (diff < 60) return 'now'
   if (diff < 3600) return `${Math.floor(diff / 60)}m ago`
   if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`
@@ -88,13 +89,14 @@ function isStale(task: Task): boolean {
 const AGENT_NAMES = new Set(['cseno', 'cody', 'ralph', 'dumbo', 'piem', 'worm', 'ops', 'pinball', 'uze', 'bookworm'])
 function agentTaskState(task: Task): 'dispatched' | 'working' | 'delivered' | null {
   const assignee = (task.assigned_to || '').toLowerCase()
+  if (task.status === 'draft') return null
+
+  // Delivered = assigned to Cri (ball in his court)
+  if (assignee === 'cri') return 'delivered'
+
   if (!assignee || !AGENT_NAMES.has(assignee)) return null
   if (task.status !== 'open') return null
 
-  // If last turn is a result from an agent → delivered (ball passed back)
-  if (task.last_turn_type === 'result' && task.last_turn_by && AGENT_NAMES.has(task.last_turn_by.toLowerCase())) {
-    return 'delivered'
-  }
   // If picked → working
   if (task.picked === 1) return 'working'
   // Otherwise → dispatched (waiting for pickup)
@@ -580,6 +582,7 @@ function TaskDetailModal({
   const [projectLoading, setProjectLoading] = useState(false)
   const [blockedBy, setBlockedBy] = useState<string[]>(task.blocked_by || [])
   const [blockerDetails, setBlockerDetails] = useState<Array<{ id: string; title: string; status: string }>>(task.blocker_details || [])
+  const [dunkState, setDunkState] = useState<'idle' | 'success' | 'dismissing'>('idle')
 
   // Navigation
   const currentIndex = allTasks.findIndex(t => t.id === task.id)
@@ -620,7 +623,9 @@ function TaskDetailModal({
     setBlockedBy(task.blocked_by || [])
     setBlockerDetails(task.blocker_details || [])
     setExpandedRounds(new Set())
+    setDunkState('idle')
 
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [task.id])
 
   // Fetch blocker details from single-task endpoint
@@ -633,7 +638,15 @@ function TaskDetailModal({
         if (data.task?.blocked_by) setBlockedBy(data.task.blocked_by)
       })
       .catch(() => {})
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [task.id])
+
+  // Dunk it: auto-dismiss after 1 second in success state
+  useEffect(() => {
+    if (dunkState !== 'success') return
+    const timer = setTimeout(() => setDunkState('dismissing'), 1000)
+    return () => clearTimeout(timer)
+  }, [dunkState])
 
   // Keyboard navigation (← →)
   useEffect(() => {
@@ -818,9 +831,7 @@ function TaskDetailModal({
     try {
       setTurnError(null)
       const body: Record<string, unknown> = {
-        type: 'instruction',
         content: turnText.trim(),
-        author: 'cri',
         assigned_to: target,
       }
       const response = await fetch(`/api/tasks/${task.id}/turns`, {
@@ -852,10 +863,11 @@ function TaskDetailModal({
     return 'text-foreground/80'
   }
 
-  const turnTypeLabel = (type: string) => {
-    if (type === 'instruction') return { text: 'Instruction', color: 'bg-blue-500/15 text-blue-400' }
-    if (type === 'result') return { text: 'Result', color: 'bg-green-500/15 text-green-400' }
-    return { text: 'Note', color: 'bg-zinc-500/15 text-zinc-400' }
+  const turnAuthorLabel = (author: string) => {
+    const agentNames = new Set(['dumbo', 'cody', 'ralph', 'piem', 'worm', 'uze', 'cseno', 'pinball'])
+    if (author === 'cri') return { text: 'Cri', color: 'bg-purple-500/15 text-purple-400' }
+    if (agentNames.has(author.toLowerCase())) return { text: author, color: 'bg-blue-500/15 text-blue-400' }
+    return { text: author, color: 'bg-zinc-500/15 text-zinc-400' }
   }
 
   // Group turns by round
@@ -869,10 +881,7 @@ function TaskDetailModal({
   const maxRound = roundNumbers.length > 0 ? roundNumbers[0] : 0
 
   const sortRoundTurns = (turns: Turn[]) => [...turns].sort((a, b) => {
-    const typeOrder: Record<string, number> = { result: 0, instruction: 1, note: 2 }
-    const typeDiff = (typeOrder[a.type] ?? 2) - (typeOrder[b.type] ?? 2)
-    if (typeDiff !== 0) return typeDiff
-    return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
+    return new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
   })
 
   const renderTurnContent = (turn: Turn) => (
@@ -923,7 +932,7 @@ function TaskDetailModal({
   }
 
   const renderTurn = (turn: Turn) => {
-    const label = turnTypeLabel(turn.type)
+    const label = turnAuthorLabel(turn.author)
     const edited = turn.updated_at !== turn.created_at
     return (
       <div key={turn.id} className="border-l-2 border-border pl-3 group/turn">
@@ -947,6 +956,11 @@ function TaskDetailModal({
           <div className="flex justify-between items-center mb-2">
             <div className="flex items-center gap-2">
               {saving && <span className="text-[10px] text-muted-foreground/50">Saving...</span>}
+              {task.last_turn_at != null && (
+                <span className="text-xs text-muted-foreground">
+                  Last activity: {timeAgo(task.last_turn_at)}
+                </span>
+              )}
             </div>
             <div className="flex items-center gap-1">
               <Button
@@ -1239,11 +1253,43 @@ function TaskDetailModal({
                   )}
                 </div>
                 <div className="flex-1" />
-                {status === 'open' && (
-                  <Button variant="outline" size="sm" onClick={() => handleStatusChange('closed')} type="button">
-                    🏀 Dunk it <span className="ml-1.5 text-[10px] text-muted-foreground/50 font-mono">[0]</span>
-                  </Button>
-                )}
+                <AnimatePresence mode="wait">
+                  {status === 'open' && dunkState === 'idle' && (
+                    <motion.div
+                      key="dunk-idle"
+                      initial={{ opacity: 0, y: -8 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: 20 }}
+                      transition={{ duration: 0.25 }}
+                    >
+                      <Button variant="outline" size="sm" onClick={() => setDunkState('success')} type="button">
+                        🏀 Dunk it <span className="ml-1.5 text-[10px] text-muted-foreground/50 font-mono">[0]</span>
+                      </Button>
+                    </motion.div>
+                  )}
+                  {status === 'open' && dunkState === 'success' && (
+                    <motion.div
+                      key="dunk-success"
+                      initial={{ opacity: 0, scale: 0.8 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      exit={{ opacity: 0, y: 20 }}
+                      transition={{ duration: 0.25 }}
+                    >
+                      <Button variant="outline" size="sm" type="button" className="bg-green-500/20 text-green-400 border-green-500/40 hover:bg-green-500/30 pointer-events-none">
+                        🎉 SCORE!
+                      </Button>
+                    </motion.div>
+                  )}
+                  {status === 'open' && dunkState === 'dismissing' && (
+                    <motion.div
+                      key="dunk-dismiss"
+                      initial={{ opacity: 1, y: 0 }}
+                      animate={{ opacity: 0, y: 20 }}
+                      transition={{ duration: 0.35 }}
+                      onAnimationComplete={() => handleStatusChange('closed')}
+                    />
+                  )}
+                </AnimatePresence>
               </div>
             </div>
             {turnError && (

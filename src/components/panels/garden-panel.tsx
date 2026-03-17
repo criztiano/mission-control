@@ -141,6 +141,7 @@ function GardenCard({ item, onClick, focused, itemRef }: { item: GardenItem; onC
       className={`w-full text-left bg-card border border-border rounded-lg p-4 hover:border-primary/30 transition-colors space-y-2.5 ${focused ? 'ring-2 ring-primary/50' : ''}`}
     >
       {mediaUrls.length > 0 && (
+        // eslint-disable-next-line @next/next/no-img-element
         <img
           src={mediaUrls[0]}
           alt=""
@@ -395,6 +396,7 @@ function DetailSheet({
             <div className="flex gap-2 flex-wrap">
               {mediaUrls.map((url, i) => (
                 <a key={i} href={url} target="_blank" rel="noopener noreferrer">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img src={url} alt="" className="h-16 w-auto rounded border border-border object-cover hover:border-primary/50 transition-colors" />
                 </a>
               ))}

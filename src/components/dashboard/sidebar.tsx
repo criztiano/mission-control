@@ -46,6 +46,7 @@ export function Sidebar() {
       <div className="p-6 border-b border-border">
         <div className="flex items-center space-x-2">
           <div className="w-8 h-8 rounded-lg overflow-hidden">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src="/eden-icon.png" alt="Eden" className="w-full h-full object-cover" />
           </div>
           <div>

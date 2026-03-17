@@ -1761,6 +1761,7 @@ export function SkillsTab({ agent }: { agent: Agent }) {
 
   useEffect(() => {
     fetchSkills()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agent.name])
 
   const handleToggleSkill = async (skillId: string, currentEnabled: boolean) => {
