@@ -621,6 +621,7 @@ function TaskDetailModal({
     setBlockerDetails(task.blocker_details || [])
     setExpandedRounds(new Set())
 
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [task.id])
 
   // Fetch blocker details from single-task endpoint
@@ -633,6 +634,7 @@ function TaskDetailModal({
         if (data.task?.blocked_by) setBlockedBy(data.task.blocked_by)
       })
       .catch(() => {})
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [task.id])
 
   // Keyboard navigation (← →)

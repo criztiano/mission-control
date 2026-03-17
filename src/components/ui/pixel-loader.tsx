@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { cn } from "@/lib/utils";
 
@@ -78,23 +78,22 @@ export function PixelLoader({
   className,
 }: PixelLoaderProps) {
   const [step, setStep] = useState(0);
-  const framesRef = useRef<number[][]>(normalizePattern(pattern));
+  const frames = useMemo(() => normalizePattern(pattern), [pattern]);
 
-  // Re-normalize when pattern changes
+  // Reset step when pattern changes
   useEffect(() => {
-    framesRef.current = normalizePattern(pattern);
     setStep(0);
   }, [pattern]);
 
   // Animation loop
   useEffect(() => {
+    const frameCount = frames.length;
     const interval = setInterval(() => {
-      setStep((prev) => (prev + 1) % framesRef.current.length);
+      setStep((prev) => (prev + 1) % frameCount);
     }, speed);
     return () => clearInterval(interval);
-  }, [speed]);
+  }, [speed, frames]);
 
-  const frames = framesRef.current;
   const activePixels = new Set(frames[step % frames.length]);
 
   const gap = Math.max(1, Math.round(size * 0.06));

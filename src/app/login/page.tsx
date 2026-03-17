@@ -37,7 +37,7 @@ export default function LoginPage() {
     // Use window.location for hard navigation — router.push can hang if target page has client errors
     window.location.href = '/'
     return true
-  }, [router])
+  }, [])
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault()
@@ -102,6 +102,7 @@ export default function LoginPage() {
       <div className="w-full max-w-sm">
         <div className="flex flex-col items-center mb-8">
           <div className="w-12 h-12 rounded-xl overflow-hidden mb-3">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src="/eden-icon.png" alt="Eden" className="w-full h-full object-cover" />
           </div>
           <h1 className="text-xl font-semibold text-foreground">Eden</h1>

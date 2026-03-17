@@ -115,6 +115,7 @@ export function Lightbox({ imageUrl, images, initialIndex = 0, onClose, classNam
         )}
 
         {/* Image */}
+        {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
           src={imageList[currentIndex]}
           alt={`Full size ${hasMultiple ? `${currentIndex + 1} of ${imageList.length}` : ''}`}

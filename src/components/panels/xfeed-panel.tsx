@@ -400,6 +400,7 @@ function TweetCard({ tweet, onUpdate, focused }: {
                   onClick={() => setLightboxState({ images: workingImages.map(u => `/api/media-proxy?url=${encodeURIComponent(u)}`), index: idx })}
                   className="overflow-hidden rounded-lg"
                 >
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img
                     src={proxiedUrl}
                     alt={`Tweet media ${idx + 1}`}
