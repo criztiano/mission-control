@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import nacl from 'tweetnacl';
 import { logger } from '@/lib/logger';
-import { handleGardenPin, handleGardenSnooze, handleGardenDismiss } from '@/lib/discord-actions/garden';
+import { handleGardenInterest, handleGardenTemporal, handleGardenDismiss } from '@/lib/discord-actions/garden';
 import { getCCDatabase } from '@/lib/cc-db';
 import { buildGardenEmbed, buildGardenButtons } from '@/lib/discord-cards';
 
@@ -35,7 +35,7 @@ function verifySignature(
 
 /**
  * Parse custom_id into domain, action, and item ID.
- * Format: {domain}_{action}_{itemId}
+ * Format: {domain}_{action}_{itemId}  (itemId can contain underscores)
  */
 function parseCustomId(customId: string): { domain: string; action: string; itemId: string } | null {
   const parts = customId.split('_');
@@ -43,29 +43,34 @@ function parseCustomId(customId: string): { domain: string; action: string; item
 
   const domain = parts[0];
   const action = parts[1];
-  // itemId can contain underscores, so rejoin the rest
   const itemId = parts.slice(2).join('_');
 
   return { domain, action, itemId };
 }
 
 /**
- * Handle garden component interactions (Pin, Snooze, Dismiss).
+ * Route garden interactions to the correct handler.
  */
 function handleGardenAction(
   action: string,
   itemId: string
 ): { ephemeralMessage: string; embedUpdate?: Record<string, unknown>; success: boolean } {
-  switch (action) {
-    case 'pin':
-      return handleGardenPin(itemId);
-    case 'snooze':
-      return handleGardenSnooze(itemId);
-    case 'dismiss':
-      return handleGardenDismiss(itemId);
-    default:
-      return { success: false, ephemeralMessage: `❌ Unknown garden action: ${action}` };
+  // Interest actions
+  if (['instrument', 'ingredient', 'idea', 'knowledge'].includes(action)) {
+    return handleGardenInterest(itemId, action);
   }
+
+  // Temporal actions
+  if (['now', 'later', 'ever'].includes(action)) {
+    return handleGardenTemporal(itemId, action);
+  }
+
+  // Dismiss
+  if (action === 'dismiss') {
+    return handleGardenDismiss(itemId);
+  }
+
+  return { success: false, ephemeralMessage: `❌ Unknown garden action: ${action}` };
 }
 
 /**
@@ -84,7 +89,7 @@ export async function POST(request: NextRequest) {
   const signature = request.headers.get('x-signature-ed25519');
   const timestamp = request.headers.get('x-signature-timestamp');
 
-  // Verify signature (skip only if no signature headers — for testing)
+  // Verify signature
   if (signature && timestamp) {
     const isValid = verifySignature(rawBody, signature, timestamp, publicKey);
     if (!isValid) {
@@ -104,43 +109,43 @@ export async function POST(request: NextRequest) {
 
   // Type 1: PING — Discord endpoint verification
   if (interactionType === INTERACTION_PING) {
+    logger.info('Discord PING verification successful');
     return NextResponse.json({ type: RESPONSE_PONG });
   }
 
   // Type 3: MESSAGE_COMPONENT — button click
   if (interactionType === INTERACTION_MESSAGE_COMPONENT) {
-    const customId = body.custom_id as string;
-    const parsed = parseCustomId(customId);
+    const data = body.data as Record<string, unknown>;
+    const customId = data?.custom_id as string;
 
+    if (!customId) {
+      return NextResponse.json({
+        type: RESPONSE_CHANNEL_MESSAGE,
+        data: { content: '❌ Missing custom_id', flags: 64 },
+      });
+    }
+
+    const parsed = parseCustomId(customId);
     if (!parsed) {
       return NextResponse.json({
         type: RESPONSE_CHANNEL_MESSAGE,
-        data: { content: '❌ Invalid interaction', flags: 64 },
+        data: { content: '❌ Invalid interaction format', flags: 64 },
       });
     }
 
     const { domain, action, itemId } = parsed;
-    let result: { ephemeralMessage: string; embedUpdate?: Record<string, unknown>; success: boolean };
 
     if (domain === 'garden') {
-      result = handleGardenAction(action, itemId);
-    } else {
-      return NextResponse.json({
-        type: RESPONSE_CHANNEL_MESSAGE,
-        data: { content: `❌ Unknown domain: ${domain}`, flags: 64 },
-      });
-    }
+      const result = handleGardenAction(action, itemId);
 
-    if (!result.success) {
-      return NextResponse.json({
-        type: RESPONSE_CHANNEL_MESSAGE,
-        data: { content: result.ephemeralMessage, flags: 64 },
-      });
-    }
+      if (!result.success) {
+        return NextResponse.json({
+          type: RESPONSE_CHANNEL_MESSAGE,
+          data: { content: result.ephemeralMessage, flags: 64 },
+        });
+      }
 
-    // If we have an embed update, update the original message
-    if (result.embedUpdate) {
-      // Fetch the current item to rebuild the embed
+      // Rebuild the card with updated state
       const ccDb = getCCDatabase();
       const item = ccDb.prepare('SELECT * FROM garden WHERE id = ?').get(itemId) as Record<string, unknown> | undefined;
 
@@ -159,23 +164,30 @@ export async function POST(request: NextRequest) {
           saved_at: String(item.saved_at || ''),
         };
 
-        const updatedEmbed = buildGardenEmbed(gardenItem, result.embedUpdate);
+        const updatedEmbed = buildGardenEmbed(gardenItem);
         const buttons = buildGardenButtons(itemId);
 
         return NextResponse.json({
           type: RESPONSE_UPDATE_MESSAGE,
           data: {
+            content: result.ephemeralMessage,
             embeds: [updatedEmbed],
             components: buttons,
           },
         });
       }
+
+      // Fallback: ephemeral only
+      return NextResponse.json({
+        type: RESPONSE_CHANNEL_MESSAGE,
+        data: { content: result.ephemeralMessage, flags: 64 },
+      });
     }
 
-    // Fallback: just send ephemeral confirmation
+    // Unknown domain
     return NextResponse.json({
       type: RESPONSE_CHANNEL_MESSAGE,
-      data: { content: result.ephemeralMessage, flags: 64 },
+      data: { content: `❌ Unknown domain: ${domain}`, flags: 64 },
     });
   }
 
