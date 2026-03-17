@@ -1033,7 +1033,8 @@ function TaskDetailModal({
                   alert(res.ok ? `Poked ${data.assignee}!` : (data.error || 'Poke failed'))
                 } catch { alert('Poke failed') }
               }}
-                className="text-amber-500/60 hover:text-amber-400">
+                className="text-amber-500/60 hover:text-amber-400"
+                title="Nudge the assigned agent to pick up this task">
                 👉 Poke {assignee}
               </Button>
             )}
