@@ -1,4 +1,4 @@
-import { getCCDatabase } from '@/lib/cc-db';
+import { getCCDatabase, getCCDatabaseWrite } from '@/lib/cc-db';
 import { logger } from '@/lib/logger';
 
 interface GardenActionResult {
@@ -22,7 +22,7 @@ export function handleGardenInterest(itemId: string, interest: string): GardenAc
     return { success: false, ephemeralMessage: '❌ Garden item not found.' };
   }
 
-  db.prepare('UPDATE garden SET interest = ?, saved_at = ? WHERE id = ?')
+  getCCDatabaseWrite().prepare('UPDATE garden SET interest = ?, saved_at = ? WHERE id = ?')
     .run(interest, new Date().toISOString(), itemId);
 
   const labels: Record<string, string> = {
@@ -68,7 +68,7 @@ export function handleGardenTemporal(itemId: string, temporal: string): GardenAc
     updates.snooze_until = null;
   }
 
-  db.prepare('UPDATE garden SET temporal = ?, snooze_until = ?, saved_at = ? WHERE id = ?')
+  getCCDatabaseWrite().prepare('UPDATE garden SET temporal = ?, snooze_until = ?, saved_at = ? WHERE id = ?')
     .run(updates.temporal, updates.snooze_until, updates.saved_at, itemId);
 
   const labels: Record<string, string> = {
@@ -96,7 +96,7 @@ export function handleGardenDismiss(itemId: string): GardenActionResult {
     return { success: false, ephemeralMessage: '❌ Garden item not found.' };
   }
 
-  db.prepare('UPDATE garden SET temporal = ?, saved_at = ? WHERE id = ?')
+  getCCDatabaseWrite().prepare('UPDATE garden SET temporal = ?, saved_at = ? WHERE id = ?')
     .run('never', new Date().toISOString(), itemId);
 
   logger.info({ itemId }, 'Garden item dismissed via Discord');
