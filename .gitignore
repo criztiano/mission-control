@@ -40,3 +40,4 @@ playwright-report/
 CLAUDE.md
 **/CLAUDE.md
 eden.db
+coverage/
