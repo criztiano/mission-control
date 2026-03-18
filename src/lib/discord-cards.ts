@@ -1,4 +1,5 @@
 import { logger } from '@/lib/logger';
+import type { CCTweet, TweetRating } from '@/lib/cc-db';
 
 const DISCORD_API = 'https://discord.com/api/v10';
 
@@ -198,5 +199,177 @@ export async function updateCard(
   } catch (error) {
     logger.error({ err: error }, 'Error updating card');
     return false;
+  }
+}
+
+// --- X Feed Tweet Card Components V2 ---
+
+interface V2TextDisplay {
+  type: 10; // Text Display
+  content: string;
+}
+
+interface V2Separator {
+  type: 14; // Separator
+  divider?: boolean;
+  spacing?: number;
+}
+
+interface V2LinkButton {
+  type: 2;
+  style: 5; // Link
+  label: string;
+  url: string;
+  emoji?: { name: string };
+}
+
+interface V2ActionButton {
+  type: 2;
+  style: 1 | 2; // Primary or Secondary
+  label: string;
+  custom_id: string;
+  emoji?: { name: string };
+}
+
+interface V2ActionRow {
+  type: 1;
+  components: Array<V2ActionButton | V2LinkButton>;
+}
+
+interface V2Container {
+  type: 17; // Container
+  components: Array<V2TextDisplay | V2Separator | V2ActionRow>;
+}
+
+/**
+ * Build a Components V2 tweet card for Discord.
+ * Returns the container payload for a single tweet.
+ */
+export function buildTweetCardV2(
+  tweet: CCTweet,
+  currentRating?: TweetRating | null
+): V2Container {
+  const author = tweet.author || 'Unknown';
+  const theme = tweet.theme || '';
+  const themeBadge = theme ? ` · \`${theme}\`` : '';
+  const verdict = tweet.verdict || '';
+  const action = tweet.action || '';
+  const summaryParts = [verdict, action].filter(Boolean);
+  const summary = summaryParts.length > 0 ? summaryParts.join(' — ') : 'No classification';
+  const tweetText = truncate(tweet.content || '', 120);
+  const tweetLink = tweet.tweet_link || '';
+
+  // Button styles based on current rating
+  const fireStyle: 1 | 2 = currentRating === 'fire' ? 1 : 2;
+  const mehStyle: 1 | 2 = currentRating === 'meh' ? 1 : 2;
+  const noiseStyle: 1 | 2 = currentRating === 'noise' ? 1 : 2;
+
+  const components: V2Container['components'] = [
+    {
+      type: 10, // Text Display
+      content: `🐦 **${author}**${themeBadge}`,
+    },
+    {
+      type: 10, // Text Display
+      content: summary,
+    },
+    {
+      type: 10, // Text Display
+      content: tweetText,
+    },
+    {
+      type: 14, // Separator
+      divider: true,
+      spacing: 1,
+    },
+    {
+      type: 1, // Action Row
+      components: [
+        {
+          type: 2,
+          style: fireStyle,
+          label: 'Fire',
+          custom_id: `xfeed_fire_${tweet.id}`,
+          emoji: { name: '🔥' },
+        },
+        {
+          type: 2,
+          style: mehStyle,
+          label: 'Meh',
+          custom_id: `xfeed_meh_${tweet.id}`,
+          emoji: { name: '😐' },
+        },
+        {
+          type: 2,
+          style: noiseStyle,
+          label: 'Noise',
+          custom_id: `xfeed_noise_${tweet.id}`,
+          emoji: { name: '🗑️' },
+        },
+        {
+          type: 2,
+          style: 5, // Link
+          label: 'Open Tweet',
+          url: tweetLink,
+          emoji: { name: '🔗' },
+        },
+      ],
+    },
+    {
+      type: 1, // Action Row
+      components: [
+        {
+          type: 2,
+          style: 2, // Secondary
+          label: 'Create Task',
+          custom_id: `xfeed_task_${tweet.id}`,
+          emoji: { name: '📋' },
+        },
+      ],
+    },
+  ];
+
+  return {
+    type: 17,
+    components,
+  };
+}
+
+/**
+ * Post a tweet card to a Discord channel.
+ */
+export async function postTweetCard(
+  tweet: CCTweet,
+  channelId: string,
+  currentRating?: TweetRating | null
+): Promise<string | null> {
+  const token = getBotToken();
+  const card = buildTweetCardV2(tweet, currentRating);
+
+  try {
+    const res = await fetch(`${DISCORD_API}/channels/${channelId}/messages`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bot ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        components: [card],
+        flags: 32768, // Components V2 flag
+      }),
+    });
+
+    if (!res.ok) {
+      const err = await res.text();
+      logger.error({ status: res.status, err, tweetId: tweet.id }, 'Failed to post tweet card');
+      return null;
+    }
+
+    const data = await res.json();
+    logger.info({ messageId: data.id, channelId, tweetId: tweet.id }, 'Tweet card posted');
+    return data.id;
+  } catch (error) {
+    logger.error({ err: error, tweetId: tweet.id }, 'Error posting tweet card');
+    return null;
   }
 }

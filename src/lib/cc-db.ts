@@ -161,7 +161,21 @@ export function runCCMigrations(): void {
       logger.info('cc-db migration: updated last_turn_at from migrated turns');
     }
 
-    // 6. Migrate old statuses → 3-status model (draft, open, closed)
+    // 6. Add discord_message_id and discord_posted_at to tweets table
+    const tweetColumns = db.prepare('PRAGMA table_info(tweets)').all() as Array<{ name: string }>
+    const hasDiscordMessageId = tweetColumns.some(c => c.name === 'discord_message_id')
+    const hasDiscordPostedAt = tweetColumns.some(c => c.name === 'discord_posted_at')
+
+    if (!hasDiscordMessageId) {
+      db.exec(`ALTER TABLE tweets ADD COLUMN discord_message_id TEXT`)
+      logger.info('cc-db migration: added discord_message_id column to tweets')
+    }
+    if (!hasDiscordPostedAt) {
+      db.exec(`ALTER TABLE tweets ADD COLUMN discord_posted_at TEXT`)
+      logger.info('cc-db migration: added discord_posted_at column to tweets')
+    }
+
+    // 7. Migrate old statuses → 3-status model (draft, open, closed)
     //    Active work statuses → open
     //    Proposal/idea/todo → draft (not yet actionable)
     //    done → closed

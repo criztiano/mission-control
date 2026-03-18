@@ -2,17 +2,20 @@ import { NextRequest, NextResponse } from 'next/server';
 import nacl from 'tweetnacl';
 import { logger } from '@/lib/logger';
 import { handleGardenPin, handleGardenSnooze, handleGardenDismiss } from '@/lib/discord-actions/garden';
-import { getCCDatabase } from '@/lib/cc-db';
-import { buildGardenEmbed, buildGardenButtons } from '@/lib/discord-cards';
+import { handleXFeedRating, getXFeedTaskModal, handleXFeedTaskModalSubmit } from '@/lib/discord-actions/xfeed';
+import { getCCDatabase, type TweetRating } from '@/lib/cc-db';
+import { buildGardenEmbed, buildGardenButtons, buildTweetCardV2 } from '@/lib/discord-cards';
 
 // Discord interaction types
 const INTERACTION_PING = 1;
 const INTERACTION_MESSAGE_COMPONENT = 3;
+const INTERACTION_MODAL_SUBMIT = 5;
 
 // Discord response types
 const RESPONSE_PONG = 1;
 const RESPONSE_CHANNEL_MESSAGE = 4;
 const RESPONSE_UPDATE_MESSAGE = 7;
+const RESPONSE_MODAL = 9;
 
 /**
  * Verify Discord ed25519 signature.
@@ -120,62 +123,191 @@ export async function POST(request: NextRequest) {
     }
 
     const { domain, action, itemId } = parsed;
-    let result: { ephemeralMessage: string; embedUpdate?: Record<string, unknown>; success: boolean };
 
-    if (domain === 'garden') {
-      result = handleGardenAction(action, itemId);
-    } else {
+    // Handle X Feed domain
+    if (domain === 'xfeed') {
+      if (action === 'task') {
+        // "Create Task" button — show modal
+        const modal = getXFeedTaskModal(itemId);
+        if (!modal) {
+          return NextResponse.json({
+            type: RESPONSE_CHANNEL_MESSAGE,
+            data: { content: '❌ Tweet not found', flags: 64 },
+          });
+        }
+        return NextResponse.json({
+          type: RESPONSE_MODAL,
+          data: {
+            ...modal,
+            custom_id: `xfeed_taskmodal_${itemId}`,
+          },
+        });
+      }
+
+      // Rating buttons (fire/meh/noise)
+      if (['fire', 'meh', 'noise'].includes(action)) {
+        const result = handleXFeedRating(action as TweetRating, itemId);
+
+        if (!result.success) {
+          return NextResponse.json({
+            type: RESPONSE_CHANNEL_MESSAGE,
+            data: { content: result.ephemeralMessage, flags: 64 },
+          });
+        }
+
+        if (result.updateCard) {
+          // Rebuild the card with updated button states
+          const ccDb = getCCDatabase();
+          const tweet = ccDb.prepare(`
+            SELECT t.*, r.rating FROM tweets t
+            LEFT JOIN tweet_ratings r ON t.id = r.tweet_id
+            WHERE t.id = ?
+          `).get(itemId) as Record<string, unknown> | undefined;
+
+          if (tweet) {
+            const cctweet = {
+              id: String(tweet.id),
+              title: String(tweet.title || ''),
+              author: String(tweet.author || ''),
+              theme: String(tweet.theme || ''),
+              verdict: String(tweet.verdict || ''),
+              action: String(tweet.action || ''),
+              source: String(tweet.source || ''),
+              tweet_link: String(tweet.tweet_link || ''),
+              digest: String(tweet.digest || ''),
+              content: String(tweet.content || ''),
+              created_at: String(tweet.created_at || ''),
+              scraped_at: String(tweet.scraped_at || ''),
+              pinned: Number(tweet.pinned || 0),
+              media_urls: String(tweet.media_urls || '[]'),
+              triage_status: String(tweet.triage_status || ''),
+              snooze_until: tweet.snooze_until as string | null,
+              rating: tweet.rating as TweetRating | null,
+            };
+
+            const card = buildTweetCardV2(cctweet, cctweet.rating);
+
+            return NextResponse.json({
+              type: RESPONSE_UPDATE_MESSAGE,
+              data: {
+                components: [card],
+                flags: 32768,
+              },
+            });
+          }
+        }
+
+        // Fallback: ephemeral message
+        return NextResponse.json({
+          type: RESPONSE_CHANNEL_MESSAGE,
+          data: { content: result.ephemeralMessage, flags: 64 },
+        });
+      }
+
       return NextResponse.json({
         type: RESPONSE_CHANNEL_MESSAGE,
-        data: { content: `❌ Unknown domain: ${domain}`, flags: 64 },
+        data: { content: `❌ Unknown xfeed action: ${action}`, flags: 64 },
       });
     }
 
-    if (!result.success) {
+    // Handle Garden domain (existing)
+    if (domain === 'garden') {
+      const result = handleGardenAction(action, itemId);
+
+      if (!result.success) {
+        return NextResponse.json({
+          type: RESPONSE_CHANNEL_MESSAGE,
+          data: { content: result.ephemeralMessage, flags: 64 },
+        });
+      }
+
+      // If we have an embed update, update the original message
+      if (result.embedUpdate) {
+        const ccDb = getCCDatabase();
+        const item = ccDb.prepare('SELECT * FROM garden WHERE id = ?').get(itemId) as Record<string, unknown> | undefined;
+
+        if (item) {
+          const gardenItem = {
+            id: String(item.id),
+            content: String(item.content || ''),
+            type: String(item.type || ''),
+            interest: String(item.interest || ''),
+            temporal: String(item.temporal || ''),
+            tags: String(item.tags || '[]'),
+            note: String(item.note || ''),
+            original_source: item.original_source as string | null,
+            media_urls: String(item.media_urls || '[]'),
+            metadata: String(item.metadata || '{}'),
+            saved_at: String(item.saved_at || ''),
+          };
+
+          const updatedEmbed = buildGardenEmbed(gardenItem, result.embedUpdate);
+          const buttons = buildGardenButtons(itemId);
+
+          return NextResponse.json({
+            type: RESPONSE_UPDATE_MESSAGE,
+            data: {
+              embeds: [updatedEmbed],
+              components: buttons,
+            },
+          });
+        }
+      }
+
+      // Fallback: just send ephemeral confirmation
       return NextResponse.json({
         type: RESPONSE_CHANNEL_MESSAGE,
         data: { content: result.ephemeralMessage, flags: 64 },
       });
     }
 
-    // If we have an embed update, update the original message
-    if (result.embedUpdate) {
-      // Fetch the current item to rebuild the embed
-      const ccDb = getCCDatabase();
-      const item = ccDb.prepare('SELECT * FROM garden WHERE id = ?').get(itemId) as Record<string, unknown> | undefined;
-
-      if (item) {
-        const gardenItem = {
-          id: String(item.id),
-          content: String(item.content || ''),
-          type: String(item.type || ''),
-          interest: String(item.interest || ''),
-          temporal: String(item.temporal || ''),
-          tags: String(item.tags || '[]'),
-          note: String(item.note || ''),
-          original_source: item.original_source as string | null,
-          media_urls: String(item.media_urls || '[]'),
-          metadata: String(item.metadata || '{}'),
-          saved_at: String(item.saved_at || ''),
-        };
-
-        const updatedEmbed = buildGardenEmbed(gardenItem, result.embedUpdate);
-        const buttons = buildGardenButtons(itemId);
-
-        return NextResponse.json({
-          type: RESPONSE_UPDATE_MESSAGE,
-          data: {
-            embeds: [updatedEmbed],
-            components: buttons,
-          },
-        });
-      }
-    }
-
-    // Fallback: just send ephemeral confirmation
     return NextResponse.json({
       type: RESPONSE_CHANNEL_MESSAGE,
-      data: { content: result.ephemeralMessage, flags: 64 },
+      data: { content: `❌ Unknown domain: ${domain}`, flags: 64 },
+    });
+  }
+
+  // Type 5: MODAL_SUBMIT
+  if (interactionType === INTERACTION_MODAL_SUBMIT) {
+    const customId = body.custom_id as string;
+    const parsed = parseCustomId(customId);
+
+    if (parsed?.domain === 'xfeed' && parsed?.action === 'taskmodal') {
+      const tweetId = parsed.itemId;
+      const components = (body.data as Record<string, unknown>)?.components as Array<{
+        components: Array<{ custom_id: string; value: string }>;
+      }> | undefined;
+
+      let title = '';
+      let description = '';
+
+      if (components) {
+        for (const row of components) {
+          for (const comp of row.components) {
+            if (comp.custom_id === 'xfeed_task_title') title = comp.value || '';
+            if (comp.custom_id === 'xfeed_task_description') description = comp.value || '';
+          }
+        }
+      }
+
+      if (!title.trim()) {
+        return NextResponse.json({
+          type: RESPONSE_CHANNEL_MESSAGE,
+          data: { content: '❌ Task title is required', flags: 64 },
+        });
+      }
+
+      const result = handleXFeedTaskModalSubmit(tweetId, title, description);
+
+      return NextResponse.json({
+        type: RESPONSE_CHANNEL_MESSAGE,
+        data: { content: result.ephemeralMessage, flags: 64 },
+      });
+    }
+
+    return NextResponse.json({
+      type: RESPONSE_CHANNEL_MESSAGE,
+      data: { content: '❌ Unknown modal submission', flags: 64 },
     });
   }
 
