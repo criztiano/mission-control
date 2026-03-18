@@ -86,6 +86,7 @@ export async function POST(request: NextRequest) {
   const rawBody = await request.text();
   const signature = request.headers.get('x-signature-ed25519');
   const timestamp = request.headers.get('x-signature-timestamp');
+  logger.info({ hasSig: !!signature, hasTs: !!timestamp, bodyLen: rawBody.length }, 'Discord interaction received');
 
   // Verify signature (skip only if no signature headers — for testing)
   if (signature && timestamp) {
@@ -158,12 +159,10 @@ export async function POST(request: NextRequest) {
 
         if (result.updateCard) {
           // Rebuild the card with updated button states
+          // Use newRating from the handler directly (avoids read-after-write race)
           const ccDb = getCCDatabase();
-          const tweet = ccDb.prepare(`
-            SELECT t.*, r.rating FROM tweets t
-            LEFT JOIN tweet_ratings r ON t.id = r.tweet_id
-            WHERE t.id = ?
-          `).get(itemId) as Record<string, unknown> | undefined;
+          const tweet = ccDb.prepare('SELECT * FROM tweets WHERE id = ?')
+            .get(itemId) as Record<string, unknown> | undefined;
 
           if (tweet) {
             const cctweet = {
@@ -183,10 +182,11 @@ export async function POST(request: NextRequest) {
               media_urls: String(tweet.media_urls || '[]'),
               triage_status: String(tweet.triage_status || ''),
               snooze_until: tweet.snooze_until as string | null,
-              rating: tweet.rating as TweetRating | null,
+              rating: null, // ignored — we use newRating below
             };
 
-            const card = buildTweetCardV2(cctweet, cctweet.rating);
+            // Use the rating from the handler, not from DB (avoids race condition)
+            const card = buildTweetCardV2(cctweet, result.newRating);
 
             return NextResponse.json({
               type: RESPONSE_UPDATE_MESSAGE,

@@ -7,6 +7,7 @@ interface XFeedActionResult {
   success: boolean;
   ephemeralMessage: string;
   updateCard?: boolean;
+  newRating?: TweetRating | null;
 }
 
 interface XFeedModalResult {
@@ -59,6 +60,7 @@ export function handleXFeedRating(
     success: true,
     ephemeralMessage: message,
     updateCard: true,
+    newRating: isToggleOff ? null : rating,
   };
 }
 
