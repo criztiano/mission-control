@@ -101,76 +101,90 @@ export function buildGardenEmbed(item: GardenItem, overrides?: Partial<Embed>): 
 }
 
 /**
- * Build garden triage buttons.
- * Row 1: Interest classification
- * Row 2: Temporal classification + Dismiss
+ * Build Components V2 garden card with section headers.
+ * Uses Container (17) + Text Display (10) + Separator (14) + Action Row (1).
+ */
+export function buildGardenCardV2(item: GardenItem): Record<string, unknown>[] {
+  let tags: string[] = [];
+  try { tags = JSON.parse(item.tags || '[]'); } catch { /* ignore */ }
+
+  const color = getCardColor(item.interest, item.temporal);
+
+  // Build description
+  const lines: string[] = [];
+  if (item.note) lines.push(item.note);
+  if (item.type || item.interest) {
+    const typeParts = [item.interest, item.type].filter(Boolean);
+    if (typeParts.length > 0) lines.push(`**Type:** ${typeParts.join(' · ')}`);
+  }
+  if (item.original_source) {
+    try {
+      const domain = new URL(item.original_source).hostname.replace('www.', '');
+      lines.push(`**Source:** ${domain}`);
+    } catch {
+      lines.push(`**Source:** ${item.original_source}`);
+    }
+  }
+  if (tags.length > 0) lines.push(tags.map(t => `\`${t}\``).join(' '));
+
+  const title = item.content.split('\n')[0] || 'Garden Item';
+  const headerText = `🌱 **${truncate(title, 200)}**\n\n${lines.join('\n')}`;
+
+  const itemId = item.id;
+
+  return [
+    {
+      type: 17, // Container
+      accent_color: color,
+      components: [
+        { type: 10, content: headerText }, // Text Display
+        { type: 14 }, // Separator
+        { type: 10, content: '**Interest**' },
+        {
+          type: 1, // Action Row
+          components: [
+            { type: 2, style: 2, label: 'Info', custom_id: `garden_info_${itemId}`, emoji: { name: '📚' } },
+            { type: 2, style: 2, label: 'Inspiration', custom_id: `garden_inspiration_${itemId}`, emoji: { name: '✨' } },
+            { type: 2, style: 2, label: 'Instrument', custom_id: `garden_instrument_${itemId}`, emoji: { name: '🔧' } },
+            { type: 2, style: 2, label: 'Ingredient', custom_id: `garden_ingredient_${itemId}`, emoji: { name: '🧱' } },
+            { type: 2, style: 2, label: 'Idea', custom_id: `garden_idea_${itemId}`, emoji: { name: '💡' } },
+          ],
+        },
+        { type: 10, content: '**Timeframe**' },
+        {
+          type: 1,
+          components: [
+            { type: 2, style: 2, label: 'Now', custom_id: `garden_now_${itemId}`, emoji: { name: '⚡' } },
+            { type: 2, style: 2, label: 'Later', custom_id: `garden_later_${itemId}`, emoji: { name: '⏰' } },
+            { type: 2, style: 2, label: 'Ever', custom_id: `garden_ever_${itemId}`, emoji: { name: '🌱' } },
+          ],
+        },
+      ],
+    },
+  ];
+}
+
+/**
+ * Legacy button builder (for embed-style cards).
  */
 export function buildGardenButtons(itemId: string): DiscordActionRow[] {
   return [
     {
       type: 1,
       components: [
-        {
-          type: 2,
-          style: 1, // Primary (blurple)
-          label: 'Instrument',
-          custom_id: `garden_instrument_${itemId}`,
-          emoji: { name: '🔧' },
-        },
-        {
-          type: 2,
-          style: 1,
-          label: 'Ingredient',
-          custom_id: `garden_ingredient_${itemId}`,
-          emoji: { name: '🧩' },
-        },
-        {
-          type: 2,
-          style: 1,
-          label: 'Idea',
-          custom_id: `garden_idea_${itemId}`,
-          emoji: { name: '💡' },
-        },
-        {
-          type: 2,
-          style: 1,
-          label: 'Knowledge',
-          custom_id: `garden_knowledge_${itemId}`,
-          emoji: { name: '📚' },
-        },
+        { type: 2, style: 1, label: 'Instrument', custom_id: `garden_instrument_${itemId}`, emoji: { name: '🔧' } },
+        { type: 2, style: 1, label: 'Ingredient', custom_id: `garden_ingredient_${itemId}`, emoji: { name: '🧱' } },
+        { type: 2, style: 1, label: 'Idea', custom_id: `garden_idea_${itemId}`, emoji: { name: '💡' } },
+        { type: 2, style: 1, label: 'Info', custom_id: `garden_info_${itemId}`, emoji: { name: '📚' } },
+        { type: 2, style: 1, label: 'Inspiration', custom_id: `garden_inspiration_${itemId}`, emoji: { name: '✨' } },
       ],
     },
     {
       type: 1,
       components: [
-        {
-          type: 2,
-          style: 3, // Success (green)
-          label: 'Now',
-          custom_id: `garden_now_${itemId}`,
-          emoji: { name: '⚡' },
-        },
-        {
-          type: 2,
-          style: 2, // Secondary (grey)
-          label: 'Later',
-          custom_id: `garden_later_${itemId}`,
-          emoji: { name: '⏰' },
-        },
-        {
-          type: 2,
-          style: 2,
-          label: 'Ever',
-          custom_id: `garden_ever_${itemId}`,
-          emoji: { name: '♾️' },
-        },
-        {
-          type: 2,
-          style: 4, // Danger (red)
-          label: 'Dismiss',
-          custom_id: `garden_dismiss_${itemId}`,
-          emoji: { name: '🗑️' },
-        },
+        { type: 2, style: 3, label: 'Now', custom_id: `garden_now_${itemId}`, emoji: { name: '⚡' } },
+        { type: 2, style: 2, label: 'Later', custom_id: `garden_later_${itemId}`, emoji: { name: '⏰' } },
+        { type: 2, style: 2, label: 'Ever', custom_id: `garden_ever_${itemId}`, emoji: { name: '🌱' } },
       ],
     },
   ];

@@ -11,7 +11,7 @@ interface GardenActionResult {
  * Set a garden item's interest classification.
  */
 export function handleGardenInterest(itemId: string, interest: string): GardenActionResult {
-  const validInterests = ['instrument', 'ingredient', 'idea', 'knowledge'];
+  const validInterests = ['instrument', 'ingredient', 'idea', 'knowledge', 'info', 'inspiration'];
   if (!validInterests.includes(interest)) {
     return { success: false, ephemeralMessage: `❌ Unknown interest: ${interest}` };
   }
