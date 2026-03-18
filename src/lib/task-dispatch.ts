@@ -445,14 +445,77 @@ ${workflowBlock}
     // Schedule inline watchdog — auto-retry if no turn arrives within 5 min
     scheduleDispatchWatchdog(payload.taskId, agentId, turns.length)
   } else {
-    // For persistent agents (main/cseno), skip CLI dispatch entirely.
-    // Main agent checks tasks via heartbeats and direct Telegram messages.
-    // CLI dispatch conflicts with active sessions and times out.
-    logger.info({ agentId, taskId: payload.taskId }, 'Persistent agent — task marked, skipping CLI dispatch (checked via heartbeat)')
-    // Just mark it picked so the agent finds it on next check
-    const writeDb = getCCDatabaseWrite()
-    writeDb.prepare("UPDATE issues SET picked = 1, picked_at = ?, picked_by = ? WHERE id = ?")
-      .run(new Date().toISOString(), agentId, payload.taskId)
+    // Persistent agents (main/cseno) get isolated task sessions.
+    // We spawn a fresh session with a unique ID so the persistent chat session
+    // is untouched — same fresh-context advantage as spawn agents.
+    const issue = getIssue(payload.taskId)
+    if (!issue) {
+      return { sent: false as const, reason: 'no-task' as const }
+    }
+    setTaskPicked(payload.taskId, agentId)
+    const turns = getTurns(payload.taskId)
+
+    const turnsBlock = turns.length > 0
+      ? `## Prior turns\n\n${turns.map(t => `**[${t.type}] ${t.author}** (round ${t.round_number}):\n${t.content}`).join('\n\n---\n\n')}`
+      : ''
+
+    let projectPath = ''
+    if (issue.project_id) {
+      const db = getCCDatabase()
+      const proj = db.prepare('SELECT title, local_path FROM projects WHERE id = ?').get(issue.project_id) as any
+      const localPath = proj?.local_path?.replace('~', process.env.HOME || '~')
+      projectPath = `\n**Project:** ${proj?.title || issue.project_id}${localPath ? `\n**Project path:** \`${localPath}\`` : ''}`
+    }
+
+    const nudgeMsg = `# Task Assignment (isolated session)
+
+**Task ID:** ${payload.taskId}
+**Priority:** ${issue.priority}${projectPath}
+
+## Description
+
+${issue.description || '(no description)'}
+
+${turnsBlock}
+
+## How to report back
+
+Post a turn when done:
+
+\`\`\`bash
+curl -s -X POST "http://localhost:3333/api/tasks/${payload.taskId}/turns" \\
+  -H "Content-Type: application/json" \\
+  -H "x-api-key: mc-api-key-local-dev" \\
+  -d '{"assigned_to":"cri","content":"## ✅ Done\\n\\n<summary>"}'
+\`\`\`
+
+**Critical rules:**
+- Work on THIS task (${payload.taskId}) — do NOT create new tasks.
+- Never change task status — only post turns.
+- After posting your turn, reply NO_REPLY to close your session.`
+
+    const taskSessionId = `task-${payload.taskId.slice(0, 12)}-${Date.now()}`
+    logger.info({ agentId, taskId: payload.taskId, sessionId: taskSessionId }, 'Persistent agent — spawning isolated task session')
+
+    // Record dispatch for watchdog
+    const dispatchRecord = { taskId: payload.taskId, agentId, dispatchedAt: Date.now(), turnCountAtDispatch: turns.length }
+    try {
+      const watchdogPath = `${process.env.HOME}/.openclaw/dispatch-watchdog.json`
+      const existing = existsSync(watchdogPath) ? JSON.parse(readFileSync(watchdogPath, 'utf8')) : []
+      existing.push(dispatchRecord)
+      writeFileSync(watchdogPath, JSON.stringify(existing.slice(-20), null, 2))
+    } catch { /* best-effort */ }
+
+    runOpenClawDetached([
+      'agent',
+      '--agent', agentId,
+      '--session-id', taskSessionId,
+      '--message', nudgeMsg,
+    ], {
+      env: withOpenClawEnv(),
+    })
+
+    scheduleDispatchWatchdog(payload.taskId, agentId, turns.length)
   }
 
   return { sent: true as const, agentId }
