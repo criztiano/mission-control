@@ -23,6 +23,7 @@ const dispatchRetryCount = new Map<string, number>()
 // Human assignees (cri, etc.) are NOT agents and should not be dispatched to.
 const KNOWN_AGENTS = new Set([
   'main', 'cseno', 'cody', 'worm', 'ops', 'piem', 'ralph', 'pinball', 'uze', 'dumbo',
+  'roach', 'scottie', 'rover', 'auwl',
 ])
 
 function resolveAgentId(assignee: string): string | null {
@@ -30,6 +31,7 @@ function resolveAgentId(assignee: string): string | null {
   if (!a) return null
   if (!KNOWN_AGENTS.has(a)) return null  // human assignee — skip
   if (a === 'cseno') return 'main'
+  if (a === 'ops') return 'scottie'
   return a
 }
 
@@ -187,7 +189,7 @@ async function isLikelyBusy(assignee: string): Promise<boolean> {
 }
 
 // Agents that use spawn (no persistent main session)
-const SPAWN_AGENTS = new Set(['dumbo', 'uze', 'ralph', 'piem', 'cody'])
+const SPAWN_AGENTS = new Set(['dumbo', 'uze', 'ralph', 'piem', 'cody', 'roach', 'worm', 'scottie', 'rover', 'auwl'])
 
 async function sendOne(payload: DispatchParams) {
   const assignee = (payload.assignee || '').trim()
