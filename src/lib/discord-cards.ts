@@ -251,8 +251,8 @@ export function buildTweetCardV2(
 ): V2Container {
   const author = tweet.author || 'Unknown';
   const theme = tweet.theme || '';
-  const themeBadge = theme ? ` · \`${theme}\`` : '';
-  // Theme-based emoji for the header (instead of generic bird)
+  const themeBadge = theme ? ` \`${theme}\`` : '';
+  // Theme-based emoji
   const themeEmoji: Record<string, string> = {
     'AI/LLM': '🤖',
     'Apple/Tech': '🍎',
@@ -269,11 +269,11 @@ export function buildTweetCardV2(
     'Finance': '💰',
   };
   const headerEmoji = themeEmoji[theme] || '🐦';
-  const summaryText = tweet.verdict && tweet.verdict !== 'kept' ? tweet.verdict : '';
-  const actionText = tweet.action || '';
-  const summaryParts = [summaryText, actionText].filter(Boolean);
-  const summary = summaryParts.length > 0 ? summaryParts.join(' — ') : '';
-  const tweetText = truncate(tweet.content || '', 120);
+
+  // Worm's one-liner: use action (the actionable summary), fall back to verdict if no action
+  const oneLiner = tweet.action
+    || (tweet.verdict && !['kept', 'keep', 'curated'].includes(tweet.verdict.toLowerCase()) ? tweet.verdict : '')
+    || truncate(tweet.content || '', 120);
   const tweetLink = tweet.tweet_link || '';
 
   // Button styles based on current rating
@@ -283,23 +283,12 @@ export function buildTweetCardV2(
 
   const components: V2Container['components'] = [
     {
-      type: 10, // Text Display
-      content: `${headerEmoji} **${author}**${themeBadge}`,
+      type: 10, // Worm's one-liner summary at top
+      content: `**${oneLiner}**`,
     },
-  ];
-
-  // Only add summary line if there's actual content (skip "kept" and empty)
-  if (summary) {
-    components.push({
-      type: 10, // Text Display
-      content: summary,
-    });
-  }
-
-  components.push(
     {
-      type: 10, // Text Display
-      content: tweetText,
+      type: 10, // Author + theme below
+      content: `${headerEmoji} ${author}${themeBadge}`,
     },
     {
       type: 14, // Separator
@@ -307,7 +296,7 @@ export function buildTweetCardV2(
       spacing: 1,
     },
     {
-      type: 1, // Action Row — ratings + open
+      type: 1, // Action Row — ratings + open + act
       components: [
         {
           type: 2,
@@ -345,8 +334,8 @@ export function buildTweetCardV2(
           emoji: { name: '📋' },
         },
       ],
-    }
-  );
+    },
+  ];
 
   return {
     type: 17,
