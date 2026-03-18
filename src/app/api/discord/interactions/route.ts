@@ -112,7 +112,8 @@ export async function POST(request: NextRequest) {
 
   // Type 3: MESSAGE_COMPONENT — button click
   if (interactionType === INTERACTION_MESSAGE_COMPONENT) {
-    const customId = body.custom_id as string;
+    const data = body.data as Record<string, unknown> | undefined;
+    const customId = (data?.custom_id || body.custom_id) as string;
     const parsed = parseCustomId(customId);
 
     if (!parsed) {
@@ -269,7 +270,8 @@ export async function POST(request: NextRequest) {
 
   // Type 5: MODAL_SUBMIT
   if (interactionType === INTERACTION_MODAL_SUBMIT) {
-    const customId = body.custom_id as string;
+    const modalData = body.data as Record<string, unknown> | undefined;
+    const customId = (modalData?.custom_id || body.custom_id) as string;
     const parsed = parseCustomId(customId);
 
     if (parsed?.domain === 'xfeed' && parsed?.action === 'taskmodal') {
