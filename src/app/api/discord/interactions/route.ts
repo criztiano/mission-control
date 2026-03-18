@@ -3,7 +3,7 @@ import nacl from 'tweetnacl';
 import { logger } from '@/lib/logger';
 import { handleGardenInterest, handleGardenTemporal, handleGardenDismiss } from '@/lib/discord-actions/garden';
 import { getCCDatabase } from '@/lib/cc-db';
-import { buildGardenEmbed, buildGardenButtons } from '@/lib/discord-cards';
+import { buildGardenCardV2, type GardenItem } from '@/lib/discord-cards';
 
 // Discord interaction types
 const INTERACTION_PING = 1;
@@ -150,7 +150,7 @@ export async function POST(request: NextRequest) {
       const item = ccDb.prepare('SELECT * FROM garden WHERE id = ?').get(itemId) as Record<string, unknown> | undefined;
 
       if (item) {
-        const gardenItem = {
+        const gardenItem: GardenItem = {
           id: String(item.id),
           content: String(item.content || ''),
           type: String(item.type || ''),
@@ -164,15 +164,13 @@ export async function POST(request: NextRequest) {
           saved_at: String(item.saved_at || ''),
         };
 
-        const updatedEmbed = buildGardenEmbed(gardenItem);
-        const buttons = buildGardenButtons(itemId);
+        const v2Components = buildGardenCardV2(gardenItem);
 
         return NextResponse.json({
           type: RESPONSE_UPDATE_MESSAGE,
           data: {
-            content: result.ephemeralMessage,
-            embeds: [updatedEmbed],
-            components: buttons,
+            flags: 32768,
+            components: v2Components,
           },
         });
       }

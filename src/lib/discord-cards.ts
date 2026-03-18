@@ -102,21 +102,16 @@ export function buildGardenEmbed(item: GardenItem, overrides?: Partial<Embed>): 
 
 /**
  * Build Components V2 garden card with section headers.
+ * Selected interest/temporal buttons render as Primary (blurple), unselected as Secondary (grey).
  * Uses Container (17) + Text Display (10) + Separator (14) + Action Row (1).
  */
 export function buildGardenCardV2(item: GardenItem): Record<string, unknown>[] {
   let tags: string[] = [];
   try { tags = JSON.parse(item.tags || '[]'); } catch { /* ignore */ }
 
-  const color = getCardColor(item.interest, item.temporal);
-
   // Build description
   const lines: string[] = [];
   if (item.note) lines.push(item.note);
-  if (item.type || item.interest) {
-    const typeParts = [item.interest, item.type].filter(Boolean);
-    if (typeParts.length > 0) lines.push(`**Type:** ${typeParts.join(' · ')}`);
-  }
   if (item.original_source) {
     try {
       const domain = new URL(item.original_source).hostname.replace('www.', '');
@@ -131,32 +126,37 @@ export function buildGardenCardV2(item: GardenItem): Record<string, unknown>[] {
   const headerText = `🌱 **${truncate(title, 200)}**\n\n${lines.join('\n')}`;
 
   const itemId = item.id;
+  const currentInterest = item.interest?.toLowerCase() || '';
+  const currentTemporal = item.temporal?.toLowerCase() || '';
+
+  // Helper: style 1 (Primary/blurple) if selected, style 2 (Secondary/grey) if not
+  const iStyle = (val: string) => currentInterest === val ? 1 : 2;
+  const tStyle = (val: string) => currentTemporal === val ? 1 : 2;
 
   return [
     {
       type: 17, // Container
-      accent_color: color,
       components: [
-        { type: 10, content: headerText }, // Text Display
-        { type: 14 }, // Separator
+        { type: 10, content: headerText },
+        { type: 14 },
         { type: 10, content: '**Interest**' },
         {
-          type: 1, // Action Row
+          type: 1,
           components: [
-            { type: 2, style: 2, label: 'Info', custom_id: `garden_info_${itemId}`, emoji: { name: '📚' } },
-            { type: 2, style: 2, label: 'Inspiration', custom_id: `garden_inspiration_${itemId}`, emoji: { name: '✨' } },
-            { type: 2, style: 2, label: 'Instrument', custom_id: `garden_instrument_${itemId}`, emoji: { name: '🔧' } },
-            { type: 2, style: 2, label: 'Ingredient', custom_id: `garden_ingredient_${itemId}`, emoji: { name: '🧱' } },
-            { type: 2, style: 2, label: 'Idea', custom_id: `garden_idea_${itemId}`, emoji: { name: '💡' } },
+            { type: 2, style: iStyle('info'), label: 'Info', custom_id: `garden_info_${itemId}`, emoji: { name: '📚' } },
+            { type: 2, style: iStyle('inspiration'), label: 'Inspiration', custom_id: `garden_inspiration_${itemId}`, emoji: { name: '✨' } },
+            { type: 2, style: iStyle('instrument'), label: 'Instrument', custom_id: `garden_instrument_${itemId}`, emoji: { name: '🔧' } },
+            { type: 2, style: iStyle('ingredient'), label: 'Ingredient', custom_id: `garden_ingredient_${itemId}`, emoji: { name: '🧱' } },
+            { type: 2, style: iStyle('idea'), label: 'Idea', custom_id: `garden_idea_${itemId}`, emoji: { name: '💡' } },
           ],
         },
         { type: 10, content: '**Timeframe**' },
         {
           type: 1,
           components: [
-            { type: 2, style: 2, label: 'Now', custom_id: `garden_now_${itemId}`, emoji: { name: '⚡' } },
-            { type: 2, style: 2, label: 'Later', custom_id: `garden_later_${itemId}`, emoji: { name: '⏰' } },
-            { type: 2, style: 2, label: 'Ever', custom_id: `garden_ever_${itemId}`, emoji: { name: '🌱' } },
+            { type: 2, style: tStyle('now'), label: 'Now', custom_id: `garden_now_${itemId}`, emoji: { name: '⚡' } },
+            { type: 2, style: tStyle('later'), label: 'Later', custom_id: `garden_later_${itemId}`, emoji: { name: '⏰' } },
+            { type: 2, style: tStyle('ever'), label: 'Ever', custom_id: `garden_ever_${itemId}`, emoji: { name: '🌱' } },
           ],
         },
       ],
