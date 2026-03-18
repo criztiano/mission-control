@@ -146,7 +146,7 @@ export function buildGardenCardV2(item: GardenItem): Record<string, unknown>[] {
             { type: 2, style: iStyle('info'), label: 'Info', custom_id: `garden_info_${itemId}`, emoji: { name: '📚' } },
             { type: 2, style: iStyle('inspiration'), label: 'Inspiration', custom_id: `garden_inspiration_${itemId}`, emoji: { name: '✨' } },
             { type: 2, style: iStyle('instrument'), label: 'Instrument', custom_id: `garden_instrument_${itemId}`, emoji: { name: '🔧' } },
-            { type: 2, style: iStyle('ingredient'), label: 'Ingredient', custom_id: `garden_ingredient_${itemId}`, emoji: { name: '🧱' } },
+            { type: 2, style: iStyle('ingredient'), label: 'Ingredient', custom_id: `garden_ingredient_${itemId}`, emoji: { name: '🧩' } },
             { type: 2, style: iStyle('idea'), label: 'Idea', custom_id: `garden_idea_${itemId}`, emoji: { name: '💡' } },
           ],
         },
@@ -173,7 +173,7 @@ export function buildGardenButtons(itemId: string): DiscordActionRow[] {
       type: 1,
       components: [
         { type: 2, style: 1, label: 'Instrument', custom_id: `garden_instrument_${itemId}`, emoji: { name: '🔧' } },
-        { type: 2, style: 1, label: 'Ingredient', custom_id: `garden_ingredient_${itemId}`, emoji: { name: '🧱' } },
+        { type: 2, style: 1, label: 'Ingredient', custom_id: `garden_ingredient_${itemId}`, emoji: { name: '🧩' } },
         { type: 2, style: 1, label: 'Idea', custom_id: `garden_idea_${itemId}`, emoji: { name: '💡' } },
         { type: 2, style: 1, label: 'Info', custom_id: `garden_info_${itemId}`, emoji: { name: '📚' } },
         { type: 2, style: 1, label: 'Inspiration', custom_id: `garden_inspiration_${itemId}`, emoji: { name: '✨' } },
