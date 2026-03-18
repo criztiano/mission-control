@@ -198,8 +198,7 @@ export async function postGardenCard(
   channelId: string
 ): Promise<string | null> {
   const token = getBotToken();
-  const embed = buildGardenEmbed(item);
-  const components = buildGardenButtons(item.id);
+  const v2Components = buildGardenCardV2(item);
 
   try {
     const res = await fetch(`${DISCORD_API}/channels/${channelId}/messages`, {
@@ -208,7 +207,7 @@ export async function postGardenCard(
         'Authorization': `Bot ${token}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ embeds: [embed], components }),
+      body: JSON.stringify({ flags: 32768, components: v2Components }),
     });
 
     if (!res.ok) {
