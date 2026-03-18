@@ -19,19 +19,50 @@ const DISPATCH_TIMEOUT_MS = 5 * 60 * 1000 // 5 min to post a turn or we auto-ret
 const MAX_RETRIES = 3
 const dispatchRetryCount = new Map<string, number>()
 
-// Known agent IDs that can receive dispatches.
-// Human assignees (cri, etc.) are NOT agents and should not be dispatched to.
-const KNOWN_AGENTS = new Set([
-  'main', 'cseno', 'cody', 'worm', 'ops', 'piem', 'ralph', 'pinball', 'uze', 'dumbo',
-  'roach', 'scottie', 'rover', 'auwl',
-])
+// Agent IDs loaded from OpenClaw config — auto-syncs when agents are added/removed.
+// Human assignees (cri, etc.) are NOT in this set and won't receive dispatches.
+const HUMAN_ASSIGNEES = new Set(['cri'])
+let _knownAgentsCache: Set<string> | null = null
+let _knownAgentsCacheTime = 0
+const AGENT_CACHE_TTL_MS = 60_000 // re-read config every 60s
+
+function loadKnownAgents(): Set<string> {
+  const now = Date.now()
+  if (_knownAgentsCache && (now - _knownAgentsCacheTime) < AGENT_CACHE_TTL_MS) {
+    return _knownAgentsCache
+  }
+  try {
+    const configPath = process.env.OPENCLAW_CONFIG_PATH || `${process.env.HOME}/.openclaw/openclaw.json`
+    const config = JSON.parse(readFileSync(configPath, 'utf-8'))
+    const agents = new Set<string>()
+    const list = config?.agents?.list || []
+    for (const entry of list) {
+      if (entry.id) agents.add(entry.id.toLowerCase())
+      // Also add the agent name as an alias (e.g. "Cseno" → "cseno")
+      if (entry.name) agents.add(entry.name.toLowerCase())
+    }
+    // Always include 'main' for cseno alias resolution
+    agents.add('main')
+    _knownAgentsCache = agents
+    _knownAgentsCacheTime = now
+    logger.info({ agents: [...agents].sort() }, 'task-dispatch: loaded agent list from openclaw.json')
+    return agents
+  } catch (e) {
+    logger.warn({ err: e }, 'task-dispatch: failed to read openclaw.json, using cached agents')
+    if (_knownAgentsCache) return _knownAgentsCache
+    // Ultimate fallback — should never happen in practice
+    return new Set(['main', 'cseno', 'cody', 'worm', 'scottie', 'piem', 'ralph', 'pinball', 'uze', 'dumbo', 'roach', 'rover', 'auwl'])
+  }
+}
 
 function resolveAgentId(assignee: string): string | null {
   const a = (assignee || '').trim().toLowerCase()
   if (!a) return null
-  if (!KNOWN_AGENTS.has(a)) return null  // human assignee — skip
+  if (HUMAN_ASSIGNEES.has(a)) return null  // human assignee — skip
+  const known = loadKnownAgents()
+  if (!known.has(a)) return null  // unknown assignee — skip
+  // Alias resolution: agent names → agent IDs
   if (a === 'cseno') return 'main'
-  if (a === 'ops') return 'scottie'
   return a
 }
 
@@ -164,9 +195,9 @@ async function isSessionActive(agentId: string): Promise<boolean> {
 }
 
 async function isLikelyBusy(assignee: string): Promise<boolean> {
-  // Spawn agents always get fresh sessions — never considered busy
+  // Non-persistent agents always get fresh sessions — never considered busy
   const a = assignee.toLowerCase()
-  if (SPAWN_AGENTS.has(a)) return false
+  if (!PERSISTENT_AGENTS.has(a)) return false
   // Only guard persistent-session agents that might be mid-conversation
   if (a !== 'cody') return false
 
@@ -188,8 +219,9 @@ async function isLikelyBusy(assignee: string): Promise<boolean> {
   }
 }
 
-// Agents that use spawn (no persistent main session)
-const SPAWN_AGENTS = new Set(['dumbo', 'uze', 'ralph', 'piem', 'cody', 'roach', 'worm', 'scottie', 'rover', 'auwl'])
+// Persistent-session agents — these get heartbeat-only dispatch (no CLI spawn).
+// Everyone else gets fresh-session spawn dispatch.
+const PERSISTENT_AGENTS = new Set(['main'])
 
 async function sendOne(payload: DispatchParams) {
   const assignee = (payload.assignee || '').trim()
@@ -198,7 +230,7 @@ async function sendOne(payload: DispatchParams) {
 
   const compactContext = (payload.content || '').replace(/\s+/g, ' ').trim().slice(0, 240)
 
-  if (SPAWN_AGENTS.has(agentId)) {
+  if (!PERSISTENT_AGENTS.has(agentId)) {
     // Check if agent already has a picked task (busy) — queue drain will handle it later
     const busyTask = getIssue(payload.taskId) // we need to check OTHER tasks
     const db = getCCDatabase()

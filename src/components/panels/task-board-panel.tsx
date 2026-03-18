@@ -86,7 +86,7 @@ function isStale(task: Task): boolean {
 }
 
 // Agent task state — only shown for agent-assigned tasks (not when assigned to Cri)
-const AGENT_NAMES = new Set(['cseno', 'cody', 'ralph', 'dumbo', 'piem', 'worm', 'ops', 'pinball', 'uze', 'bookworm'])
+const AGENT_NAMES = new Set(['cseno', 'main', 'cody', 'ralph', 'dumbo', 'piem', 'worm', 'scottie', 'pinball', 'uze', 'roach', 'rover', 'auwl'])
 function agentTaskState(task: Task): 'dispatched' | 'working' | 'delivered' | null {
   const assignee = (task.assigned_to || '').toLowerCase()
   if (task.status === 'draft') return null
