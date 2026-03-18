@@ -183,6 +183,10 @@ export async function POST(request: NextRequest) {
               triage_status: String(tweet.triage_status || ''),
               snooze_until: tweet.snooze_until as string | null,
               rating: null, // ignored — we use newRating below
+              summary: String(tweet.summary || ''),
+              digest_id: (tweet.digest_id as string | null) || null,
+              discord_message_id: (tweet.discord_message_id as string | null) || null,
+              discord_posted_at: (tweet.discord_posted_at as string | null) || null,
             };
 
             // Use the rating from the handler, not from DB (avoids race condition)

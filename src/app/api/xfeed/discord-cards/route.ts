@@ -10,6 +10,7 @@ const RATE_LIMIT_DELAY_MS = 600; // ~1.5/second — safe margin under Discord's 
  * POST /api/xfeed/discord-cards
  * Posts individual tweet cards to Discord #feed for unposted tweets.
  * Queries tweets where discord_message_id IS NULL and triage_status is 'classified' or 'curated'.
+ * Supports optional digest_id filter to post only tweets from a specific digest.
  * Rate-limited to max 4 cards/second.
  */
 export async function POST(request: NextRequest) {
@@ -25,23 +26,41 @@ export async function POST(request: NextRequest) {
   try {
     const body = await request.json().catch(() => ({}));
     const limit = Math.min(Number(body.limit) || 50, 50);
+    const digestId = body.digest_id as string | undefined;
+    const channelId = body.channel_id as string | undefined; // optional: post to a specific channel (e.g. thread)
     const db = getCCDatabase();
 
-    // Get unposted curated tweets only (verdict = 'curated', not yet posted to Discord)
-    const unpostedTweets = db.prepare(`
-      SELECT t.*, r.rating FROM tweets t
-      LEFT JOIN tweet_ratings r ON t.id = r.tweet_id
-      WHERE t.discord_message_id IS NULL
-        AND t.verdict IN ('curated', 'kept', 'keep')
-      ORDER BY t.pinned DESC, t.scraped_at DESC
-      LIMIT ?
-    `).all(limit) as Array<Record<string, unknown>>;
+    // Build query based on whether digest_id filter is provided
+    let unpostedTweets: Array<Record<string, unknown>>;
+    const params: any[] = [];
+
+    if (digestId) {
+      // Filter by specific digest
+      unpostedTweets = db.prepare(`
+        SELECT t.*, r.rating FROM tweets t
+        LEFT JOIN tweet_ratings r ON t.id = r.tweet_id
+        WHERE t.digest_id = ?
+          AND t.verdict IN ('curated', 'kept', 'keep')
+        ORDER BY t.pinned DESC, t.scraped_at DESC
+        LIMIT ?
+      `).all(digestId, limit) as Array<Record<string, unknown>>;
+    } else {
+      // Default: all unposted curated tweets
+      unpostedTweets = db.prepare(`
+        SELECT t.*, r.rating FROM tweets t
+        LEFT JOIN tweet_ratings r ON t.id = r.tweet_id
+        WHERE t.discord_message_id IS NULL
+          AND t.verdict IN ('curated', 'kept', 'keep')
+        ORDER BY t.pinned DESC, t.scraped_at DESC
+        LIMIT ?
+      `).all(limit) as Array<Record<string, unknown>>;
+    }
 
     if (unpostedTweets.length === 0) {
       return NextResponse.json({ posted: 0, message: 'No unposted tweets' });
     }
 
-    const channelId = DISCORD_FEED_CHANNEL;
+    const targetChannel = channelId || DISCORD_FEED_CHANNEL;
     const writeDb = getCCDatabaseWrite();
     let postedCount = 0;
     const errors: string[] = [];
@@ -66,9 +85,13 @@ export async function POST(request: NextRequest) {
           triage_status: String(tweet.triage_status || ''),
           snooze_until: tweet.snooze_until as string | null,
           rating: tweet.rating as 'fire' | 'meh' | 'noise' | null,
+          summary: String(tweet.summary || ''),
+          digest_id: String(tweet.digest_id || ''),
+          discord_message_id: tweet.discord_message_id as string | null,
+          discord_posted_at: tweet.discord_posted_at as string | null,
         };
 
-        const messageId = await postTweetCard(cctweet, channelId, cctweet.rating);
+        const messageId = await postTweetCard(cctweet, targetChannel, cctweet.rating);
 
         if (messageId) {
           const now = new Date().toISOString();
@@ -89,7 +112,7 @@ export async function POST(request: NextRequest) {
       writeDb.close();
     }
 
-    logger.info({ postedCount, total: unpostedTweets.length, errors: errors.length }, 'Discord cards posted');
+    logger.info({ postedCount, total: unpostedTweets.length, errors: errors.length, digestId }, 'Discord cards posted');
 
     return NextResponse.json({
       posted: postedCount,

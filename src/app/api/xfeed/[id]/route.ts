@@ -2,10 +2,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireRole } from '@/lib/auth';
 import { mutationLimiter } from '@/lib/rate-limit';
 import { logger } from '@/lib/logger';
-import { rateTweet, pinTweet, triageUpdate } from '@/lib/cc-db';
+import { rateTweet, pinTweet, triageUpdate, updateTweetSummary } from '@/lib/cc-db';
 
 /**
- * PUT /api/xfeed/[id] - Rate, pin, or triage a tweet
+ * PUT /api/xfeed/[id] - Rate, pin, triage, or summarize a tweet
  */
 export async function PUT(
   request: NextRequest,
@@ -35,6 +35,14 @@ export async function PUT(
 
     if ('triage_status' in body) {
       triageUpdate(id, body.triage_status);
+    }
+
+    if ('summary' in body) {
+      const { summary } = body;
+      if (typeof summary !== 'string') {
+        return NextResponse.json({ error: 'Summary must be a string' }, { status: 400 });
+      }
+      updateTweetSummary(id, summary);
     }
 
     return NextResponse.json({ success: true });
