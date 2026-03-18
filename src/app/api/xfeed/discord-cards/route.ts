@@ -4,7 +4,7 @@ import { postTweetCard } from '@/lib/discord-cards';
 import { logger } from '@/lib/logger';
 
 const DISCORD_FEED_CHANNEL = '1482408038962036958'; // #feed channel
-const RATE_LIMIT_DELAY_MS = 250; // Max 4/second to stay under Discord's 5/5s limit
+const RATE_LIMIT_DELAY_MS = 600; // ~1.5/second — safe margin under Discord's 5/5s limit
 
 /**
  * POST /api/xfeed/discord-cards
@@ -23,17 +23,19 @@ export async function POST(request: NextRequest) {
   }
 
   try {
+    const body = await request.json().catch(() => ({}));
+    const limit = Math.min(Number(body.limit) || 50, 50);
     const db = getCCDatabase();
 
-    // Get unposted tweets (classified or curated, not yet posted to Discord)
+    // Get unposted curated tweets only (verdict = 'curated', not yet posted to Discord)
     const unpostedTweets = db.prepare(`
       SELECT t.*, r.rating FROM tweets t
       LEFT JOIN tweet_ratings r ON t.id = r.tweet_id
       WHERE t.discord_message_id IS NULL
-        AND t.triage_status IN ('classified', 'curated')
+        AND t.verdict IN ('curated', 'kept', 'keep')
       ORDER BY t.pinned DESC, t.scraped_at DESC
-      LIMIT 50
-    `).all() as Array<Record<string, unknown>>;
+      LIMIT ?
+    `).all(limit) as Array<Record<string, unknown>>;
 
     if (unpostedTweets.length === 0) {
       return NextResponse.json({ posted: 0, message: 'No unposted tweets' });
@@ -110,7 +112,7 @@ export async function GET() {
     const result = db.prepare(`
       SELECT COUNT(*) as count FROM tweets
       WHERE discord_message_id IS NULL
-        AND triage_status IN ('classified', 'curated')
+        AND verdict IN ('curated', 'kept', 'keep')
     `).get() as { count: number };
 
     return NextResponse.json({ unposted: result.count });

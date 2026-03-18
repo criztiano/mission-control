@@ -252,10 +252,27 @@ export function buildTweetCardV2(
   const author = tweet.author || 'Unknown';
   const theme = tweet.theme || '';
   const themeBadge = theme ? ` · \`${theme}\`` : '';
-  const verdict = tweet.verdict || '';
-  const action = tweet.action || '';
-  const summaryParts = [verdict, action].filter(Boolean);
-  const summary = summaryParts.length > 0 ? summaryParts.join(' — ') : 'No classification';
+  // Theme-based emoji for the header (instead of generic bird)
+  const themeEmoji: Record<string, string> = {
+    'AI/LLM': '🤖',
+    'Apple/Tech': '🍎',
+    'Dev Tools': '🛠️',
+    'Creative Coding': '🎨',
+    'Hardware': '⚙️',
+    'Design/UX': '✏️',
+    'News': '📰',
+    'Politics': '🏛️',
+    'Crypto': '🪙',
+    'Science': '🔬',
+    'Gaming': '🎮',
+    'Music': '🎵',
+    'Finance': '💰',
+  };
+  const headerEmoji = themeEmoji[theme] || '🐦';
+  const summaryText = tweet.verdict && tweet.verdict !== 'kept' ? tweet.verdict : '';
+  const actionText = tweet.action || '';
+  const summaryParts = [summaryText, actionText].filter(Boolean);
+  const summary = summaryParts.length > 0 ? summaryParts.join(' — ') : '';
   const tweetText = truncate(tweet.content || '', 120);
   const tweetLink = tweet.tweet_link || '';
 
@@ -267,12 +284,19 @@ export function buildTweetCardV2(
   const components: V2Container['components'] = [
     {
       type: 10, // Text Display
-      content: `🐦 **${author}**${themeBadge}`,
+      content: `${headerEmoji} **${author}**${themeBadge}`,
     },
-    {
+  ];
+
+  // Only add summary line if there's actual content (skip "kept" and empty)
+  if (summary) {
+    components.push({
       type: 10, // Text Display
       content: summary,
-    },
+    });
+  }
+
+  components.push(
     {
       type: 10, // Text Display
       content: tweetText,
@@ -283,51 +307,46 @@ export function buildTweetCardV2(
       spacing: 1,
     },
     {
-      type: 1, // Action Row
+      type: 1, // Action Row — ratings + open
       components: [
         {
           type: 2,
           style: fireStyle,
-          label: 'Fire',
+          label: '',
           custom_id: `xfeed_fire_${tweet.id}`,
           emoji: { name: '🔥' },
         },
         {
           type: 2,
           style: mehStyle,
-          label: 'Meh',
+          label: '',
           custom_id: `xfeed_meh_${tweet.id}`,
           emoji: { name: '😐' },
         },
         {
           type: 2,
           style: noiseStyle,
-          label: 'Noise',
+          label: '',
           custom_id: `xfeed_noise_${tweet.id}`,
           emoji: { name: '🗑️' },
         },
         {
           type: 2,
           style: 5, // Link
-          label: 'Open Tweet',
+          label: 'Open',
           url: tweetLink,
           emoji: { name: '🔗' },
         },
-      ],
-    },
-    {
-      type: 1, // Action Row
-      components: [
         {
           type: 2,
           style: 2, // Secondary
-          label: 'Create Task',
+          label: 'Act',
           custom_id: `xfeed_task_${tweet.id}`,
           emoji: { name: '📋' },
         },
       ],
-    },
-  ];
+    }
+  );
 
   return {
     type: 17,
