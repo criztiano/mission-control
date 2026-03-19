@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import nacl from 'tweetnacl';
 import { logger } from '@/lib/logger';
-import { handleGardenPin, handleGardenSnooze, handleGardenDismiss } from '@/lib/discord-actions/garden';
+import { handleGardenInterest, handleGardenTemporal, handleGardenDismiss } from '@/lib/discord-actions/garden';
 import { handleXFeedRating, getXFeedTaskModal, handleXFeedTaskModalSubmit } from '@/lib/discord-actions/xfeed';
 import { getCCDatabase, type TweetRating } from '@/lib/cc-db';
-import { buildGardenEmbed, buildGardenButtons, buildTweetCardV2 } from '@/lib/discord-cards';
+import { buildGardenCardV2, buildTweetCardV2, type GardenItem } from '@/lib/discord-cards';
 
 // Discord interaction types
 const INTERACTION_PING = 1;
@@ -58,17 +58,19 @@ function parseCustomId(customId: string): { domain: string; action: string; item
 function handleGardenAction(
   action: string,
   itemId: string
-): { ephemeralMessage: string; embedUpdate?: Record<string, unknown>; success: boolean } {
-  switch (action) {
-    case 'pin':
-      return handleGardenPin(itemId);
-    case 'snooze':
-      return handleGardenSnooze(itemId);
-    case 'dismiss':
-      return handleGardenDismiss(itemId);
-    default:
-      return { success: false, ephemeralMessage: `❌ Unknown garden action: ${action}` };
+): { ephemeralMessage: string; success: boolean } {
+  // Interest buttons
+  if (['info', 'inspiration', 'instrument', 'ingredient', 'idea'].includes(action)) {
+    return handleGardenInterest(itemId, action);
   }
+  // Temporal buttons
+  if (['now', 'later', 'ever'].includes(action)) {
+    return handleGardenTemporal(itemId, action);
+  }
+  if (action === 'dismiss') {
+    return handleGardenDismiss(itemId);
+  }
+  return { success: false, ephemeralMessage: `❌ Unknown garden action: ${action}` };
 }
 
 /**
@@ -226,37 +228,34 @@ export async function POST(request: NextRequest) {
         });
       }
 
-      // If we have an embed update, update the original message
-      if (result.embedUpdate) {
-        const ccDb = getCCDatabase();
-        const item = ccDb.prepare('SELECT * FROM garden WHERE id = ?').get(itemId) as Record<string, unknown> | undefined;
+      // Rebuild the V2 card with updated state
+      const ccDb = getCCDatabase();
+      const item = ccDb.prepare('SELECT * FROM garden WHERE id = ?').get(itemId) as Record<string, unknown> | undefined;
 
-        if (item) {
-          const gardenItem = {
-            id: String(item.id),
-            content: String(item.content || ''),
-            type: String(item.type || ''),
-            interest: String(item.interest || ''),
-            temporal: String(item.temporal || ''),
-            tags: String(item.tags || '[]'),
-            note: String(item.note || ''),
-            original_source: item.original_source as string | null,
-            media_urls: String(item.media_urls || '[]'),
-            metadata: String(item.metadata || '{}'),
-            saved_at: String(item.saved_at || ''),
-          };
+      if (item) {
+        const gardenItem: GardenItem = {
+          id: String(item.id),
+          content: String(item.content || ''),
+          type: String(item.type || ''),
+          interest: String(item.interest || ''),
+          temporal: String(item.temporal || ''),
+          tags: String(item.tags || '[]'),
+          note: String(item.note || ''),
+          original_source: item.original_source as string | null,
+          media_urls: String(item.media_urls || '[]'),
+          metadata: String(item.metadata || '{}'),
+          saved_at: String(item.saved_at || ''),
+        };
 
-          const updatedEmbed = buildGardenEmbed(gardenItem, result.embedUpdate);
-          const buttons = buildGardenButtons(itemId);
+        const v2Components = buildGardenCardV2(gardenItem);
 
-          return NextResponse.json({
-            type: RESPONSE_UPDATE_MESSAGE,
-            data: {
-              embeds: [updatedEmbed],
-              components: buttons,
-            },
-          });
-        }
+        return NextResponse.json({
+          type: RESPONSE_UPDATE_MESSAGE,
+          data: {
+            components: v2Components,
+            flags: 32768,
+          },
+        });
       }
 
       // Fallback: just send ephemeral confirmation
