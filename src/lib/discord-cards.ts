@@ -270,8 +270,9 @@ export function buildTweetCardV2(
   };
   const headerEmoji = themeEmoji[theme] || '🐦';
 
-  // Worm's one-liner: use action (the actionable summary), fall back to verdict if no action
-  const oneLiner = tweet.action
+  // Worm's one-liner: prefer summary field (v2), fall back to action, then content
+  const oneLiner = tweet.summary
+    || tweet.action
     || (tweet.verdict && !['kept', 'keep', 'curated'].includes(tweet.verdict.toLowerCase()) ? tweet.verdict : '')
     || truncate(tweet.content || '', 120);
   const tweetLink = tweet.tweet_link || '';
