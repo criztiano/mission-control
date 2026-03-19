@@ -161,7 +161,51 @@ export function runCCMigrations(): void {
       logger.info('cc-db migration: updated last_turn_at from migrated turns');
     }
 
-    // 6. Migrate old statuses → 3-status model (draft, open, closed)
+    // 6. Add discord_message_id and discord_posted_at to tweets table
+    const tweetColumns = db.prepare('PRAGMA table_info(tweets)').all() as Array<{ name: string }>
+    const hasDiscordMessageId = tweetColumns.some(c => c.name === 'discord_message_id')
+    const hasDiscordPostedAt = tweetColumns.some(c => c.name === 'discord_posted_at')
+
+    if (!hasDiscordMessageId) {
+      db.exec(`ALTER TABLE tweets ADD COLUMN discord_message_id TEXT`)
+      logger.info('cc-db migration: added discord_message_id column to tweets')
+    }
+    if (!hasDiscordPostedAt) {
+      db.exec(`ALTER TABLE tweets ADD COLUMN discord_posted_at TEXT`)
+      logger.info('cc-db migration: added discord_posted_at column to tweets')
+    }
+
+    // 7. Add summary and digest_id columns to tweets table (v2 digest flow)
+    const tweetCols2 = db.prepare('PRAGMA table_info(tweets)').all() as Array<{ name: string }>
+    const hasSummary = tweetCols2.some(c => c.name === 'summary')
+    const hasDigestId = tweetCols2.some(c => c.name === 'digest_id')
+
+    if (!hasSummary) {
+      db.exec(`ALTER TABLE tweets ADD COLUMN summary TEXT NOT NULL DEFAULT ''`)
+      logger.info('cc-db migration: added summary column to tweets')
+    }
+    if (!hasDigestId) {
+      db.exec(`ALTER TABLE tweets ADD COLUMN digest_id TEXT`)
+      logger.info('cc-db migration: added digest_id column to tweets')
+    }
+
+    // 8. Create digests table
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS digests (
+        id TEXT PRIMARY KEY,
+        label TEXT NOT NULL,
+        brief TEXT NOT NULL,
+        stats_scraped INTEGER DEFAULT 0,
+        stats_kept INTEGER DEFAULT 0,
+        stats_dropped INTEGER DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        discord_message_id TEXT,
+        discord_thread_id TEXT
+      )
+    `)
+    logger.info('cc-db migration: created digests table')
+
+    // 7. Migrate old statuses → 3-status model (draft, open, closed)
     //    Active work statuses → open
     //    Proposal/idea/todo → draft (not yet actionable)
     //    done → closed
@@ -644,6 +688,10 @@ export interface CCTweet {
   triage_status: string;
   snooze_until: string | null;
   rating: TweetRating | null; // joined from tweet_ratings
+  summary: string;
+  digest_id: string | null;
+  discord_message_id: string | null;
+  discord_posted_at: string | null;
 }
 
 export interface TweetFilters {
@@ -787,6 +835,120 @@ export function getTweetStats(): { by_theme: Record<string, number>; by_rating: 
   for (const r of digestRows) by_digest[r.digest] = r.c;
 
   return { total, by_theme, by_rating, by_digest };
+}
+
+// --- Digest types & functions ---
+
+export interface CCDigest {
+  id: string;
+  label: string;
+  brief: string;
+  stats_scraped: number;
+  stats_kept: number;
+  stats_dropped: number;
+  created_at: string;
+  discord_message_id: string | null;
+  discord_thread_id: string | null;
+}
+
+export interface CreateDigestInput {
+  label: string;
+  brief: string;
+  stats_scraped?: number;
+  stats_kept?: number;
+  stats_dropped?: number;
+}
+
+/**
+ * Create a new digest record and return it.
+ */
+export function createDigest(input: CreateDigestInput): CCDigest {
+  const writeDb = getCCDatabaseWrite();
+  try {
+    const id = randomUUID();
+    const now = new Date().toISOString();
+
+    writeDb.prepare(`
+      INSERT INTO digests (id, label, brief, stats_scraped, stats_kept, stats_dropped, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      input.label,
+      input.brief,
+      input.stats_scraped ?? 0,
+      input.stats_kept ?? 0,
+      input.stats_dropped ?? 0,
+      now,
+    );
+
+    return {
+      id,
+      label: input.label,
+      brief: input.brief,
+      stats_scraped: input.stats_scraped ?? 0,
+      stats_kept: input.stats_kept ?? 0,
+      stats_dropped: input.stats_dropped ?? 0,
+      created_at: now,
+      discord_message_id: null,
+      discord_thread_id: null,
+    };
+  } finally {
+    writeDb.close();
+  }
+}
+
+/**
+ * Update a digest's Discord message/thread IDs after posting.
+ */
+export function updateDigestDiscordInfo(
+  digestId: string,
+  discordMessageId: string,
+  discordThreadId: string
+): void {
+  const writeDb = getCCDatabaseWrite();
+  try {
+    writeDb.prepare(
+      'UPDATE digests SET discord_message_id = ?, discord_thread_id = ? WHERE id = ?'
+    ).run(discordMessageId, discordThreadId, digestId);
+  } finally {
+    writeDb.close();
+  }
+}
+
+/**
+ * Update a tweet's summary and optionally assign it to a digest.
+ */
+export function updateTweetSummary(tweetId: string, summary: string, digestId?: string): void {
+  const writeDb = getCCDatabaseWrite();
+  try {
+    if (digestId) {
+      writeDb.prepare(
+        'UPDATE tweets SET summary = ?, digest_id = ? WHERE id = ?'
+      ).run(summary, digestId, tweetId);
+    } else {
+      writeDb.prepare(
+        'UPDATE tweets SET summary = ? WHERE id = ?'
+      ).run(summary, tweetId);
+    }
+  } finally {
+    writeDb.close();
+  }
+}
+
+/**
+ * Get a digest by ID.
+ */
+export function getDigest(id: string): CCDigest | undefined {
+  const db = getCCDatabase();
+  return db.prepare('SELECT * FROM digests WHERE id = ?').get(id) as CCDigest | undefined;
+}
+
+/**
+ * Get all digests, most recent first.
+ */
+export function getDigests(limit = 20): CCDigest[] {
+  const db = getCCDatabase();
+  return db.prepare('SELECT * FROM digests ORDER BY created_at DESC LIMIT ?').all(limit) as CCDigest[];
 }
 
 // --- Garden types ---

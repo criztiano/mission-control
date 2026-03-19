@@ -164,5 +164,23 @@ app.prepare().then(() => {
   server.listen(port, hostname, () => {
     console.log(`> Mission Control ready on http://${hostname}:${port}`)
     console.log(`> WebSocket proxy: /ws → ${gatewayUrl} (token: ${gatewayToken ? 'yes' : 'no'})`)
+
+    // Warm up critical routes to avoid cold-start timeouts on Discord interactions
+    setTimeout(async () => {
+      try {
+        const warmups = [
+          // Warm the full interaction handler path (xfeed rating + DB connections)
+          fetch(`http://localhost:${port}/api/discord/interactions`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ type: 3, data: { custom_id: 'xfeed_fire_warmup', component_type: 2 } }),
+          }),
+          // Warm the xfeed cards endpoint
+          fetch(`http://localhost:${port}/api/xfeed/discord-cards`),
+        ]
+        await Promise.allSettled(warmups)
+        console.log('> Route warmup complete')
+      } catch { /* ignore warmup errors */ }
+    }, 1000)
   })
 })

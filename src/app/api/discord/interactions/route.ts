@@ -1,18 +1,21 @@
 import { NextRequest, NextResponse } from 'next/server';
 import nacl from 'tweetnacl';
 import { logger } from '@/lib/logger';
-import { handleGardenInterest, handleGardenTemporal, handleGardenDismiss } from '@/lib/discord-actions/garden';
-import { getCCDatabase } from '@/lib/cc-db';
-import { buildGardenCardV2, type GardenItem } from '@/lib/discord-cards';
+import { handleGardenPin, handleGardenSnooze, handleGardenDismiss } from '@/lib/discord-actions/garden';
+import { handleXFeedRating, getXFeedTaskModal, handleXFeedTaskModalSubmit } from '@/lib/discord-actions/xfeed';
+import { getCCDatabase, type TweetRating } from '@/lib/cc-db';
+import { buildGardenEmbed, buildGardenButtons, buildTweetCardV2 } from '@/lib/discord-cards';
 
 // Discord interaction types
 const INTERACTION_PING = 1;
 const INTERACTION_MESSAGE_COMPONENT = 3;
+const INTERACTION_MODAL_SUBMIT = 5;
 
 // Discord response types
 const RESPONSE_PONG = 1;
 const RESPONSE_CHANNEL_MESSAGE = 4;
 const RESPONSE_UPDATE_MESSAGE = 7;
+const RESPONSE_MODAL = 9;
 
 /**
  * Verify Discord ed25519 signature.
@@ -35,7 +38,7 @@ function verifySignature(
 
 /**
  * Parse custom_id into domain, action, and item ID.
- * Format: {domain}_{action}_{itemId}  (itemId can contain underscores)
+ * Format: {domain}_{action}_{itemId}
  */
 function parseCustomId(customId: string): { domain: string; action: string; itemId: string } | null {
   const parts = customId.split('_');
@@ -43,34 +46,29 @@ function parseCustomId(customId: string): { domain: string; action: string; item
 
   const domain = parts[0];
   const action = parts[1];
+  // itemId can contain underscores, so rejoin the rest
   const itemId = parts.slice(2).join('_');
 
   return { domain, action, itemId };
 }
 
 /**
- * Route garden interactions to the correct handler.
+ * Handle garden component interactions (Pin, Snooze, Dismiss).
  */
 function handleGardenAction(
   action: string,
   itemId: string
 ): { ephemeralMessage: string; embedUpdate?: Record<string, unknown>; success: boolean } {
-  // Interest actions
-  if (['instrument', 'ingredient', 'idea', 'knowledge'].includes(action)) {
-    return handleGardenInterest(itemId, action);
+  switch (action) {
+    case 'pin':
+      return handleGardenPin(itemId);
+    case 'snooze':
+      return handleGardenSnooze(itemId);
+    case 'dismiss':
+      return handleGardenDismiss(itemId);
+    default:
+      return { success: false, ephemeralMessage: `❌ Unknown garden action: ${action}` };
   }
-
-  // Temporal actions
-  if (['now', 'later', 'ever'].includes(action)) {
-    return handleGardenTemporal(itemId, action);
-  }
-
-  // Dismiss
-  if (action === 'dismiss') {
-    return handleGardenDismiss(itemId);
-  }
-
-  return { success: false, ephemeralMessage: `❌ Unknown garden action: ${action}` };
 }
 
 /**
@@ -88,8 +86,9 @@ export async function POST(request: NextRequest) {
   const rawBody = await request.text();
   const signature = request.headers.get('x-signature-ed25519');
   const timestamp = request.headers.get('x-signature-timestamp');
+  logger.info({ hasSig: !!signature, hasTs: !!timestamp, bodyLen: rawBody.length }, 'Discord interaction received');
 
-  // Verify signature
+  // Verify signature (skip only if no signature headers — for testing)
   if (signature && timestamp) {
     const isValid = verifySignature(rawBody, signature, timestamp, publicKey);
     if (!isValid) {
@@ -109,32 +108,114 @@ export async function POST(request: NextRequest) {
 
   // Type 1: PING — Discord endpoint verification
   if (interactionType === INTERACTION_PING) {
-    logger.info('Discord PING verification successful');
     return NextResponse.json({ type: RESPONSE_PONG });
   }
 
   // Type 3: MESSAGE_COMPONENT — button click
   if (interactionType === INTERACTION_MESSAGE_COMPONENT) {
-    const data = body.data as Record<string, unknown>;
-    const customId = data?.custom_id as string;
-
-    if (!customId) {
-      return NextResponse.json({
-        type: RESPONSE_CHANNEL_MESSAGE,
-        data: { content: '❌ Missing custom_id', flags: 64 },
-      });
-    }
-
+    const data = body.data as Record<string, unknown> | undefined;
+    const customId = (data?.custom_id || body.custom_id) as string;
     const parsed = parseCustomId(customId);
+
     if (!parsed) {
       return NextResponse.json({
         type: RESPONSE_CHANNEL_MESSAGE,
-        data: { content: '❌ Invalid interaction format', flags: 64 },
+        data: { content: '❌ Invalid interaction', flags: 64 },
       });
     }
 
     const { domain, action, itemId } = parsed;
 
+    // Handle X Feed domain
+    if (domain === 'xfeed') {
+      if (action === 'task') {
+        // "Create Task" button — show modal
+        const modal = getXFeedTaskModal(itemId);
+        if (!modal) {
+          return NextResponse.json({
+            type: RESPONSE_CHANNEL_MESSAGE,
+            data: { content: '❌ Tweet not found', flags: 64 },
+          });
+        }
+        return NextResponse.json({
+          type: RESPONSE_MODAL,
+          data: {
+            ...modal,
+            custom_id: `xfeed_taskmodal_${itemId}`,
+          },
+        });
+      }
+
+      // Rating buttons (fire/meh/noise)
+      if (['fire', 'meh', 'noise'].includes(action)) {
+        const result = handleXFeedRating(action as TweetRating, itemId);
+
+        if (!result.success) {
+          return NextResponse.json({
+            type: RESPONSE_CHANNEL_MESSAGE,
+            data: { content: result.ephemeralMessage, flags: 64 },
+          });
+        }
+
+        if (result.updateCard) {
+          // Rebuild the card with updated button states
+          // Use newRating from the handler directly (avoids read-after-write race)
+          const ccDb = getCCDatabase();
+          const tweet = ccDb.prepare('SELECT * FROM tweets WHERE id = ?')
+            .get(itemId) as Record<string, unknown> | undefined;
+
+          if (tweet) {
+            const cctweet = {
+              id: String(tweet.id),
+              title: String(tweet.title || ''),
+              author: String(tweet.author || ''),
+              theme: String(tweet.theme || ''),
+              verdict: String(tweet.verdict || ''),
+              action: String(tweet.action || ''),
+              source: String(tweet.source || ''),
+              tweet_link: String(tweet.tweet_link || ''),
+              digest: String(tweet.digest || ''),
+              content: String(tweet.content || ''),
+              created_at: String(tweet.created_at || ''),
+              scraped_at: String(tweet.scraped_at || ''),
+              pinned: Number(tweet.pinned || 0),
+              media_urls: String(tweet.media_urls || '[]'),
+              triage_status: String(tweet.triage_status || ''),
+              snooze_until: tweet.snooze_until as string | null,
+              rating: null, // ignored — we use newRating below
+              summary: String(tweet.summary || ''),
+              digest_id: (tweet.digest_id as string | null) || null,
+              discord_message_id: (tweet.discord_message_id as string | null) || null,
+              discord_posted_at: (tweet.discord_posted_at as string | null) || null,
+            };
+
+            // Use the rating from the handler, not from DB (avoids race condition)
+            const card = buildTweetCardV2(cctweet, result.newRating);
+
+            return NextResponse.json({
+              type: RESPONSE_UPDATE_MESSAGE,
+              data: {
+                components: [card],
+                flags: 32768,
+              },
+            });
+          }
+        }
+
+        // Fallback: ephemeral message
+        return NextResponse.json({
+          type: RESPONSE_CHANNEL_MESSAGE,
+          data: { content: result.ephemeralMessage, flags: 64 },
+        });
+      }
+
+      return NextResponse.json({
+        type: RESPONSE_CHANNEL_MESSAGE,
+        data: { content: `❌ Unknown xfeed action: ${action}`, flags: 64 },
+      });
+    }
+
+    // Handle Garden domain (existing)
     if (domain === 'garden') {
       const result = handleGardenAction(action, itemId);
 
@@ -145,47 +226,94 @@ export async function POST(request: NextRequest) {
         });
       }
 
-      // Rebuild the card with updated state
-      const ccDb = getCCDatabase();
-      const item = ccDb.prepare('SELECT * FROM garden WHERE id = ?').get(itemId) as Record<string, unknown> | undefined;
+      // If we have an embed update, update the original message
+      if (result.embedUpdate) {
+        const ccDb = getCCDatabase();
+        const item = ccDb.prepare('SELECT * FROM garden WHERE id = ?').get(itemId) as Record<string, unknown> | undefined;
 
-      if (item) {
-        const gardenItem: GardenItem = {
-          id: String(item.id),
-          content: String(item.content || ''),
-          type: String(item.type || ''),
-          interest: String(item.interest || ''),
-          temporal: String(item.temporal || ''),
-          tags: String(item.tags || '[]'),
-          note: String(item.note || ''),
-          original_source: item.original_source as string | null,
-          media_urls: String(item.media_urls || '[]'),
-          metadata: String(item.metadata || '{}'),
-          saved_at: String(item.saved_at || ''),
-        };
+        if (item) {
+          const gardenItem = {
+            id: String(item.id),
+            content: String(item.content || ''),
+            type: String(item.type || ''),
+            interest: String(item.interest || ''),
+            temporal: String(item.temporal || ''),
+            tags: String(item.tags || '[]'),
+            note: String(item.note || ''),
+            original_source: item.original_source as string | null,
+            media_urls: String(item.media_urls || '[]'),
+            metadata: String(item.metadata || '{}'),
+            saved_at: String(item.saved_at || ''),
+          };
 
-        const v2Components = buildGardenCardV2(gardenItem);
+          const updatedEmbed = buildGardenEmbed(gardenItem, result.embedUpdate);
+          const buttons = buildGardenButtons(itemId);
 
-        return NextResponse.json({
-          type: RESPONSE_UPDATE_MESSAGE,
-          data: {
-            flags: 32768,
-            components: v2Components,
-          },
-        });
+          return NextResponse.json({
+            type: RESPONSE_UPDATE_MESSAGE,
+            data: {
+              embeds: [updatedEmbed],
+              components: buttons,
+            },
+          });
+        }
       }
 
-      // Fallback: ephemeral only
+      // Fallback: just send ephemeral confirmation
       return NextResponse.json({
         type: RESPONSE_CHANNEL_MESSAGE,
         data: { content: result.ephemeralMessage, flags: 64 },
       });
     }
 
-    // Unknown domain
     return NextResponse.json({
       type: RESPONSE_CHANNEL_MESSAGE,
       data: { content: `❌ Unknown domain: ${domain}`, flags: 64 },
+    });
+  }
+
+  // Type 5: MODAL_SUBMIT
+  if (interactionType === INTERACTION_MODAL_SUBMIT) {
+    const modalData = body.data as Record<string, unknown> | undefined;
+    const customId = (modalData?.custom_id || body.custom_id) as string;
+    const parsed = parseCustomId(customId);
+
+    if (parsed?.domain === 'xfeed' && parsed?.action === 'taskmodal') {
+      const tweetId = parsed.itemId;
+      const components = (body.data as Record<string, unknown>)?.components as Array<{
+        components: Array<{ custom_id: string; value: string }>;
+      }> | undefined;
+
+      let title = '';
+      let description = '';
+
+      if (components) {
+        for (const row of components) {
+          for (const comp of row.components) {
+            if (comp.custom_id === 'xfeed_task_title') title = comp.value || '';
+            if (comp.custom_id === 'xfeed_task_description') description = comp.value || '';
+          }
+        }
+      }
+
+      if (!title.trim()) {
+        return NextResponse.json({
+          type: RESPONSE_CHANNEL_MESSAGE,
+          data: { content: '❌ Task title is required', flags: 64 },
+        });
+      }
+
+      const result = handleXFeedTaskModalSubmit(tweetId, title, description);
+
+      return NextResponse.json({
+        type: RESPONSE_CHANNEL_MESSAGE,
+        data: { content: result.ephemeralMessage, flags: 64 },
+      });
+    }
+
+    return NextResponse.json({
+      type: RESPONSE_CHANNEL_MESSAGE,
+      data: { content: '❌ Unknown modal submission', flags: 64 },
     });
   }
 
