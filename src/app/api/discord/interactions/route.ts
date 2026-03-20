@@ -148,8 +148,8 @@ export async function POST(request: NextRequest) {
         });
       }
 
-      // Rating buttons (fire/meh/noise)
-      if (['fire', 'meh', 'noise'].includes(action)) {
+      // Rating buttons (fire/noise — meh removed, no-rating = implicit neutral)
+      if (['fire', 'noise'].includes(action)) {
         const result = handleXFeedRating(action as TweetRating, itemId);
 
         if (!result.success) {

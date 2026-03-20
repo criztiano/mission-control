@@ -341,7 +341,6 @@ export function buildTweetCardV2(
 
   // Button styles based on current rating
   const fireStyle: 1 | 2 = currentRating === 'fire' ? 1 : 2;
-  const mehStyle: 1 | 2 = currentRating === 'meh' ? 1 : 2;
   const noiseStyle: 1 | 2 = currentRating === 'noise' ? 1 : 2;
 
   const components: V2Container['components'] = [
@@ -367,13 +366,6 @@ export function buildTweetCardV2(
           label: '',
           custom_id: `xfeed_fire_${tweet.id}`,
           emoji: { name: '🔥' },
-        },
-        {
-          type: 2,
-          style: mehStyle,
-          label: '',
-          custom_id: `xfeed_meh_${tweet.id}`,
-          emoji: { name: '😐' },
         },
         {
           type: 2,

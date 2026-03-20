@@ -53,9 +53,8 @@ export function handleXFeedRating(
     logger.info({ tweetId, rating }, 'Tweet rated via Discord');
   }
 
-  const emojiMap: Record<TweetRating, string> = {
+  const emojiMap: Record<string, string> = {
     fire: '🔥',
-    meh: '😐',
     noise: '🗑️',
   };
 
