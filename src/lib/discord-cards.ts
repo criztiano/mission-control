@@ -308,7 +308,8 @@ interface V2Container {
  */
 export function buildTweetCardV2(
   tweet: CCTweet,
-  currentRating?: TweetRating | null
+  currentRating?: TweetRating | null,
+  currentHighlight?: boolean
 ): V2Container {
   const author = tweet.author || 'Unknown';
   const theme = tweet.theme || '';
@@ -394,6 +395,25 @@ export function buildTweetCardV2(
           label: 'Act',
           custom_id: `xfeed_task_${tweet.id}`,
           emoji: { name: '📋' },
+        },
+      ],
+    },
+    {
+      type: 1, // Second Action Row — Uze signals
+      components: [
+        {
+          type: 2,
+          style: currentHighlight ? 1 : 2, // Primary if highlighted, Secondary if not
+          label: 'Highlight',
+          custom_id: `xfeed_highlight_${tweet.id}`,
+          emoji: { name: '⭐' },
+        },
+        {
+          type: 2,
+          style: 2, // Secondary — opens modal for note
+          label: 'Highlight + Note',
+          custom_id: `xfeed_highlightnote_${tweet.id}`,
+          emoji: { name: '✏️' },
         },
       ],
     },

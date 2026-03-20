@@ -10,9 +10,17 @@ interface XFeedActionResult {
   newRating?: TweetRating | null;
 }
 
+interface XFeedHighlightResult {
+  success: boolean;
+  ephemeralMessage: string;
+  updateCard?: boolean;
+  highlighted: boolean;
+}
+
 interface XFeedModalResult {
   success: boolean;
   ephemeralMessage: string;
+  updateCard?: boolean;
 }
 
 /**
@@ -163,5 +171,113 @@ export function handleXFeedTaskModalSubmit(
   return {
     success: true,
     ephemeralMessage: '✅ Task created — Cseno will route it',
+  };
+}
+
+/**
+ * Handle highlight button — toggle highlight on a tweet.
+ * Signals Uze to cover this topic (cover post or quote tweet, Uze decides).
+ */
+export function handleXFeedHighlight(
+  tweetId: string
+): XFeedHighlightResult {
+  const db = getCCDatabase();
+  const tweet = db.prepare('SELECT * FROM tweets WHERE id = ?').get(tweetId) as Record<string, unknown> | undefined;
+  if (!tweet) {
+    return { success: false, ephemeralMessage: '❌ Tweet not found.', highlighted: false };
+  }
+
+  const currentHighlight = Number(tweet.highlighted || 0);
+  const newHighlight = currentHighlight ? 0 : 1;
+
+  const writeDb = getCCDatabaseWrite();
+  try {
+    writeDb.prepare('UPDATE tweets SET highlighted = ? WHERE id = ?').run(newHighlight, tweetId);
+    logger.info({ tweetId, highlighted: newHighlight }, 'Tweet highlight toggled via Discord');
+  } finally {
+    writeDb.close();
+  }
+
+  const message = newHighlight
+    ? '⭐ Highlighted for Uze — he\'ll decide to cover or quote'
+    : 'Highlight removed';
+
+  return {
+    success: true,
+    ephemeralMessage: message,
+    updateCard: true,
+    highlighted: !!newHighlight,
+  };
+}
+
+/**
+ * Build modal for "Highlight + Note" — lets Cri add direction for Uze.
+ */
+export function getXFeedHighlightNoteModal(tweetId: string): {
+  title: string;
+  components: Array<{
+    type: number;
+    components: Array<{
+      type: number;
+      custom_id: string;
+      label: string;
+      style: number;
+      value?: string;
+      placeholder?: string;
+      required?: boolean;
+      max_length?: number;
+    }>;
+  }>;
+} | null {
+  const db = getCCDatabase();
+  const tweet = db.prepare('SELECT * FROM tweets WHERE id = ?').get(tweetId) as Record<string, unknown> | undefined;
+  if (!tweet) return null;
+
+  return {
+    title: 'Highlight + Note for Uze',
+    components: [
+      {
+        type: 1,
+        components: [
+          {
+            type: 4, // TextInput
+            custom_id: 'xfeed_highlight_note',
+            label: 'Note for Uze',
+            style: 2, // Paragraph
+            placeholder: 'e.g. "focus on the AI angle", "quote tweet with our take on this", "cover but from crypto perspective"',
+            required: false,
+            max_length: 500,
+          },
+        ],
+      },
+    ],
+  };
+}
+
+/**
+ * Handle "Highlight + Note" modal submit.
+ */
+export function handleXFeedHighlightNoteSubmit(
+  tweetId: string,
+  note: string
+): XFeedModalResult {
+  const db = getCCDatabase();
+  const tweet = db.prepare('SELECT * FROM tweets WHERE id = ?').get(tweetId) as Record<string, unknown> | undefined;
+  if (!tweet) {
+    return { success: false, ephemeralMessage: '❌ Tweet not found.' };
+  }
+
+  const writeDb = getCCDatabaseWrite();
+  try {
+    writeDb.prepare('UPDATE tweets SET highlighted = 1, highlight_note = ? WHERE id = ?').run(note || '', tweetId);
+    logger.info({ tweetId, note: note?.slice(0, 50) }, 'Tweet highlighted with note via Discord');
+  } finally {
+    writeDb.close();
+  }
+
+  return {
+    success: true,
+    ephemeralMessage: `⭐✏️ Highlighted with note${note ? `: "${note.slice(0, 60)}..."` : ''}`,
+    updateCard: true,
   };
 }
