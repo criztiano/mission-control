@@ -42,7 +42,7 @@ export async function GET(
       return NextResponse.json({ error: 'Agent not found' }, { status: 404 })
     }
 
-    const workspace = getAgentWorkspace(agentId)
+    const workspace = await getAgentWorkspace(agentId)
     if (!workspace) {
       return NextResponse.json({ error: 'No workspace configured' }, { status: 404 })
     }
@@ -103,7 +103,7 @@ export async function PUT(
       return NextResponse.json({ error: 'Agent not found' }, { status: 404 })
     }
 
-    const workspace = getAgentWorkspace(agentId)
+    const workspace = await getAgentWorkspace(agentId)
     if (!workspace) {
       return NextResponse.json({ error: 'No workspace configured' }, { status: 404 })
     }

@@ -1,6 +1,9 @@
 import { createHmac } from 'crypto'
 import { eventBus, type ServerEvent } from './event-bus'
 import { logger } from './logger'
+import { db } from '@/db/client'
+import { webhooks as webhooksTable, webhookDeliveries } from '@/db/schema'
+import { eq, sql } from 'drizzle-orm'
 
 interface Webhook {
   id: number
@@ -8,15 +11,15 @@ interface Webhook {
   url: string
   secret: string | null
   events: string // JSON array
-  enabled: number
+  enabled: number | boolean
 }
 
 // Map event bus events to webhook event types
 const EVENT_MAP: Record<string, string> = {
-  'activity.created': 'activity',         // Dynamically becomes activity.<type>
-  'notification.created': 'notification',  // Dynamically becomes notification.<type>
+  'activity.created': 'activity',
+  'notification.created': 'notification',
   'agent.status_changed': 'agent.status_change',
-  'audit.security': 'security',           // Dynamically becomes security.<action>
+  'audit.security': 'security',
   'task.created': 'activity.task_created',
   'task.updated': 'activity.task_updated',
   'task.deleted': 'activity.task_deleted',
@@ -31,7 +34,6 @@ export function initWebhookListener() {
     const mapping = EVENT_MAP[event.type]
     if (!mapping) return
 
-    // Build the specific webhook event type
     let webhookEventType: string
     if (mapping === 'activity' && event.data?.type) {
       webhookEventType = `activity.${event.data.type}`
@@ -43,7 +45,6 @@ export function initWebhookListener() {
       webhookEventType = mapping
     }
 
-    // Also fire agent.error for error status specifically
     const isAgentError = event.type === 'agent.status_changed' && event.data?.status === 'error'
 
     fireWebhooksAsync(webhookEventType, event.data).catch((err) => {
@@ -70,14 +71,10 @@ export function fireWebhooks(eventType: string, payload: Record<string, any>) {
 async function fireWebhooksAsync(eventType: string, payload: Record<string, any>) {
   let webhooks: Webhook[]
   try {
-    // Lazy import to avoid circular dependency
-    const { getDatabase } = await import('./db')
-    const db = getDatabase()
-    webhooks = db.prepare(
-      'SELECT * FROM webhooks WHERE enabled = 1'
-    ).all() as Webhook[]
+    const rows = await db.select().from(webhooksTable).where(eq(webhooksTable.enabled, true))
+    webhooks = rows as Webhook[]
   } catch {
-    return // DB not ready or table doesn't exist yet
+    return // DB not ready
   }
 
   if (webhooks.length === 0) return
@@ -113,7 +110,6 @@ async function deliverWebhook(
     'X-MC-Event': eventType,
   }
 
-  // HMAC signature if secret is configured
   if (webhook.secret) {
     const sig = createHmac('sha256', webhook.secret).update(body).digest('hex')
     headers['X-MC-Signature'] = `sha256=${sig}`
@@ -147,36 +143,34 @@ async function deliverWebhook(
 
   const durationMs = Date.now() - start
 
-  // Log delivery attempt
+  // Log delivery attempt (best-effort)
   try {
-    const { getDatabase } = await import('./db')
-    const db = getDatabase()
-    db.prepare(`
-      INSERT INTO webhook_deliveries (webhook_id, event_type, payload, status_code, response_body, error, duration_ms)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      webhook.id,
-      eventType,
-      body,
-      statusCode,
-      responseBody,
+    await db.insert(webhookDeliveries).values({
+      webhook_id: webhook.id,
+      event_type: eventType,
+      payload: body,
+      status_code: statusCode,
+      response_body: responseBody,
       error,
-      durationMs
-    )
+      duration_ms: durationMs,
+      created_at: Math.floor(Date.now() / 1000),
+    })
 
-    // Update webhook last_fired
-    db.prepare(`
-      UPDATE webhooks SET last_fired_at = unixepoch(), last_status = ?, updated_at = unixepoch()
-      WHERE id = ?
-    `).run(statusCode ?? -1, webhook.id)
+    await db.update(webhooksTable)
+      .set({
+        last_fired_at: Math.floor(Date.now() / 1000),
+        last_status: statusCode ?? -1,
+        updated_at: Math.floor(Date.now() / 1000),
+      })
+      .where(eq(webhooksTable.id, webhook.id))
 
     // Prune old deliveries (keep last 200 per webhook)
-    db.prepare(`
+    await db.execute(sql`
       DELETE FROM webhook_deliveries
-      WHERE webhook_id = ? AND id NOT IN (
-        SELECT id FROM webhook_deliveries WHERE webhook_id = ? ORDER BY created_at DESC LIMIT 200
+      WHERE webhook_id = ${webhook.id} AND id NOT IN (
+        SELECT id FROM webhook_deliveries WHERE webhook_id = ${webhook.id} ORDER BY created_at DESC LIMIT 200
       )
-    `).run(webhook.id, webhook.id)
+    `)
   } catch {
     // Silent - delivery logging is best-effort
   }
