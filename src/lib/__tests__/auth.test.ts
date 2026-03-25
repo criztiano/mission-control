@@ -4,6 +4,13 @@ import { safeCompare, requireRole } from '@/lib/auth'
 // Mock dependencies that auth.ts imports
 vi.mock('@/lib/db', () => ({
   getDatabase: vi.fn(),
+  logAuditEvent: vi.fn().mockResolvedValue(undefined),
+}))
+
+vi.mock('@/db/client', () => ({
+  db: {
+    select: vi.fn(() => ({ from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(() => Promise.resolve([])) })) })) })),
+  },
 }))
 
 vi.mock('@/lib/password', () => ({

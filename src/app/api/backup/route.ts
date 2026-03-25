@@ -2,11 +2,11 @@ import { NextRequest, NextResponse } from 'next/server'
 import { requireRole } from '@/lib/auth'
 import { logAuditEvent } from '@/lib/db'
 import { config, ensureDirExists } from '@/lib/config'
-import { join, dirname } from 'path'
+import { join } from 'path'
 import { readdirSync, statSync, unlinkSync } from 'fs'
 import { heavyLimiter } from '@/lib/rate-limit'
 
-const BACKUP_DIR = join(dirname(config.dbPath), 'backups')
+const BACKUP_DIR = join(config.dataDir, 'backups')
 const MAX_BACKUPS = 10
 
 /**
@@ -20,7 +20,7 @@ export async function GET(request: NextRequest) {
 
   try {
     const files = readdirSync(BACKUP_DIR)
-      .filter(f => f.endsWith('.db'))
+      .filter(f => f.endsWith('.sql') || f.endsWith('.dump'))
       .map(f => {
         const stat = statSync(join(BACKUP_DIR, f))
         return {
@@ -38,17 +38,25 @@ export async function GET(request: NextRequest) {
 }
 
 /**
- * POST /api/backup - Not supported in serverless environment
+ * POST /api/backup - Create a new backup (admin only)
+ * NOTE: SQLite backup not available — database is now Neon Postgres.
+ * Use the Neon dashboard for backups and point-in-time recovery.
  */
 export async function POST(request: NextRequest) {
   const auth = await requireRole(request, 'admin')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
-  return NextResponse.json({ error: 'Backup not supported in serverless environment' }, { status: 501 })
+  return NextResponse.json(
+    {
+      error: 'Backup not available: database is now managed by Neon Postgres. Use the Neon dashboard for backups and point-in-time recovery.',
+      neon_dashboard: 'https://console.neon.tech',
+    },
+    { status: 501 }
+  )
 }
 
 /**
- * DELETE /api/backup - Delete a specific backup (admin only)
+ * DELETE /api/backup?name=<filename> - Delete a specific backup (admin only)
  */
 export async function DELETE(request: NextRequest) {
   const auth = await requireRole(request, 'admin')
@@ -58,7 +66,7 @@ export async function DELETE(request: NextRequest) {
   try { body = await request.json() } catch { return NextResponse.json({ error: 'Request body required' }, { status: 400 }) }
   const name = body.name
 
-  if (!name || !name.endsWith('.db') || name.includes('/') || name.includes('..')) {
+  if (!name || (!name.endsWith('.sql') && !name.endsWith('.dump')) || name.includes('/') || name.includes('..')) {
     return NextResponse.json({ error: 'Invalid backup name' }, { status: 400 })
   }
 
@@ -67,7 +75,7 @@ export async function DELETE(request: NextRequest) {
     unlinkSync(fullPath)
 
     const ipAddress = request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip') || 'unknown'
-    logAuditEvent({
+    await logAuditEvent({
       action: 'backup_delete',
       actor: auth.user.username,
       actor_id: auth.user.id,
