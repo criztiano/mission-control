@@ -227,6 +227,33 @@ export function runCCMigrations(): void {
       }
     }
 
+    // 9. Create plans table
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS plans (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        content TEXT NOT NULL,
+        task_id TEXT,
+        project_id TEXT,
+        author TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'draft',
+        responses TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )
+    `)
+    db.exec('CREATE INDEX IF NOT EXISTS idx_plans_task_id ON plans(task_id)')
+    db.exec('CREATE INDEX IF NOT EXISTS idx_plans_project_id ON plans(project_id)')
+    logger.info('cc-db migration: created plans table')
+
+    // 10. Add plan_id column to issues
+    const issueColsFinal = db.prepare('PRAGMA table_info(issues)').all() as Array<{ name: string }>
+    const hasPlanId = issueColsFinal.some(c => c.name === 'plan_id')
+    if (!hasPlanId) {
+      db.exec(`ALTER TABLE issues ADD COLUMN plan_id TEXT`)
+      logger.info('cc-db migration: added plan_id column to issues')
+    }
+
     logger.info('cc-db migrations complete');
   } finally {
     db.close();
@@ -257,6 +284,7 @@ export interface CCIssue {
   parent_id: string | null;
   notion_id: string;
   plan_path: string | null;
+  plan_id: string | null;
   last_turn_at: string | null;
   seen_at: string | null;
   picked: number;
@@ -276,6 +304,21 @@ export interface CCProject {
   schedule: string;
   repo_url: string;
   local_path: string;
+}
+
+export type PlanStatus = 'draft' | 'review' | 'approved' | 'rejected'
+
+export interface CCPlan {
+  id: string;
+  title: string;
+  content: string;
+  task_id: string | null;
+  project_id: string | null;
+  author: string;
+  status: PlanStatus;
+  responses: string; // JSON blob
+  created_at: string;
+  updated_at: string;
 }
 
 export interface CCComment {
@@ -591,6 +634,7 @@ export function mapIssueToTask(issue: CCIssue & { last_comment_at?: string | nul
     project_id: issue.project_id || '',
     project_title: projectTitle || '',
     plan_path: issue.plan_path || null,
+    plan_id: issue.plan_id || null,
     last_turn_at: issue.last_turn_at ? isoToUnix(issue.last_turn_at) : null,
     seen_at: issue.seen_at ? isoToUnix(issue.seen_at) : null,
     picked: issue.picked ?? 0,

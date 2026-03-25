@@ -146,6 +146,7 @@ export async function POST(request: NextRequest) {
         parent_id: null,
         notion_id: '',
         plan_path: null,
+        plan_id: null,
         last_turn_at: null,
         seen_at: null,
         picked: 0,

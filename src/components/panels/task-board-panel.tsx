@@ -55,6 +55,7 @@ interface Task {
   blocked_by?: string[]
   is_blocked?: boolean
   blocker_details?: Array<{ id: string; title: string; status: string }>
+  plan_id?: string | null
 }
 
 const PRIORITY_ORDER: Record<string, number> = { urgent: 0, high: 1, medium: 2, low: 3 }
@@ -1139,6 +1140,20 @@ function TaskDetailModal({
               compact
             />
           </div>
+
+          {/* Plan link chip */}
+          {task.plan_id && (
+            <div className="mb-4">
+              <a
+                href={`/plans/${task.plan_id}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 rounded-md border border-border bg-surface-1 px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:border-zinc-600 hover:text-foreground"
+              >
+                📋 View Plan
+              </a>
+            </div>
+          )}
 
           {/* Turns Timeline */}
           <div className="border-t border-border pt-4">
