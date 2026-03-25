@@ -2,10 +2,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import nacl from 'tweetnacl';
 import { logger } from '@/lib/logger';
 import { handleGardenPin, handleGardenSnooze, handleGardenDismiss } from '@/lib/discord-actions/garden';
-import { handleXFeedRating, getXFeedTaskModal, handleXFeedTaskModalSubmit } from '@/lib/discord-actions/xfeed';
+import { handleXFeedRating, getXFeedTaskModal, handleXFeedTaskModalSubmit, handleXFeedHighlight, getXFeedHighlightNoteModal, handleXFeedHighlightNoteSubmit } from '@/lib/discord-actions/xfeed';
 import { type TweetRating } from '@/lib/cc-db';
 import { db as drizzleDb } from '@/db/client';
-import { tweets as tweetsTable, garden as gardenTable } from '@/db/schema';
+import { tweets as tweetsTable, tweetRatings as tweetRatingsTable, garden as gardenTable } from '@/db/schema';
 import { eq } from 'drizzle-orm';
 import { buildGardenEmbed, buildGardenButtons, buildTweetCardV2 } from '@/lib/discord-cards';
 
@@ -192,7 +192,8 @@ export async function POST(request: NextRequest) {
             };
 
             // Use the rating from the handler, not from DB (avoids race condition)
-            const card = buildTweetCardV2(cctweet, result.newRating);
+            const currentHighlight = Boolean(tweet.highlighted);
+            const card = buildTweetCardV2(cctweet, result.newRating, currentHighlight);
 
             return NextResponse.json({
               type: RESPONSE_UPDATE_MESSAGE,
@@ -208,6 +209,86 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({
           type: RESPONSE_CHANNEL_MESSAGE,
           data: { content: result.ephemeralMessage, flags: 64 },
+        });
+      }
+
+      // Highlight button — toggle highlight for Uze
+      if (action === 'highlight') {
+        const result = await handleXFeedHighlight(itemId);
+
+        if (!result.success) {
+          return NextResponse.json({
+            type: RESPONSE_CHANNEL_MESSAGE,
+            data: { content: result.ephemeralMessage, flags: 64 },
+          });
+        }
+
+        if (result.updateCard) {
+          const tweetRows = await drizzleDb.select().from(tweetsTable).where(eq(tweetsTable.id, itemId)).limit(1);
+          const tweet = tweetRows[0] as Record<string, unknown> | undefined;
+
+          if (tweet) {
+            const cctweet = {
+              id: String(tweet.id),
+              title: String(tweet.title || ''),
+              author: String(tweet.author || ''),
+              theme: String(tweet.theme || ''),
+              verdict: String(tweet.verdict || ''),
+              action: String(tweet.action || ''),
+              source: String(tweet.source || ''),
+              tweet_link: String(tweet.tweet_link || ''),
+              digest: String(tweet.digest || ''),
+              content: String(tweet.content || ''),
+              created_at: String(tweet.created_at || ''),
+              scraped_at: String(tweet.scraped_at || ''),
+              pinned: Boolean(tweet.pinned),
+              media_urls: String(tweet.media_urls || '[]'),
+              triage_status: String(tweet.triage_status || ''),
+              snooze_until: tweet.snooze_until as string | null,
+              rating: null,
+              summary: String(tweet.summary || ''),
+              digest_id: (tweet.digest_id as string | null) || null,
+              discord_message_id: (tweet.discord_message_id as string | null) || null,
+              discord_posted_at: (tweet.discord_posted_at as string | null) || null,
+            };
+
+            // Get current rating from tweetRatings table for card rebuild
+            const ratingRows = await drizzleDb.select().from(tweetRatingsTable).where(eq(tweetRatingsTable.tweet_id, itemId)).limit(1);
+            const currentRating = (ratingRows[0]?.rating ?? null) as TweetRating | null;
+
+            const card = buildTweetCardV2(cctweet, currentRating, result.highlighted);
+
+            return NextResponse.json({
+              type: RESPONSE_UPDATE_MESSAGE,
+              data: {
+                components: [card],
+                flags: 32768,
+              },
+            });
+          }
+        }
+
+        return NextResponse.json({
+          type: RESPONSE_CHANNEL_MESSAGE,
+          data: { content: result.ephemeralMessage, flags: 64 },
+        });
+      }
+
+      // Highlight + Note button — show modal
+      if (action === 'highlightnote') {
+        const modal = await getXFeedHighlightNoteModal(itemId);
+        if (!modal) {
+          return NextResponse.json({
+            type: RESPONSE_CHANNEL_MESSAGE,
+            data: { content: '❌ Tweet not found', flags: 64 },
+          });
+        }
+        return NextResponse.json({
+          type: RESPONSE_MODAL,
+          data: {
+            ...modal,
+            custom_id: `xfeed_highlightnotemodal_${itemId}`,
+          },
         });
       }
 
@@ -306,6 +387,30 @@ export async function POST(request: NextRequest) {
       }
 
       const result = await handleXFeedTaskModalSubmit(tweetId, title, description);
+
+      return NextResponse.json({
+        type: RESPONSE_CHANNEL_MESSAGE,
+        data: { content: result.ephemeralMessage, flags: 64 },
+      });
+    }
+
+    // Highlight + Note modal submit
+    if (parsed?.domain === 'xfeed' && parsed?.action === 'highlightnotemodal') {
+      const tweetId = parsed.itemId;
+      const components = (body.data as Record<string, unknown>)?.components as Array<{
+        components: Array<{ custom_id: string; value: string }>;
+      }> | undefined;
+
+      let note = '';
+      if (components) {
+        for (const row of components) {
+          for (const comp of row.components) {
+            if (comp.custom_id === 'xfeed_highlight_note') note = comp.value || '';
+          }
+        }
+      }
+
+      const result = await handleXFeedHighlightNoteSubmit(tweetId, note);
 
       return NextResponse.json({
         type: RESPONSE_CHANNEL_MESSAGE,

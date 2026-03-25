@@ -149,7 +149,8 @@ export async function POST(request: NextRequest) {
         discord_posted_at: tweet.discord_posted_at as string | null,
       };
 
-      const messageId = await postTweetCard(cctweet, threadId, cctweet.rating);
+      const highlighted = Boolean(tweet.highlighted);
+      const messageId = await postTweetCard(cctweet, threadId, cctweet.rating, highlighted);
 
       if (messageId) {
         const now = new Date().toISOString();
