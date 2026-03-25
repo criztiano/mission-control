@@ -1,24 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getDatabase, db_helpers } from '@/lib/db'
+import { db } from '@/db/client'
+import { db_helpers } from '@/lib/db'
+import { workflowTemplates } from '@/db/schema'
+import { eq, sql } from 'drizzle-orm'
 import { requireRole } from '@/lib/auth'
 import { validateBody, createWorkflowSchema } from '@/lib/validation'
 import { mutationLimiter } from '@/lib/rate-limit'
-
-export interface WorkflowTemplate {
-  id: number
-  name: string
-  description: string | null
-  model: string
-  task_prompt: string
-  timeout_seconds: number
-  agent_role: string | null
-  tags: string | null
-  created_by: string
-  created_at: number
-  updated_at: number
-  last_used_at: number | null
-  use_count: number
-}
 
 /**
  * GET /api/workflows - List all workflow templates
@@ -28,14 +15,8 @@ export async function GET(request: NextRequest) {
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   try {
-    const db = getDatabase()
-    const templates = db.prepare('SELECT * FROM workflow_templates ORDER BY use_count DESC, updated_at DESC').all() as WorkflowTemplate[]
-
-    const parsed = templates.map(t => ({
-      ...t,
-      tags: t.tags ? JSON.parse(t.tags) : [],
-    }))
-
+    const templates = await db.select().from(workflowTemplates).orderBy(sql`use_count DESC, updated_at DESC`)
+    const parsed = templates.map(t => ({ ...t, tags: t.tags ? JSON.parse(t.tags) : [] }))
     return NextResponse.json({ templates: parsed })
   } catch (error) {
     console.error('GET /api/workflows error:', error)
@@ -58,21 +39,26 @@ export async function POST(request: NextRequest) {
     if ('error' in result) return result.error
     const { name, description, model, task_prompt, timeout_seconds, agent_role, tags } = result.data
 
-    const db = getDatabase()
     const user = auth.user
 
-    const insertResult = db.prepare(`
-      INSERT INTO workflow_templates (name, description, model, task_prompt, timeout_seconds, agent_role, tags, created_by)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(name, description || null, model, task_prompt, timeout_seconds, agent_role || null, JSON.stringify(tags), user?.username || 'system')
+    const insertResult = await db.insert(workflowTemplates).values({
+      name,
+      description: description || null,
+      model,
+      task_prompt,
+      timeout_seconds,
+      agent_role: agent_role || null,
+      tags: JSON.stringify(tags),
+      created_by: user?.username || 'system',
+    }).returning({ id: workflowTemplates.id })
 
-    const template = db.prepare('SELECT * FROM workflow_templates WHERE id = ?').get(insertResult.lastInsertRowid) as WorkflowTemplate
+    const templateId = insertResult[0].id
+    await db_helpers.logActivity('workflow_created', 'workflow', templateId, user?.username || 'system', `Created workflow template: ${name}`)
 
-    db_helpers.logActivity('workflow_created', 'workflow', Number(insertResult.lastInsertRowid), user?.username || 'system', `Created workflow template: ${name}`)
+    const templateRows = await db.select().from(workflowTemplates).where(eq(workflowTemplates.id, templateId)).limit(1)
+    const template = templateRows[0]
 
-    return NextResponse.json({
-      template: { ...template, tags: template.tags ? JSON.parse(template.tags) : [] }
-    }, { status: 201 })
+    return NextResponse.json({ template: { ...template, tags: template.tags ? JSON.parse(template.tags) : [] } }, { status: 201 })
   } catch (error) {
     console.error('POST /api/workflows error:', error)
     return NextResponse.json({ error: 'Failed to create template' }, { status: 500 })
@@ -87,44 +73,34 @@ export async function PUT(request: NextRequest) {
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   try {
-    const db = getDatabase()
     const body = await request.json()
     const { id, ...updates } = body
 
-    if (!id) {
-      return NextResponse.json({ error: 'Template ID is required' }, { status: 400 })
+    if (!id) return NextResponse.json({ error: 'Template ID is required' }, { status: 400 })
+
+    const existingRows = await db.select().from(workflowTemplates).where(eq(workflowTemplates.id, id)).limit(1)
+    if (!existingRows[0]) return NextResponse.json({ error: 'Template not found' }, { status: 404 })
+
+    const now = Math.floor(Date.now() / 1000)
+    const updateData: any = { updated_at: now }
+
+    if (updates.name !== undefined) updateData.name = updates.name
+    if (updates.description !== undefined) updateData.description = updates.description
+    if (updates.model !== undefined) updateData.model = updates.model
+    if (updates.task_prompt !== undefined) updateData.task_prompt = updates.task_prompt
+    if (updates.timeout_seconds !== undefined) updateData.timeout_seconds = updates.timeout_seconds
+    if (updates.agent_role !== undefined) updateData.agent_role = updates.agent_role
+    if (updates.tags !== undefined) updateData.tags = JSON.stringify(updates.tags)
+
+    if (Object.keys(updateData).length === 1) {
+      updateData.use_count = sql`${workflowTemplates.use_count} + 1`
+      updateData.last_used_at = now
     }
 
-    const existing = db.prepare('SELECT * FROM workflow_templates WHERE id = ?').get(id) as WorkflowTemplate
-    if (!existing) {
-      return NextResponse.json({ error: 'Template not found' }, { status: 404 })
-    }
+    await db.update(workflowTemplates).set(updateData).where(eq(workflowTemplates.id, id))
 
-    const fields: string[] = []
-    const params: any[] = []
-
-    if (updates.name !== undefined) { fields.push('name = ?'); params.push(updates.name) }
-    if (updates.description !== undefined) { fields.push('description = ?'); params.push(updates.description) }
-    if (updates.model !== undefined) { fields.push('model = ?'); params.push(updates.model) }
-    if (updates.task_prompt !== undefined) { fields.push('task_prompt = ?'); params.push(updates.task_prompt) }
-    if (updates.timeout_seconds !== undefined) { fields.push('timeout_seconds = ?'); params.push(updates.timeout_seconds) }
-    if (updates.agent_role !== undefined) { fields.push('agent_role = ?'); params.push(updates.agent_role) }
-    if (updates.tags !== undefined) { fields.push('tags = ?'); params.push(JSON.stringify(updates.tags)) }
-
-    // No explicit field updates = usage tracking call (from orchestration bar)
-    if (fields.length === 0) {
-      fields.push('use_count = use_count + 1')
-      fields.push('last_used_at = ?')
-      params.push(Math.floor(Date.now() / 1000))
-    }
-
-    fields.push('updated_at = ?')
-    params.push(Math.floor(Date.now() / 1000))
-    params.push(id)
-
-    db.prepare(`UPDATE workflow_templates SET ${fields.join(', ')} WHERE id = ?`).run(...params)
-
-    const updated = db.prepare('SELECT * FROM workflow_templates WHERE id = ?').get(id) as WorkflowTemplate
+    const updatedRows = await db.select().from(workflowTemplates).where(eq(workflowTemplates.id, id)).limit(1)
+    const updated = updatedRows[0]
     return NextResponse.json({ template: { ...updated, tags: updated.tags ? JSON.parse(updated.tags) : [] } })
   } catch (error) {
     console.error('PUT /api/workflows error:', error)
@@ -140,16 +116,12 @@ export async function DELETE(request: NextRequest) {
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   try {
-    const db = getDatabase()
     let body: any
     try { body = await request.json() } catch { return NextResponse.json({ error: 'Request body required' }, { status: 400 }) }
     const id = body.id
+    if (!id) return NextResponse.json({ error: 'Template ID is required' }, { status: 400 })
 
-    if (!id) {
-      return NextResponse.json({ error: 'Template ID is required' }, { status: 400 })
-    }
-
-    db.prepare('DELETE FROM workflow_templates WHERE id = ?').run(parseInt(id))
+    await db.delete(workflowTemplates).where(eq(workflowTemplates.id, parseInt(id)))
     return NextResponse.json({ success: true })
   } catch (error) {
     console.error('DELETE /api/workflows error:', error)
