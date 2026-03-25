@@ -97,7 +97,7 @@ export async function POST(request: Request) {
       updated_at: now,
     }).where(eq(users.id, row.id))
 
-    const { token, expiresAt } = createSession(row.id, ipAddress, userAgent)
+    const { token, expiresAt } = await createSession(row.id, ipAddress, userAgent)
 
     logAuditEvent({ action: 'login_google', actor: row.username, actor_id: row.id, ip_address: ipAddress, user_agent: userAgent })
 

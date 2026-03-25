@@ -118,7 +118,7 @@ export async function POST(request: NextRequest) {
   } else {
     const username = await ensureUniqueUsername(makeUsernameFromEmail(email))
     const randomPwd = randomBytes(24).toString('hex')
-    const created = createUser(username, randomPwd, displayName, role, {
+    const created = await createUser(username, randomPwd, displayName, role || 'operator', {
       provider: 'google',
       provider_user_id: providerUserId,
       email,
@@ -127,7 +127,7 @@ export async function POST(request: NextRequest) {
       approved_by: admin.username,
       approved_at: now,
     })
-    userId = created.id
+    userId = (created as any).id
   }
 
   await db.update(accessRequests).set({

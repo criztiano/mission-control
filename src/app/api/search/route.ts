@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { db } from '@/db/client'
+import { sql } from 'drizzle-orm'
 import { requireRole } from '@/lib/auth'
-import { getDatabase } from '@/lib/db'
 import { heavyLimiter } from '@/lib/rate-limit'
 
 interface SearchResult {
@@ -15,7 +16,6 @@ interface SearchResult {
 
 /**
  * GET /api/search?q=<query>&type=<optional type filter>&limit=<optional>
- * Global search across all MC entities.
  */
 export async function GET(request: NextRequest) {
   const auth = await requireRole(request, 'viewer')
@@ -33,169 +33,147 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: 'Query must be at least 2 characters' }, { status: 400 })
   }
 
-  const db = getDatabase()
   const likeQ = `%${query}%`
   const results: SearchResult[] = []
 
   // Search tasks
   if (!typeFilter || typeFilter === 'task') {
     try {
-      const tasks = db.prepare(`
+      const rows = await db.execute(sql`
         SELECT id, title, description, status, assigned_to, created_at
-        FROM tasks WHERE title LIKE ? OR description LIKE ? OR assigned_to LIKE ?
-        ORDER BY created_at DESC LIMIT ?
-      `).all(likeQ, likeQ, likeQ, limit) as any[]
-      for (const t of tasks) {
+        FROM tasks WHERE title ILIKE ${likeQ} OR description ILIKE ${likeQ} OR assigned_to ILIKE ${likeQ}
+        ORDER BY created_at DESC LIMIT ${limit}
+      `)
+      for (const t of rows.rows as any[]) {
         results.push({
-          type: 'task',
-          id: t.id,
-          title: t.title,
+          type: 'task', id: t.id, title: t.title,
           subtitle: `${t.status} ${t.assigned_to ? `· ${t.assigned_to}` : ''}`,
           excerpt: truncateMatch(t.description, query),
           created_at: t.created_at,
           relevance: t.title.toLowerCase().includes(query.toLowerCase()) ? 2 : 1,
         })
       }
-    } catch { /* table might not exist */ }
+    } catch {}
   }
 
   // Search agents
   if (!typeFilter || typeFilter === 'agent') {
     try {
-      const agents = db.prepare(`
+      const rows = await db.execute(sql`
         SELECT id, name, role, status, last_activity, created_at
-        FROM agents WHERE name LIKE ? OR role LIKE ? OR last_activity LIKE ?
-        ORDER BY created_at DESC LIMIT ?
-      `).all(likeQ, likeQ, likeQ, limit) as any[]
-      for (const a of agents) {
+        FROM agents WHERE name ILIKE ${likeQ} OR role ILIKE ${likeQ} OR last_activity ILIKE ${likeQ}
+        ORDER BY created_at DESC LIMIT ${limit}
+      `)
+      for (const a of rows.rows as any[]) {
         results.push({
-          type: 'agent',
-          id: a.id,
-          title: a.name,
+          type: 'agent', id: a.id, title: a.name,
           subtitle: `${a.role} · ${a.status}`,
           excerpt: a.last_activity,
           created_at: a.created_at,
           relevance: a.name.toLowerCase().includes(query.toLowerCase()) ? 2 : 1,
         })
       }
-    } catch { /* table might not exist */ }
+    } catch {}
   }
 
   // Search activities
   if (!typeFilter || typeFilter === 'activity') {
     try {
-      const activities = db.prepare(`
+      const rows = await db.execute(sql`
         SELECT id, type, actor, description, created_at
-        FROM activities WHERE description LIKE ? OR actor LIKE ?
-        ORDER BY created_at DESC LIMIT ?
-      `).all(likeQ, likeQ, limit) as any[]
-      for (const a of activities) {
+        FROM activities WHERE description ILIKE ${likeQ} OR actor ILIKE ${likeQ}
+        ORDER BY created_at DESC LIMIT ${limit}
+      `)
+      for (const a of rows.rows as any[]) {
         results.push({
-          type: 'activity',
-          id: a.id,
-          title: a.description,
+          type: 'activity', id: a.id, title: a.description,
           subtitle: `by ${a.actor}`,
-          created_at: a.created_at,
-          relevance: 1,
+          created_at: a.created_at, relevance: 1,
         })
       }
-    } catch { /* table might not exist */ }
+    } catch {}
   }
 
   // Search audit log
   if (!typeFilter || typeFilter === 'audit') {
     try {
-      const audits = db.prepare(`
+      const rows = await db.execute(sql`
         SELECT id, action, actor, detail, created_at
-        FROM audit_log WHERE action LIKE ? OR actor LIKE ? OR detail LIKE ?
-        ORDER BY created_at DESC LIMIT ?
-      `).all(likeQ, likeQ, likeQ, limit) as any[]
-      for (const a of audits) {
+        FROM audit_log WHERE action ILIKE ${likeQ} OR actor ILIKE ${likeQ} OR detail ILIKE ${likeQ}
+        ORDER BY created_at DESC LIMIT ${limit}
+      `)
+      for (const a of rows.rows as any[]) {
         results.push({
-          type: 'audit',
-          id: a.id,
-          title: a.action,
+          type: 'audit', id: a.id, title: a.action,
           subtitle: `by ${a.actor}`,
           excerpt: truncateMatch(a.detail, query),
-          created_at: a.created_at,
-          relevance: 1,
+          created_at: a.created_at, relevance: 1,
         })
       }
-    } catch { /* table might not exist */ }
+    } catch {}
   }
 
   // Search messages
   if (!typeFilter || typeFilter === 'message') {
     try {
-      const messages = db.prepare(`
+      const rows = await db.execute(sql`
         SELECT id, from_agent, to_agent, content, conversation_id, created_at
-        FROM messages WHERE content LIKE ? OR from_agent LIKE ?
-        ORDER BY created_at DESC LIMIT ?
-      `).all(likeQ, likeQ, limit) as any[]
-      for (const m of messages) {
+        FROM messages WHERE content ILIKE ${likeQ} OR from_agent ILIKE ${likeQ}
+        ORDER BY created_at DESC LIMIT ${limit}
+      `)
+      for (const m of rows.rows as any[]) {
         results.push({
-          type: 'message',
-          id: m.id,
+          type: 'message', id: m.id,
           title: `${m.from_agent} → ${m.to_agent || 'all'}`,
           subtitle: m.conversation_id,
           excerpt: truncateMatch(m.content, query),
-          created_at: m.created_at,
-          relevance: 1,
+          created_at: m.created_at, relevance: 1,
         })
       }
-    } catch { /* table might not exist */ }
+    } catch {}
   }
 
   // Search webhooks
   if (!typeFilter || typeFilter === 'webhook') {
     try {
-      const webhooks = db.prepare(`
+      const rows = await db.execute(sql`
         SELECT id, name, url, events, created_at
-        FROM webhooks WHERE name LIKE ? OR url LIKE ?
-        ORDER BY created_at DESC LIMIT ?
-      `).all(likeQ, likeQ, limit) as any[]
-      for (const w of webhooks) {
+        FROM webhooks WHERE name ILIKE ${likeQ} OR url ILIKE ${likeQ}
+        ORDER BY created_at DESC LIMIT ${limit}
+      `)
+      for (const w of rows.rows as any[]) {
         results.push({
-          type: 'webhook',
-          id: w.id,
-          title: w.name,
+          type: 'webhook', id: w.id, title: w.name,
           subtitle: w.url,
           created_at: w.created_at,
           relevance: w.name.toLowerCase().includes(query.toLowerCase()) ? 2 : 1,
         })
       }
-    } catch { /* table might not exist */ }
+    } catch {}
   }
 
   // Search pipelines
   if (!typeFilter || typeFilter === 'pipeline') {
     try {
-      const pipelines = db.prepare(`
+      const rows = await db.execute(sql`
         SELECT id, name, description, created_at
-        FROM workflow_pipelines WHERE name LIKE ? OR description LIKE ?
-        ORDER BY created_at DESC LIMIT ?
-      `).all(likeQ, likeQ, limit) as any[]
-      for (const p of pipelines) {
+        FROM workflow_pipelines WHERE name ILIKE ${likeQ} OR description ILIKE ${likeQ}
+        ORDER BY created_at DESC LIMIT ${limit}
+      `)
+      for (const p of rows.rows as any[]) {
         results.push({
-          type: 'pipeline',
-          id: p.id,
-          title: p.name,
+          type: 'pipeline', id: p.id, title: p.name,
           excerpt: truncateMatch(p.description, query),
           created_at: p.created_at,
           relevance: p.name.toLowerCase().includes(query.toLowerCase()) ? 2 : 1,
         })
       }
-    } catch { /* table might not exist */ }
+    } catch {}
   }
 
-  // Sort by relevance then recency
   results.sort((a, b) => b.relevance - a.relevance || b.created_at - a.created_at)
 
-  return NextResponse.json({
-    query,
-    count: results.length,
-    results: results.slice(0, limit),
-  })
+  return NextResponse.json({ query, count: results.length, results: results.slice(0, limit) })
 }
 
 function truncateMatch(text: string | null, query: string, maxLen = 120): string | undefined {
