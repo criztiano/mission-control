@@ -392,6 +392,7 @@ interface TaskCardData {
   title: string;
   description?: string;
   project?: string;
+  planId?: string | null;
   turn: {
     author: string;
     content: string;
@@ -405,7 +406,6 @@ interface TaskCardData {
 export function buildTaskCard(data: TaskCardData): V2Container {
   const { taskId, title, description, project, turn } = data;
 
-  const descPreview = description ? truncate(description.replace(/[#*`]/g, ''), 200) : '';
   const turnPreview = truncate(turn.content.replace(/[#*`]/g, ''), 200);
   const projectLine = project ? ` · \`${project}\`` : '';
 
@@ -414,22 +414,12 @@ export function buildTaskCard(data: TaskCardData): V2Container {
       type: 10,
       content: `⚡ **${truncate(title, 100)}**${projectLine}`,
     },
-  ];
-
-  if (descPreview) {
-    components.push({
-      type: 10,
-      content: descPreview,
-    });
-  }
-
-  components.push(
     { type: 14, divider: true, spacing: 1 },
     {
       type: 10,
       content: `**${turn.author}:** ${turnPreview}`,
-    }
-  );
+    },
+  ];
 
   // Action row: link buttons (if any) + Dunk / Ask / View
   const actionButtons: Array<V2ActionButton | V2LinkButton> = [];
@@ -445,6 +435,8 @@ export function buildTaskCard(data: TaskCardData): V2Container {
       emoji: link.type === 'pr' ? { name: '🔀' } : link.type === 'diff' ? { name: '📝' } : { name: '🔗' },
     });
   }
+
+  const appUrl = process.env.APP_URL || 'http://localhost:3333';
 
   // Core action buttons
   actionButtons.push(
@@ -462,14 +454,26 @@ export function buildTaskCard(data: TaskCardData): V2Container {
       custom_id: `task_ask_${taskId}`,
       emoji: { name: '❓' },
     },
-    {
+  );
+
+  // View button: plan link if plan exists, otherwise generic tasks view
+  if (data.planId) {
+    actionButtons.push({
+      type: 2,
+      style: 5, // Link
+      label: 'Plan',
+      url: `${appUrl}/plans/${data.planId}`,
+      emoji: { name: '📋' },
+    });
+  } else {
+    actionButtons.push({
       type: 2,
       style: 5, // Link
       label: 'View',
-      url: `http://localhost:3333/tasks/${taskId}`,
-      emoji: { name: '👁️' },
-    }
-  );
+      url: `${appUrl}/?tab=tasks`,
+      emoji: { name: '↗' },
+    });
+  }
 
   components.push({
     type: 1,

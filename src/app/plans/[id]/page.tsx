@@ -220,25 +220,68 @@ export default function PlanPage({ params }: { params: Promise<{ id: string }> }
         })}
       </div>
 
-      {/* Sticky footer — Submit Feedback */}
+      {/* Sticky footer — Approve / Revise / Submit Feedback */}
       <div className="fixed bottom-0 left-0 right-0 border-t border-border bg-card/90 backdrop-blur-sm">
         <div className="mx-auto max-w-3xl px-6 py-3 flex items-center justify-between gap-4">
-          {submitted ? (
+          {plan.status === 'approved' ? (
+            <p className="text-sm text-green-400 font-medium">✅ Plan approved</p>
+          ) : plan.status === 'rejected' ? (
+            <p className="text-sm text-red-400 font-medium">❌ Plan rejected</p>
+          ) : submitted ? (
             <p className="text-sm text-green-400 font-medium">✅ Feedback submitted — thank you!</p>
           ) : (
             <>
-              <p className="text-xs text-muted-foreground">
-                {Object.keys(responses).length > 0
-                  ? `${Object.keys(responses).length} response${Object.keys(responses).length !== 1 ? 's' : ''} ready`
-                  : 'Fill in the interactive components above'}
-              </p>
-              <Button
-                onClick={handleSubmit}
-                disabled={submitting || Object.keys(responses).length === 0}
-                size="sm"
-              >
-                {submitting ? 'Submitting…' : 'Submit Feedback'}
-              </Button>
+              <div className="flex items-center gap-2">
+                {Object.keys(responses).length > 0 && (
+                  <Button
+                    onClick={handleSubmit}
+                    disabled={submitting}
+                    variant="outline"
+                    size="sm"
+                  >
+                    {submitting ? 'Submitting…' : 'Submit Feedback'}
+                  </Button>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  onClick={async () => {
+                    setSubmitting(true)
+                    try {
+                      const res = await fetch(`/api/plans/${id}/approve`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ action: 'revise' }),
+                      })
+                      if (res.ok) setPlan(p => p ? { ...p, status: 'rejected' } : p)
+                    } finally { setSubmitting(false) }
+                  }}
+                  disabled={submitting}
+                  variant="outline"
+                  size="sm"
+                  className="border-red-800 text-red-400 hover:bg-red-900/30"
+                >
+                  🔄 Revise
+                </Button>
+                <Button
+                  onClick={async () => {
+                    setSubmitting(true)
+                    try {
+                      const res = await fetch(`/api/plans/${id}/approve`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ action: 'approve' }),
+                      })
+                      if (res.ok) setPlan(p => p ? { ...p, status: 'approved' } : p)
+                    } finally { setSubmitting(false) }
+                  }}
+                  disabled={submitting}
+                  size="sm"
+                  className="bg-green-700 hover:bg-green-600 text-white"
+                >
+                  ✅ Approve
+                </Button>
+              </div>
             </>
           )}
         </div>

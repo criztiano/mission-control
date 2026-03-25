@@ -24,7 +24,7 @@
     "@tanstack/react-virtual": "^3.13.21",
     "@xyflow/react": "^12.10.0",
     "autoprefixer": "^10.4.20",
-    "better-sqlite3": "^12.6.2",
+    "better-sqlite3": "^12.8.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "eslint": "^9.18.0",

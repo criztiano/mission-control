@@ -97,6 +97,7 @@ export async function POST(
             title: issue.title,
             description: issue.description,
             project: projectName,
+            planId: issue.plan_id,
             turn: {
               author: turnAuthor,
               content: content || '',
