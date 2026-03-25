@@ -40,6 +40,9 @@
     "node_modules",
     "vitest.config.ts",
     "drizzle.config.ts",
-    "scripts"
+    "scripts",
+    "**/*.test.ts",
+    "**/*.test.tsx",
+    "**/__tests__/**"
   ]
 }
