@@ -191,16 +191,16 @@ export function discoverSkills(agentWorkspace: string): Skill[] {
 }
 
 /** Get all skills for a specific agent by ID */
-export function getAgentSkills(agentId: string): Skill[] {
-  const workspace = getAgentWorkspace(agentId)
+export async function getAgentSkills(agentId: string): Promise<Skill[]> {
+  const workspace = await getAgentWorkspace(agentId)
   if (!workspace) return []
 
   return discoverSkills(workspace)
 }
 
 /** Toggle a skill on/off for an agent */
-export function toggleSkill(agentId: string, skillId: string, enabled: boolean): { success: boolean; error?: string } {
-  const workspace = getAgentWorkspace(agentId)
+export async function toggleSkill(agentId: string, skillId: string, enabled: boolean): Promise<{ success: boolean; error?: string }> {
+  const workspace = await getAgentWorkspace(agentId)
   if (!workspace) {
     return { success: false, error: 'Agent workspace not found' }
   }
@@ -265,8 +265,8 @@ export function toggleSkill(agentId: string, skillId: string, enabled: boolean):
 }
 
 /** Get skill content for viewing/editing */
-export function getSkillContent(agentId: string, skillId: string): { content: string; path: string; readOnly: boolean } | { error: string } {
-  const workspace = getAgentWorkspace(agentId)
+export async function getSkillContent(agentId: string, skillId: string): Promise<{ content: string; path: string; readOnly: boolean } | { error: string }> {
+  const workspace = await getAgentWorkspace(agentId)
   if (!workspace) {
     return { error: 'Agent workspace not found' }
   }
@@ -291,8 +291,8 @@ export function getSkillContent(agentId: string, skillId: string): { content: st
 }
 
 /** Save skill content (only for non-npm/extension skills) */
-export function saveSkillContent(agentId: string, skillId: string, content: string): { success: boolean; error?: string } {
-  const workspace = getAgentWorkspace(agentId)
+export async function saveSkillContent(agentId: string, skillId: string, content: string): Promise<{ success: boolean; error?: string }> {
+  const workspace = await getAgentWorkspace(agentId)
   if (!workspace) {
     return { success: false, error: 'Agent workspace not found' }
   }

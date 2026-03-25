@@ -3,13 +3,15 @@ import net from 'node:net'
 import { statSync } from 'node:fs'
 import { runCommand, runOpenClaw, runClawdbot } from '@/lib/command'
 import { config } from '@/lib/config'
-import { getDatabase } from '@/lib/db'
+import { db } from '@/db/client'
+import { agents, tasks, activities, auditLog, notifications, pipelineRuns, webhooks } from '@/db/schema'
+import { eq, sql } from 'drizzle-orm'
 import { getAllGatewaySessions, getAgentLiveStatuses } from '@/lib/sessions'
 import { requireRole } from '@/lib/auth'
 import { MODEL_CATALOG } from '@/lib/models'
 
 export async function GET(request: NextRequest) {
-  const auth = requireRole(request, 'viewer')
+  const auth = await requireRole(request, 'viewer')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   try {
@@ -48,72 +50,55 @@ export async function GET(request: NextRequest) {
   }
 }
 
-/**
- * Aggregate all dashboard data in a single request.
- * Combines system health, DB stats, audit summary, and recent activity.
- */
 async function getDashboardData() {
-  const [system, dbStats] = await Promise.all([
-    getSystemStatus(),
-    getDbStats(),
-  ])
-
+  const [system, dbStats] = await Promise.all([getSystemStatus(), getDbStats()])
   return { ...system, db: dbStats }
 }
 
-function getDbStats() {
+async function getDbStats() {
   try {
-    const db = getDatabase()
     const now = Math.floor(Date.now() / 1000)
     const day = now - 86400
     const week = now - 7 * 86400
 
     // Task breakdown
-    const taskStats = db.prepare(`
-      SELECT status, COUNT(*) as count FROM tasks GROUP BY status
-    `).all() as Array<{ status: string; count: number }>
+    const taskStatsRows = await db.execute(sql`SELECT status, COUNT(*) as count FROM tasks GROUP BY status`)
     const tasksByStatus: Record<string, number> = {}
     let totalTasks = 0
-    for (const row of taskStats) {
-      tasksByStatus[row.status] = row.count
-      totalTasks += row.count
+    for (const row of taskStatsRows.rows as any[]) {
+      tasksByStatus[row.status] = Number(row.count)
+      totalTasks += Number(row.count)
     }
 
     // Agent breakdown
-    const agentStats = db.prepare(`
-      SELECT status, COUNT(*) as count FROM agents GROUP BY status
-    `).all() as Array<{ status: string; count: number }>
+    const agentStatsRows = await db.execute(sql`SELECT status, COUNT(*) as count FROM agents GROUP BY status`)
     const agentsByStatus: Record<string, number> = {}
     let totalAgents = 0
-    for (const row of agentStats) {
-      agentsByStatus[row.status] = row.count
-      totalAgents += row.count
+    for (const row of agentStatsRows.rows as any[]) {
+      agentsByStatus[row.status] = Number(row.count)
+      totalAgents += Number(row.count)
     }
 
-    // Audit events (24h / 7d)
-    const auditDay = (db.prepare('SELECT COUNT(*) as c FROM audit_log WHERE created_at > ?').get(day) as any).c
-    const auditWeek = (db.prepare('SELECT COUNT(*) as c FROM audit_log WHERE created_at > ?').get(week) as any).c
-
-    // Security events (login failures in last 24h)
-    const loginFailures = (db.prepare(
-      "SELECT COUNT(*) as c FROM audit_log WHERE action = 'login_failed' AND created_at > ?"
-    ).get(day) as any).c
+    // Audit events
+    const auditDayRows = await db.execute(sql`SELECT COUNT(*) as c FROM audit_log WHERE created_at > ${day}`)
+    const auditWeekRows = await db.execute(sql`SELECT COUNT(*) as c FROM audit_log WHERE created_at > ${week}`)
+    const loginFailRows = await db.execute(sql`SELECT COUNT(*) as c FROM audit_log WHERE action = 'login_failed' AND created_at > ${day}`)
 
     // Activities (24h)
-    const activityDay = (db.prepare('SELECT COUNT(*) as c FROM activities WHERE created_at > ?').get(day) as any).c
+    const activityDayRows = await db.execute(sql`SELECT COUNT(*) as c FROM activities WHERE created_at > ${day}`)
 
     // Notifications (unread)
-    const unreadNotifs = (db.prepare('SELECT COUNT(*) as c FROM notifications WHERE read_at IS NULL').get() as any).c
+    const unreadNotifsRows = await db.execute(sql`SELECT COUNT(*) as c FROM notifications WHERE read_at IS NULL`)
 
-    // Pipeline runs (active + recent)
+    // Pipeline runs
     let pipelineActive = 0
     let pipelineRecent = 0
     try {
-      pipelineActive = (db.prepare("SELECT COUNT(*) as c FROM pipeline_runs WHERE status = 'running'").get() as any).c
-      pipelineRecent = (db.prepare('SELECT COUNT(*) as c FROM pipeline_runs WHERE created_at > ?').get(day) as any).c
-    } catch {
-      // Pipeline tables may not exist yet
-    }
+      const paRows = await db.execute(sql`SELECT COUNT(*) as c FROM pipeline_runs WHERE status = 'running'`)
+      const prRows = await db.execute(sql`SELECT COUNT(*) as c FROM pipeline_runs WHERE created_at > ${day}`)
+      pipelineActive = Number((paRows.rows[0] as any)?.c || 0)
+      pipelineRecent = Number((prRows.rows[0] as any)?.c || 0)
+    } catch {}
 
     // Latest backup
     let latestBackup: { name: string; size: number; age_hours: number } | null = null
@@ -129,38 +114,29 @@ function getDbStats() {
         })
         .sort((a: any, b: any) => b.mtime - a.mtime)
       if (files.length > 0) {
-        latestBackup = {
-          name: files[0].name,
-          size: files[0].size,
-          age_hours: Math.round((Date.now() - files[0].mtime) / 3600000),
-        }
+        latestBackup = { name: files[0].name, size: files[0].size, age_hours: Math.round((Date.now() - files[0].mtime) / 3600000) }
       }
-    } catch {
-      // No backups dir
-    }
+    } catch {}
 
-    // DB file size
     let dbSizeBytes = 0
-    try {
-      dbSizeBytes = statSync(config.dbPath).size
-    } catch {
-      // ignore
-    }
+    try { dbSizeBytes = statSync(config.dbPath).size } catch {}
 
-    // Webhook configs count
     let webhookCount = 0
     try {
-      webhookCount = (db.prepare('SELECT COUNT(*) as c FROM webhooks').get() as any).c
-    } catch {
-      // table may not exist
-    }
+      const wRows = await db.execute(sql`SELECT COUNT(*) as c FROM webhooks`)
+      webhookCount = Number((wRows.rows[0] as any)?.c || 0)
+    } catch {}
 
     return {
       tasks: { total: totalTasks, byStatus: tasksByStatus },
       agents: { total: totalAgents, byStatus: agentsByStatus },
-      audit: { day: auditDay, week: auditWeek, loginFailures },
-      activities: { day: activityDay },
-      notifications: { unread: unreadNotifs },
+      audit: {
+        day: Number((auditDayRows.rows[0] as any)?.c || 0),
+        week: Number((auditWeekRows.rows[0] as any)?.c || 0),
+        loginFailures: Number((loginFailRows.rows[0] as any)?.c || 0),
+      },
+      activities: { day: Number((activityDayRows.rows[0] as any)?.c || 0) },
+      notifications: { unread: Number((unreadNotifsRows.rows[0] as any)?.c || 0) },
       pipelines: { active: pipelineActive, recentDay: pipelineRecent },
       backup: latestBackup,
       dbSizeBytes,
@@ -183,111 +159,60 @@ async function getSystemStatus() {
   }
 
   try {
-    // System uptime
-    const { stdout: uptimeOutput } = await runCommand('uptime', ['-s'], {
-      timeoutMs: 3000
-    })
+    const { stdout: uptimeOutput } = await runCommand('uptime', ['-s'], { timeoutMs: 3000 })
     const bootTime = new Date(uptimeOutput.trim())
     status.uptime = Date.now() - bootTime.getTime()
-  } catch (error) {
-    console.error('Error getting uptime:', error)
-  }
+  } catch (error) {}
 
   try {
-    // Memory info
-    const { stdout: memOutput } = await runCommand('free', ['-m'], {
-      timeoutMs: 3000
-    })
+    const { stdout: memOutput } = await runCommand('free', ['-m'], { timeoutMs: 3000 })
     const memLines = memOutput.split('\n')
     const memLine = memLines.find(line => line.startsWith('Mem:'))
     if (memLine) {
       const parts = memLine.split(/\s+/)
-      status.memory = {
-        total: parseInt(parts[1]) || 0,
-        used: parseInt(parts[2]) || 0,
-        available: parseInt(parts[6]) || 0
-      }
+      status.memory = { total: parseInt(parts[1]) || 0, used: parseInt(parts[2]) || 0, available: parseInt(parts[6]) || 0 }
     }
-  } catch (error) {
-    console.error('Error getting memory info:', error)
-  }
+  } catch (error) {}
 
   try {
-    // Disk info
-    const { stdout: diskOutput } = await runCommand('df', ['-h', '/'], {
-      timeoutMs: 3000
-    })
+    const { stdout: diskOutput } = await runCommand('df', ['-h', '/'], { timeoutMs: 3000 })
     const lastLine = diskOutput.trim().split('\n').pop() || ''
     const diskParts = lastLine.split(/\s+/)
     if (diskParts.length >= 4) {
-      status.disk = {
-        total: diskParts[1],
-        used: diskParts[2],
-        available: diskParts[3],
-        usage: diskParts[4]
-      }
+      status.disk = { total: diskParts[1], used: diskParts[2], available: diskParts[3], usage: diskParts[4] }
     }
-  } catch (error) {
-    console.error('Error getting disk info:', error)
-  }
+  } catch (error) {}
 
   try {
-    // ClawdBot processes
-    const { stdout: processOutput } = await runCommand(
-      'ps',
-      ['-A', '-o', 'pid,comm,args'],
-      { timeoutMs: 3000 }
-    )
-    const processes = processOutput.split('\n')
+    const { stdout: processOutput } = await runCommand('ps', ['-A', '-o', 'pid,comm,args'], { timeoutMs: 3000 })
+    status.processes = processOutput.split('\n')
       .filter(line => line.trim())
       .filter(line => !line.trim().toLowerCase().startsWith('pid '))
       .map(line => {
         const parts = line.trim().split(/\s+/)
-        return {
-          pid: parts[0],
-          command: parts.slice(2).join(' ')
-        }
+        return { pid: parts[0], command: parts.slice(2).join(' ') }
       })
       .filter((proc) => /clawdbot|openclaw/i.test(proc.command))
-    status.processes = processes
-  } catch (error) {
-    console.error('Error getting process info:', error)
-  }
+  } catch (error) {}
 
   try {
-    // Read sessions directly from agent session stores on disk
     const gatewaySessions = getAllGatewaySessions()
-    status.sessions = {
-      total: gatewaySessions.length,
-      active: gatewaySessions.filter((s) => s.active).length,
-    }
+    status.sessions = { total: gatewaySessions.length, active: gatewaySessions.filter((s) => s.active).length }
 
-    // Sync agent statuses in DB from live session data
     try {
-      const db = getDatabase()
       const liveStatuses = getAgentLiveStatuses()
       const now = Math.floor(Date.now() / 1000)
-      // Match by: exact name, lowercase, or normalized (spaces→hyphens)
-      const updateStmt = db.prepare(
-        `UPDATE agents SET status = ?, last_seen = ?, updated_at = ?
-         WHERE LOWER(name) = LOWER(?)
-            OR LOWER(REPLACE(name, ' ', '-')) = LOWER(?)`
-      )
       for (const [agentName, info] of liveStatuses) {
-        updateStmt.run(
-          info.status,
-          Math.floor(info.lastActivity / 1000),
-          now,
-          agentName,
-          agentName
-        )
+        await db.execute(sql`
+          UPDATE agents SET status = ${info.status}, last_seen = ${Math.floor(info.lastActivity / 1000)}, updated_at = ${now}
+          WHERE LOWER(name) = LOWER(${agentName})
+            OR LOWER(REPLACE(name, ' ', '-')) = LOWER(${agentName})
+        `)
       }
     } catch (dbErr) {
       console.error('Error syncing agent statuses:', dbErr)
     }
-  } catch (error) {
-    console.error('Error reading session stores:', error)
-  }
+  } catch (error) {}
 
   return status
 }
@@ -303,26 +228,18 @@ async function getGatewayStatus() {
   }
 
   try {
-    const { stdout } = await runCommand('ps', ['-A', '-o', 'pid,comm,args'], {
-      timeoutMs: 3000
-    })
-    const match = stdout
-      .split('\n')
-      .find((line) => /clawdbot-gateway|openclaw-gateway|openclaw.*gateway/i.test(line))
+    const { stdout } = await runCommand('ps', ['-A', '-o', 'pid,comm,args'], { timeoutMs: 3000 })
+    const match = stdout.split('\n').find((line) => /clawdbot-gateway|openclaw-gateway|openclaw.*gateway/i.test(line))
     if (match) {
       const parts = match.trim().split(/\s+/)
       gatewayStatus.running = true
       gatewayStatus.pid = parts[0]
     }
-  } catch (error) {
-    // Gateway not running
-  }
+  } catch (error) {}
 
   try {
     gatewayStatus.port_listening = await isPortOpen(config.gatewayHost, config.gatewayPort)
-  } catch (error) {
-    console.error('Error checking port:', error)
-  }
+  } catch (error) {}
 
   try {
     const { stdout } = await runOpenClaw(['--version'], { timeoutMs: 3000 })
@@ -340,89 +257,46 @@ async function getGatewayStatus() {
 }
 
 async function getAvailableModels() {
-  // This would typically query the gateway or config files
-  // Model catalog is the single source of truth
   const models = [...MODEL_CATALOG]
 
   try {
-    // Check which Ollama models are available locally
-    const { stdout: ollamaOutput } = await runCommand('ollama', ['list'], {
-      timeoutMs: 5000
-    })
+    const { stdout: ollamaOutput } = await runCommand('ollama', ['list'], { timeoutMs: 5000 })
     const ollamaModels = ollamaOutput.split('\n')
-      .slice(1) // Skip header
+      .slice(1)
       .filter(line => line.trim())
       .map(line => {
         const parts = line.split(/\s+/)
-        return {
-          alias: parts[0],
-          name: `ollama/${parts[0]}`,
-          provider: 'ollama',
-          description: 'Local model',
-          costPer1k: 0.0,
-          size: parts[1] || 'unknown'
-        }
+        return { alias: parts[0], name: `ollama/${parts[0]}`, provider: 'ollama', description: 'Local model', costPer1k: 0.0, size: parts[1] || 'unknown' }
       })
 
-    // Add Ollama models that aren't already in the list
     ollamaModels.forEach(model => {
-      if (!models.find(m => m.name === model.name)) {
-        models.push(model)
-      }
+      if (!models.find(m => m.name === model.name)) models.push(model)
     })
-  } catch (error) {
-    console.error('Error checking Ollama models:', error)
-  }
+  } catch (error) {}
 
   return models
 }
 
 async function performHealthCheck() {
-  const health: any = {
-    overall: 'healthy',
-    checks: [],
-    timestamp: Date.now()
-  }
+  const health: any = { overall: 'healthy', checks: [], timestamp: Date.now() }
 
-  // Check gateway connection
   try {
     const gatewayStatus = await getGatewayStatus()
-    health.checks.push({
-      name: 'Gateway',
-      status: gatewayStatus.running ? 'healthy' : 'unhealthy',
-      message: gatewayStatus.running ? 'Gateway is running' : 'Gateway is not running'
-    })
+    health.checks.push({ name: 'Gateway', status: gatewayStatus.running ? 'healthy' : 'unhealthy', message: gatewayStatus.running ? 'Gateway is running' : 'Gateway is not running' })
   } catch (error) {
-    health.checks.push({
-      name: 'Gateway',
-      status: 'error',
-      message: 'Failed to check gateway status'
-    })
+    health.checks.push({ name: 'Gateway', status: 'error', message: 'Failed to check gateway status' })
   }
 
-  // Check disk space
   try {
-    const { stdout } = await runCommand('df', ['/', '--output=pcent'], {
-      timeoutMs: 3000
-    })
+    const { stdout } = await runCommand('df', ['/', '--output=pcent'], { timeoutMs: 3000 })
     const lines = stdout.trim().split('\n')
     const last = lines[lines.length - 1] || ''
     const usagePercent = parseInt(last.replace('%', '').trim() || '0')
-    
-    health.checks.push({
-      name: 'Disk Space',
-      status: usagePercent < 90 ? 'healthy' : usagePercent < 95 ? 'warning' : 'critical',
-      message: `Disk usage: ${usagePercent}%`
-    })
+    health.checks.push({ name: 'Disk Space', status: usagePercent < 90 ? 'healthy' : usagePercent < 95 ? 'warning' : 'critical', message: `Disk usage: ${usagePercent}%` })
   } catch (error) {
-    health.checks.push({
-      name: 'Disk Space',
-      status: 'error',
-      message: 'Failed to check disk space'
-    })
+    health.checks.push({ name: 'Disk Space', status: 'error', message: 'Failed to check disk space' })
   }
 
-  // Check memory usage
   try {
     const { stdout } = await runCommand('free', ['-m'], { timeoutMs: 3000 })
     const lines = stdout.split('\n')
@@ -431,30 +305,17 @@ async function performHealthCheck() {
     const total = parseInt(parts[1] || '0')
     const available = parseInt(parts[6] || '0')
     const usagePercent = Math.round(((total - available) / total) * 100)
-
-    health.checks.push({
-      name: 'Memory Usage',
-      status: usagePercent < 90 ? 'healthy' : usagePercent < 95 ? 'warning' : 'critical',
-      message: `Memory usage: ${usagePercent}%`
-    })
+    health.checks.push({ name: 'Memory Usage', status: usagePercent < 90 ? 'healthy' : usagePercent < 95 ? 'warning' : 'critical', message: `Memory usage: ${usagePercent}%` })
   } catch (error) {
-    health.checks.push({
-      name: 'Memory Usage',
-      status: 'error',
-      message: 'Failed to check memory usage'
-    })
+    health.checks.push({ name: 'Memory Usage', status: 'error', message: 'Failed to check memory usage' })
   }
 
-  // Determine overall health
   const hasError = health.checks.some((check: any) => check.status === 'error')
   const hasCritical = health.checks.some((check: any) => check.status === 'critical')
   const hasWarning = health.checks.some((check: any) => check.status === 'warning')
 
-  if (hasError || hasCritical) {
-    health.overall = 'unhealthy'
-  } else if (hasWarning) {
-    health.overall = 'warning'
-  }
+  if (hasError || hasCritical) health.overall = 'unhealthy'
+  else if (hasWarning) health.overall = 'warning'
 
   return health
 }
@@ -462,30 +323,11 @@ async function performHealthCheck() {
 function isPortOpen(host: string, port: number): Promise<boolean> {
   return new Promise((resolve) => {
     const socket = new net.Socket()
-    const timeoutMs = 1500
-
-    const cleanup = () => {
-      socket.removeAllListeners()
-      socket.destroy()
-    }
-
-    socket.setTimeout(timeoutMs)
-
-    socket.once('connect', () => {
-      cleanup()
-      resolve(true)
-    })
-
-    socket.once('timeout', () => {
-      cleanup()
-      resolve(false)
-    })
-
-    socket.once('error', () => {
-      cleanup()
-      resolve(false)
-    })
-
+    const cleanup = () => { socket.removeAllListeners(); socket.destroy() }
+    socket.setTimeout(1500)
+    socket.once('connect', () => { cleanup(); resolve(true) })
+    socket.once('timeout', () => { cleanup(); resolve(false) })
+    socket.once('error', () => { cleanup(); resolve(false) })
     socket.connect(port, host)
   })
 }

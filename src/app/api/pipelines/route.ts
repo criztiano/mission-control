@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getDatabase, db_helpers } from '@/lib/db'
+import { db } from '@/db/client'
+import { db_helpers } from '@/lib/db'
+import { workflowPipelines, workflowTemplates, pipelineRuns } from '@/db/schema'
+import { eq, desc, sql } from 'drizzle-orm'
 import { requireRole } from '@/lib/auth'
 import { validateBody, createPipelineSchema } from '@/lib/validation'
 import { mutationLimiter } from '@/lib/rate-limit'
@@ -10,44 +13,26 @@ export interface PipelineStep {
   on_failure: 'stop' | 'continue'
 }
 
-export interface Pipeline {
-  id: number
-  name: string
-  description: string | null
-  steps: string // JSON array of PipelineStep
-  created_by: string
-  created_at: number
-  updated_at: number
-  use_count: number
-  last_used_at: number | null
-}
-
 /**
  * GET /api/pipelines - List all pipelines with enriched step data
  */
 export async function GET(request: NextRequest) {
-  const auth = requireRole(request, 'viewer')
+  const auth = await requireRole(request, 'viewer')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   try {
-    const db = getDatabase()
-    const pipelines = db.prepare(
-      'SELECT * FROM workflow_pipelines ORDER BY use_count DESC, updated_at DESC'
-    ).all() as Pipeline[]
-
-    // Enrich steps with template names
-    const templates = db.prepare('SELECT id, name FROM workflow_templates').all() as Array<{ id: number; name: string }>
+    const pipelines = await db.select().from(workflowPipelines).orderBy(sql`use_count DESC, updated_at DESC`)
+    const templates = await db.select({ id: workflowTemplates.id, name: workflowTemplates.name }).from(workflowTemplates)
     const nameMap = new Map(templates.map(t => [t.id, t.name]))
 
-    // Get run counts per pipeline
-    const runCounts = db.prepare(`
+    const runCounts = await db.execute(sql`
       SELECT pipeline_id, COUNT(*) as total,
         SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed,
         SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,
         SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) as running
       FROM pipeline_runs GROUP BY pipeline_id
-    `).all() as Array<{ pipeline_id: number; total: number; completed: number; failed: number; running: number }>
-    const runMap = new Map(runCounts.map(r => [r.pipeline_id, r]))
+    `)
+    const runMap = new Map((runCounts.rows as any[]).map(r => [r.pipeline_id, r]))
 
     const parsed = pipelines.map(p => {
       const steps: PipelineStep[] = JSON.parse(p.steps || '[]')
@@ -69,7 +54,7 @@ export async function GET(request: NextRequest) {
  * POST /api/pipelines - Create a pipeline
  */
 export async function POST(request: NextRequest) {
-  const auth = requireRole(request, 'operator')
+  const auth = await requireRole(request, 'operator')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   const rateCheck = mutationLimiter(request)
@@ -80,14 +65,10 @@ export async function POST(request: NextRequest) {
     if ('error' in result) return result.error
     const { name, description, steps } = result.data
 
-    const db = getDatabase()
-
-    // Validate template IDs exist
+    // Validate template IDs
     const templateIds = steps.map((s: PipelineStep) => s.template_id)
-    const existing = db.prepare(
-      `SELECT id FROM workflow_templates WHERE id IN (${templateIds.map(() => '?').join(',')})`
-    ).all(...templateIds) as Array<{ id: number }>
-    if (existing.length !== new Set(templateIds).size) {
+    const existingTemplates = await db.execute(sql`SELECT id FROM workflow_templates WHERE id = ANY(${templateIds})`)
+    if (existingTemplates.rows.length !== new Set(templateIds).size) {
       return NextResponse.json({ error: 'One or more template IDs not found' }, { status: 400 })
     }
 
@@ -96,15 +77,19 @@ export async function POST(request: NextRequest) {
       on_failure: s.on_failure || 'stop',
     }))
 
-    const insertResult = db.prepare(`
-      INSERT INTO workflow_pipelines (name, description, steps, created_by)
-      VALUES (?, ?, ?, ?)
-    `).run(name, description || null, JSON.stringify(cleanSteps), auth.user?.username || 'system')
+    const insertResult = await db.insert(workflowPipelines).values({
+      name,
+      description: description || null,
+      steps: JSON.stringify(cleanSteps),
+      created_by: auth.user?.username || 'system',
+    }).returning({ id: workflowPipelines.id })
 
-    db_helpers.logActivity('pipeline_created', 'pipeline', Number(insertResult.lastInsertRowid), auth.user?.username || 'system', `Created pipeline: ${name}`)
+    const pipelineId = insertResult[0].id
+    await db_helpers.logActivity('pipeline_created', 'pipeline', pipelineId, auth.user?.username || 'system', `Created pipeline: ${name}`)
 
-    const pipeline = db.prepare('SELECT * FROM workflow_pipelines WHERE id = ?').get(insertResult.lastInsertRowid) as Pipeline
-    return NextResponse.json({ pipeline: { ...pipeline, steps: JSON.parse(pipeline.steps) } }, { status: 201 })
+    const pipeline = await db.select().from(workflowPipelines).where(eq(workflowPipelines.id, pipelineId)).limit(1)
+    const p = pipeline[0]
+    return NextResponse.json({ pipeline: { ...p, steps: JSON.parse(p.steps) } }, { status: 201 })
   } catch (error) {
     console.error('POST /api/pipelines error:', error)
     return NextResponse.json({ error: 'Failed to create pipeline' }, { status: 500 })
@@ -115,43 +100,35 @@ export async function POST(request: NextRequest) {
  * PUT /api/pipelines - Update a pipeline
  */
 export async function PUT(request: NextRequest) {
-  const auth = requireRole(request, 'operator')
+  const auth = await requireRole(request, 'operator')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   try {
-    const db = getDatabase()
     const body = await request.json()
     const { id, ...updates } = body
 
     if (!id) return NextResponse.json({ error: 'Pipeline ID required' }, { status: 400 })
 
-    const existing = db.prepare('SELECT * FROM workflow_pipelines WHERE id = ?').get(id) as Pipeline
-    if (!existing) return NextResponse.json({ error: 'Pipeline not found' }, { status: 404 })
+    const existingRows = await db.select().from(workflowPipelines).where(eq(workflowPipelines.id, id)).limit(1)
+    if (!existingRows[0]) return NextResponse.json({ error: 'Pipeline not found' }, { status: 404 })
 
-    const fields: string[] = []
-    const params: any[] = []
+    const updateData: any = { updated_at: Math.floor(Date.now() / 1000) }
 
-    if (updates.name !== undefined) { fields.push('name = ?'); params.push(updates.name) }
-    if (updates.description !== undefined) { fields.push('description = ?'); params.push(updates.description) }
-    if (updates.steps !== undefined) {
-      fields.push('steps = ?')
-      params.push(JSON.stringify(updates.steps))
-    }
+    if (updates.name !== undefined) updateData.name = updates.name
+    if (updates.description !== undefined) updateData.description = updates.description
+    if (updates.steps !== undefined) updateData.steps = JSON.stringify(updates.steps)
 
-    if (fields.length === 0) {
+    if (Object.keys(updateData).length === 1) {
       // Usage tracking
-      fields.push('use_count = use_count + 1', 'last_used_at = ?')
-      params.push(Math.floor(Date.now() / 1000))
+      updateData.use_count = sql`${workflowPipelines.use_count} + 1`
+      updateData.last_used_at = Math.floor(Date.now() / 1000)
     }
 
-    fields.push('updated_at = ?')
-    params.push(Math.floor(Date.now() / 1000))
-    params.push(id)
+    await db.update(workflowPipelines).set(updateData).where(eq(workflowPipelines.id, id))
 
-    db.prepare(`UPDATE workflow_pipelines SET ${fields.join(', ')} WHERE id = ?`).run(...params)
-
-    const updated = db.prepare('SELECT * FROM workflow_pipelines WHERE id = ?').get(id) as Pipeline
-    return NextResponse.json({ pipeline: { ...updated, steps: JSON.parse(updated.steps) } })
+    const updated = await db.select().from(workflowPipelines).where(eq(workflowPipelines.id, id)).limit(1)
+    const p = updated[0]
+    return NextResponse.json({ pipeline: { ...p, steps: JSON.parse(p.steps) } })
   } catch (error) {
     console.error('PUT /api/pipelines error:', error)
     return NextResponse.json({ error: 'Failed to update pipeline' }, { status: 500 })
@@ -162,17 +139,16 @@ export async function PUT(request: NextRequest) {
  * DELETE /api/pipelines - Delete a pipeline
  */
 export async function DELETE(request: NextRequest) {
-  const auth = requireRole(request, 'operator')
+  const auth = await requireRole(request, 'operator')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   try {
-    const db = getDatabase()
     let body: any
     try { body = await request.json() } catch { return NextResponse.json({ error: 'Request body required' }, { status: 400 }) }
     const id = body.id
     if (!id) return NextResponse.json({ error: 'Pipeline ID required' }, { status: 400 })
 
-    db.prepare('DELETE FROM workflow_pipelines WHERE id = ?').run(parseInt(id))
+    await db.delete(workflowPipelines).where(eq(workflowPipelines.id, parseInt(id)))
     return NextResponse.json({ success: true })
   } catch (error) {
     console.error('DELETE /api/pipelines error:', error)

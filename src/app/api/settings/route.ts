@@ -1,18 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { requireRole } from '@/lib/auth'
-import { getDatabase, logAuditEvent } from '@/lib/db'
+import { logAuditEvent } from '@/lib/db'
+import { db } from '@/db/client'
+import { settings } from '@/db/schema'
+import { eq, asc } from 'drizzle-orm'
 import { config } from '@/lib/config'
 import { mutationLimiter } from '@/lib/rate-limit'
 import { validateBody, updateSettingsSchema } from '@/lib/validation'
-
-interface SettingRow {
-  key: string
-  value: string
-  description: string | null
-  category: string
-  updated_by: string | null
-  updated_at: number
-}
 
 // Default settings definitions (category, description, default value)
 const settingDefinitions: Record<string, { category: string; description: string; default: string }> = {
@@ -39,15 +33,14 @@ const settingDefinitions: Record<string, { category: string; description: string
  * GET /api/settings - List all settings (grouped by category)
  */
 export async function GET(request: NextRequest) {
-  const auth = requireRole(request, 'admin')
+  const auth = await requireRole(request, 'admin')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
-  const db = getDatabase()
-  const rows = db.prepare('SELECT * FROM settings ORDER BY category, key').all() as SettingRow[]
+  const rows = await db.select().from(settings).orderBy(asc(settings.category), asc(settings.key))
   const stored = new Map(rows.map(r => [r.key, r]))
 
   // Merge defaults with stored values
-  const settings: Array<{
+  const result: Array<{
     key: string
     value: string
     description: string
@@ -59,7 +52,7 @@ export async function GET(request: NextRequest) {
 
   for (const [key, def] of Object.entries(settingDefinitions)) {
     const row = stored.get(key)
-    settings.push({
+    result.push({
       key,
       value: row?.value ?? def.default,
       description: row?.description ?? def.description,
@@ -73,26 +66,26 @@ export async function GET(request: NextRequest) {
   // Also include any custom settings not in definitions
   for (const row of rows) {
     if (!settingDefinitions[row.key]) {
-      settings.push({
+      result.push({
         key: row.key,
         value: row.value,
         description: row.description ?? '',
         category: row.category,
-        updated_by: row.updated_by,
-        updated_at: row.updated_at,
+        updated_by: row.updated_by ?? null,
+        updated_at: row.updated_at ?? null,
         is_default: false,
       })
     }
   }
 
   // Group by category
-  const grouped: Record<string, typeof settings> = {}
-  for (const s of settings) {
+  const grouped: Record<string, typeof result> = {}
+  for (const s of result) {
     if (!grouped[s.category]) grouped[s.category] = []
     grouped[s.category].push(s)
   }
 
-  return NextResponse.json({ settings, grouped })
+  return NextResponse.json({ settings: result, grouped })
 }
 
 /**
@@ -100,50 +93,50 @@ export async function GET(request: NextRequest) {
  * Body: { settings: { key: value, ... } }
  */
 export async function PUT(request: NextRequest) {
-  const auth = requireRole(request, 'admin')
+  const auth = await requireRole(request, 'admin')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   const rateCheck = mutationLimiter(request)
   if (rateCheck) return rateCheck
 
-  const result = await validateBody(request, updateSettingsSchema)
-  if ('error' in result) return result.error
-  const body = result.data
-
-  const db = getDatabase()
-  const upsert = db.prepare(`
-    INSERT INTO settings (key, value, description, category, updated_by, updated_at)
-    VALUES (?, ?, ?, ?, ?, unixepoch())
-    ON CONFLICT(key) DO UPDATE SET
-      value = excluded.value,
-      updated_by = excluded.updated_by,
-      updated_at = unixepoch()
-  `)
+  const validResult = await validateBody(request, updateSettingsSchema)
+  if ('error' in validResult) return validResult.error
+  const body = validResult.data
 
   const updated: string[] = []
   const changes: Record<string, { old: string | null; new: string }> = {}
 
-  const txn = db.transaction(() => {
-    for (const [key, value] of Object.entries(body.settings)) {
-      const strValue = String(value)
-      const def = settingDefinitions[key]
-      const category = def?.category ?? 'custom'
-      const description = def?.description ?? null
+  for (const [key, value] of Object.entries(body.settings)) {
+    const strValue = String(value)
+    const def = settingDefinitions[key]
+    const category = def?.category ?? 'custom'
+    const description = def?.description ?? null
 
-      // Get old value for audit
-      const existing = db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value: string } | undefined
-      changes[key] = { old: existing?.value ?? null, new: strValue }
+    // Get old value for audit
+    const existing = await db.select({ value: settings.value }).from(settings).where(eq(settings.key, key)).limit(1)
+    changes[key] = { old: existing[0]?.value ?? null, new: strValue }
 
-      upsert.run(key, strValue, description, category, auth.user.username)
-      updated.push(key)
-    }
-  })
-
-  txn()
+    await db.insert(settings).values({
+      key,
+      value: strValue,
+      description,
+      category,
+      updated_by: auth.user.username,
+      updated_at: Math.floor(Date.now() / 1000),
+    }).onConflictDoUpdate({
+      target: settings.key,
+      set: {
+        value: strValue,
+        updated_by: auth.user.username,
+        updated_at: Math.floor(Date.now() / 1000),
+      },
+    })
+    updated.push(key)
+  }
 
   // Audit log
   const ipAddress = request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip') || 'unknown'
-  logAuditEvent({
+  await logAuditEvent({
     action: 'settings_update',
     actor: auth.user.username,
     actor_id: auth.user.id,
@@ -158,7 +151,7 @@ export async function PUT(request: NextRequest) {
  * DELETE /api/settings?key=... - Reset a setting to default
  */
 export async function DELETE(request: NextRequest) {
-  const auth = requireRole(request, 'admin')
+  const auth = await requireRole(request, 'admin')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   const rateCheck = mutationLimiter(request)
@@ -172,21 +165,20 @@ export async function DELETE(request: NextRequest) {
     return NextResponse.json({ error: 'key parameter required' }, { status: 400 })
   }
 
-  const db = getDatabase()
-  const existing = db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value: string } | undefined
+  const existing = await db.select({ value: settings.value }).from(settings).where(eq(settings.key, key)).limit(1)
 
-  if (!existing) {
+  if (!existing.length) {
     return NextResponse.json({ error: 'Setting not found or already at default' }, { status: 404 })
   }
 
-  db.prepare('DELETE FROM settings WHERE key = ?').run(key)
+  await db.delete(settings).where(eq(settings.key, key))
 
   const ipAddress = request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip') || 'unknown'
-  logAuditEvent({
+  await logAuditEvent({
     action: 'settings_reset',
     actor: auth.user.username,
     actor_id: auth.user.id,
-    detail: { key, old_value: existing.value },
+    detail: { key, old_value: existing[0].value },
     ip_address: ipAddress,
   })
 

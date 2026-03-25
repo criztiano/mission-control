@@ -1,5 +1,7 @@
 import { logger } from '@/lib/logger';
-import type { CCTweet, TweetRating } from '@/lib/cc-db';
+import type { CCTweet, TweetRating, Turn } from '@/lib/cc-db';
+
+const TASKS_CHANNEL_ID = '1482407953763012618';
 
 const DISCORD_API = 'https://discord.com/api/v10';
 
@@ -423,10 +425,11 @@ export function buildTweetCardV2(
 export async function postTweetCard(
   tweet: CCTweet,
   channelId: string,
-  currentRating?: TweetRating | null
+  currentRating?: TweetRating | null,
+  currentHighlight?: boolean
 ): Promise<string | null> {
   const token = getBotToken();
-  const card = buildTweetCardV2(tweet, currentRating);
+  const card = buildTweetCardV2(tweet, currentRating, currentHighlight);
 
   try {
     const res = await fetch(`${DISCORD_API}/channels/${channelId}/messages`, {
@@ -452,6 +455,139 @@ export async function postTweetCard(
     return data.id;
   } catch (error) {
     logger.error({ err: error, tweetId: tweet.id }, 'Error posting tweet card');
+    return null;
+  }
+}
+
+// --- Task Card (Components V2) ---
+
+interface TaskCardData {
+  taskId: string;
+  title: string;
+  description?: string;
+  project?: string;
+  planId?: string | null;
+  turn: {
+    author: string;
+    content: string;
+    links?: Turn['links'];
+  };
+}
+
+/**
+ * Build a Components V2 task card for Discord #tasks.
+ */
+export function buildTaskCard(data: TaskCardData): V2Container {
+  const { taskId, title, description, project, turn } = data;
+
+  const turnPreview = truncate(turn.content.replace(/[#*`]/g, ''), 200);
+  const projectLine = project ? ` · \`${project}\`` : '';
+
+  const components: V2Container['components'] = [
+    {
+      type: 10,
+      content: `⚡ **${truncate(title, 100)}**${projectLine}`,
+    },
+    { type: 14, divider: true, spacing: 1 },
+    {
+      type: 10,
+      content: `**${turn.author}:** ${turnPreview}`,
+    },
+  ];
+
+  // Action row: link buttons (if any) + Dunk / Ask / View
+  const actionButtons: Array<V2ActionButton | V2LinkButton> = [];
+
+  // Turn links as clickable buttons (max 3 to stay within Discord's 5-button row limit)
+  const links = turn.links || [];
+  for (const link of links.slice(0, 3)) {
+    actionButtons.push({
+      type: 2,
+      style: 5, // Link
+      label: truncate(link.title || link.type || 'Link', 25),
+      url: link.url,
+      emoji: link.type === 'pr' ? { name: '🔀' } : link.type === 'diff' ? { name: '📝' } : { name: '🔗' },
+    });
+  }
+
+  const appUrl = process.env.APP_URL || 'http://localhost:3333';
+
+  // Core action buttons
+  actionButtons.push(
+    {
+      type: 2,
+      style: 1, // Primary
+      label: 'Dunk',
+      custom_id: `task_dunk_${taskId}`,
+      emoji: { name: '✅' },
+    },
+    {
+      type: 2,
+      style: 2, // Secondary
+      label: 'Ask',
+      custom_id: `task_ask_${taskId}`,
+      emoji: { name: '❓' },
+    },
+  );
+
+  // View button: plan link if plan exists, otherwise generic tasks view
+  if (data.planId) {
+    actionButtons.push({
+      type: 2,
+      style: 5, // Link
+      label: 'Plan',
+      url: `${appUrl}/plans/${data.planId}`,
+      emoji: { name: '📋' },
+    });
+  } else {
+    actionButtons.push({
+      type: 2,
+      style: 5, // Link
+      label: 'View',
+      url: `${appUrl}/?tab=tasks`,
+      emoji: { name: '↗' },
+    });
+  }
+
+  components.push({
+    type: 1,
+    components: actionButtons.slice(0, 5), // Discord max 5 per row
+  });
+
+  return { type: 17, components };
+}
+
+/**
+ * Post a task card to Discord #tasks channel.
+ */
+export async function postTaskCard(data: TaskCardData): Promise<string | null> {
+  const token = getBotToken();
+  const card = buildTaskCard(data);
+
+  try {
+    const res = await fetch(`${DISCORD_API}/channels/${TASKS_CHANNEL_ID}/messages`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bot ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        components: [card],
+        flags: 32768, // Components V2 flag
+      }),
+    });
+
+    if (!res.ok) {
+      const err = await res.text();
+      logger.error({ status: res.status, err, taskId: data.taskId }, 'Failed to post task card');
+      return null;
+    }
+
+    const data2 = await res.json();
+    logger.info({ messageId: data2.id, taskId: data.taskId }, 'Task card posted to #tasks');
+    return data2.id;
+  } catch (error) {
+    logger.error({ err: error, taskId: data.taskId }, 'Error posting task card');
     return null;
   }
 }

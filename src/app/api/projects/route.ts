@@ -7,23 +7,24 @@ import { getProjects, createProject, getProjectTaskCount, getProjectLastActivity
  * GET /api/projects - List all projects from control-center.db with task counts and last activity
  */
 export async function GET(request: NextRequest) {
-  const auth = requireRole(request, 'viewer');
+  const auth = await requireRole(request, 'viewer');
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status });
 
   try {
-    const projects = getProjects();
-    return NextResponse.json({
-      projects: projects.map(p => ({
+    const projectList = await getProjects();
+    const projectsWithStats = await Promise.all(
+      projectList.map(async p => ({
         id: p.id,
         title: p.title,
         description: p.description,
         emoji: p.emoji,
         repo_url: p.repo_url,
         local_path: p.local_path,
-        taskCount: getProjectTaskCount(p.id),
-        lastActivity: getProjectLastActivity(p.id),
-      })),
-    });
+        taskCount: await getProjectTaskCount(p.id),
+        lastActivity: await getProjectLastActivity(p.id),
+      }))
+    );
+    return NextResponse.json({ projects: projectsWithStats });
   } catch (error) {
     logger.error({ err: error }, 'GET /api/projects error');
     return NextResponse.json({ error: 'Failed to fetch projects' }, { status: 500 });
@@ -34,7 +35,7 @@ export async function GET(request: NextRequest) {
  * POST /api/projects - Create a new project manually (without AI generation)
  */
 export async function POST(request: NextRequest) {
-  const auth = requireRole(request, 'operator');
+  const auth = await requireRole(request, 'operator');
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status });
 
   try {
@@ -49,7 +50,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const project = createProject(
+    const project = await createProject(
       title.trim(),
       description || '',
       emoji || '📁',

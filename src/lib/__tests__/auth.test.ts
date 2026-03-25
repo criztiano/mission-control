@@ -4,6 +4,13 @@ import { safeCompare, requireRole } from '@/lib/auth'
 // Mock dependencies that auth.ts imports
 vi.mock('@/lib/db', () => ({
   getDatabase: vi.fn(),
+  logAuditEvent: vi.fn().mockResolvedValue(undefined),
+}))
+
+vi.mock('@/db/client', () => ({
+  db: {
+    select: vi.fn(() => ({ from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(() => Promise.resolve([])) })) })) })),
+  },
 }))
 
 vi.mock('@/lib/password', () => ({
@@ -61,15 +68,15 @@ describe('requireRole', () => {
     })
   }
 
-  it('returns 401 when no authentication is provided', () => {
-    const result = requireRole(makeRequest(), 'viewer')
+  it('returns 401 when no authentication is provided', async () => {
+    const result = await requireRole(makeRequest(), 'viewer')
     expect(result.status).toBe(401)
     expect(result.error).toBe('Authentication required')
     expect(result.user).toBeUndefined()
   })
 
-  it('returns 401 when API key is wrong', () => {
-    const result = requireRole(
+  it('returns 401 when API key is wrong', async () => {
+    const result = await requireRole(
       makeRequest({ 'x-api-key': 'wrong-key' }),
       'viewer',
     )
@@ -77,8 +84,8 @@ describe('requireRole', () => {
     expect(result.error).toBe('Authentication required')
   })
 
-  it('returns user when API key is valid and role is sufficient', () => {
-    const result = requireRole(
+  it('returns user when API key is valid and role is sufficient', async () => {
+    const result = await requireRole(
       makeRequest({ 'x-api-key': 'test-api-key-secret' }),
       'admin',
     )
@@ -89,8 +96,8 @@ describe('requireRole', () => {
     expect(result.user!.role).toBe('admin')
   })
 
-  it('returns user for lower role requirement with API key (admin >= viewer)', () => {
-    const result = requireRole(
+  it('returns user for lower role requirement with API key (admin >= viewer)', async () => {
+    const result = await requireRole(
       makeRequest({ 'x-api-key': 'test-api-key-secret' }),
       'viewer',
     )
@@ -98,8 +105,8 @@ describe('requireRole', () => {
     expect(result.user!.role).toBe('admin')
   })
 
-  it('returns user for operator role requirement with API key (admin >= operator)', () => {
-    const result = requireRole(
+  it('returns user for operator role requirement with API key (admin >= operator)', async () => {
+    const result = await requireRole(
       makeRequest({ 'x-api-key': 'test-api-key-secret' }),
       'operator',
     )

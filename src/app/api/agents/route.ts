@@ -1,101 +1,80 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getDatabase, Agent, db_helpers } from '@/lib/db';
+import { db } from '@/db/client';
+import { db_helpers, logAuditEvent } from '@/lib/db';
+import { agents, issues } from '@/db/schema';
+import { eq, and, desc, sql, SQL } from 'drizzle-orm';
 import { eventBus } from '@/lib/event-bus';
 import { getTemplate, buildAgentConfig } from '@/lib/agent-templates';
 import { writeAgentToConfig } from '@/lib/agent-sync';
-import { logAuditEvent } from '@/lib/db';
 import { getUserFromRequest, requireRole } from '@/lib/auth';
 import { mutationLimiter } from '@/lib/rate-limit';
 import { logger } from '@/lib/logger';
 import { validateBody, createAgentSchema } from '@/lib/validation';
-import { getCCDatabase } from '@/lib/cc-db';
 
 /**
  * GET /api/agents - List all agents with optional filtering
- * Query params: status, role, limit, offset
  */
 export async function GET(request: NextRequest) {
-  const auth = requireRole(request, 'viewer')
+  const auth = await requireRole(request, 'viewer')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   try {
-    const db = getDatabase();
     const { searchParams } = new URL(request.url);
-    
-    // Parse query parameters
     const status = searchParams.get('status');
     const role = searchParams.get('role');
     const limit = Math.min(parseInt(searchParams.get('limit') || '50'), 200);
     const offset = parseInt(searchParams.get('offset') || '0');
-    
-    // Build dynamic query
-    let query = 'SELECT * FROM agents WHERE 1=1';
-    const params: any[] = [];
-    
-    if (status) {
-      query += ' AND status = ?';
-      params.push(status);
-    }
-    
-    if (role) {
-      query += ' AND role = ?';
-      params.push(role);
-    }
-    
-    query += ' ORDER BY created_at DESC LIMIT ? OFFSET ?';
-    params.push(limit, offset);
-    
-    const stmt = db.prepare(query);
-    const agents = stmt.all(...params) as Agent[];
-    
-    // Parse JSON config field
-    const agentsWithParsedData = agents.map(agent => ({
+
+    const conditions: SQL[] = [];
+    if (status) conditions.push(eq(agents.status, status));
+    if (role) conditions.push(eq(agents.role, role));
+
+    const agentRows = await db
+      .select()
+      .from(agents)
+      .where(conditions.length ? and(...conditions) : undefined)
+      .orderBy(desc(agents.created_at))
+      .limit(limit)
+      .offset(offset);
+
+    const agentsWithParsedData = agentRows.map(agent => ({
       ...agent,
       config: agent.config ? JSON.parse(agent.config) : {}
     }));
-    
-    // Get task counts for each agent from control-center.db
-    const ccDb = getCCDatabase();
-    const taskCountStmt = ccDb.prepare(`
-      SELECT
-        COUNT(*) as total,
-        SUM(CASE WHEN status = 'open' THEN 1 ELSE 0 END) as assigned,
-        SUM(CASE WHEN status = 'open' THEN 1 ELSE 0 END) as in_progress,
-        SUM(CASE WHEN status = 'closed' THEN 1 ELSE 0 END) as completed
-      FROM issues
-      WHERE LOWER(assignee) = LOWER(?) AND archived = 0
-    `);
 
-    const agentsWithStats = agentsWithParsedData.map(agent => {
-      const taskStats = taskCountStmt.get(agent.name) as any;
+    // Get task counts from issues table
+    const agentsWithStats = await Promise.all(
+      agentsWithParsedData.map(async (agent) => {
+        const taskStatRows = await db.execute(sql`
+          SELECT
+            COUNT(*) as total,
+            SUM(CASE WHEN status = 'open' THEN 1 ELSE 0 END) as assigned,
+            SUM(CASE WHEN status = 'open' THEN 1 ELSE 0 END) as in_progress,
+            SUM(CASE WHEN status = 'closed' THEN 1 ELSE 0 END) as completed
+          FROM issues
+          WHERE LOWER(assignee) = LOWER(${agent.name}) AND archived = false
+        `);
+        const taskStats = taskStatRows.rows[0] as any;
+        return {
+          ...agent,
+          taskStats: {
+            total: Number(taskStats?.total || 0),
+            assigned: Number(taskStats?.assigned || 0),
+            in_progress: Number(taskStats?.in_progress || 0),
+            completed: Number(taskStats?.completed || 0),
+          },
+        };
+      })
+    );
 
-      return {
-        ...agent,
-        taskStats: {
-          total: taskStats.total || 0,
-          assigned: taskStats.assigned || 0,
-          in_progress: taskStats.in_progress || 0,
-          completed: taskStats.completed || 0
-        }
-      };
-    });
-    
-    // Get total count for pagination
-    let countQuery = 'SELECT COUNT(*) as total FROM agents WHERE 1=1';
-    const countParams: any[] = [];
-    if (status) {
-      countQuery += ' AND status = ?';
-      countParams.push(status);
-    }
-    if (role) {
-      countQuery += ' AND role = ?';
-      countParams.push(role);
-    }
-    const countRow = db.prepare(countQuery).get(...countParams) as { total: number };
+    // Total count
+    const countRows = await db.select({ total: sql<number>`count(*)::int` }).from(agents)
+      .where(conditions.length ? and(...conditions) : undefined);
+    const total = countRows[0]?.total ?? 0;
 
     return NextResponse.json({
       agents: agentsWithStats,
-      total: countRow.total,
+      total,
       page: Math.floor(offset / limit) + 1,
       limit
     });
@@ -109,14 +88,13 @@ export async function GET(request: NextRequest) {
  * POST /api/agents - Create a new agent
  */
 export async function POST(request: NextRequest) {
-  const auth = requireRole(request, 'operator');
+  const auth = await requireRole(request, 'operator');
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status });
 
   const rateCheck = mutationLimiter(request);
   if (rateCheck) return rateCheck;
 
   try {
-    const db = getDatabase();
     const validated = await validateBody(request, createAgentSchema);
     if ('error' in validated) return validated.error;
     const body = validated.data;
@@ -133,7 +111,6 @@ export async function POST(request: NextRequest) {
       write_to_gateway
     } = body;
 
-    // Resolve template if specified
     let finalRole = role;
     let finalConfig: Record<string, any> = { ...config };
     if (template) {
@@ -151,62 +128,46 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Name and role are required' }, { status: 400 });
     }
 
-    // Check if agent name already exists
-    const existingAgent = db.prepare('SELECT id FROM agents WHERE name = ?').get(name);
-    if (existingAgent) {
+    // Check if agent name exists
+    const existingRows = await db.select({ id: agents.id }).from(agents).where(eq(agents.name, name)).limit(1);
+    if (existingRows.length > 0) {
       return NextResponse.json({ error: 'Agent name already exists' }, { status: 409 });
     }
-    
-    const now = Math.floor(Date.now() / 1000);
-    
-    const stmt = db.prepare(`
-      INSERT INTO agents (
-        name, role, session_key, soul_content, status, 
-        created_at, updated_at, config
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-    
-    const dbResult = stmt.run(
-      name,
-      finalRole,
-      session_key,
-      soul_content,
-      status,
-      now,
-      now,
-      JSON.stringify(finalConfig)
-    );
 
-    const agentId = dbResult.lastInsertRowid as number;
-    
-    // Log activity
-    db_helpers.logActivity(
+    const now = Math.floor(Date.now() / 1000);
+
+    const result = await db.insert(agents).values({
+      name,
+      role: finalRole,
+      session_key: session_key ?? null,
+      soul_content: soul_content ?? null,
+      status,
+      created_at: now,
+      updated_at: now,
+      config: JSON.stringify(finalConfig)
+    }).returning({ id: agents.id });
+
+    const agentId = result[0].id;
+
+    await db_helpers.logActivity(
       'agent_created',
       'agent',
       agentId,
       getUserFromRequest(request)?.username || 'system',
       `Created agent: ${name} (${finalRole})${template ? ` from template: ${template}` : ''}`,
-      {
-        name,
-        role: finalRole,
-        status,
-        session_key,
-        template: template || null
-      }
+      { name, role: finalRole, status, session_key, template: template || null }
     );
-    
-    // Fetch the created agent
-    const createdAgent = db.prepare('SELECT * FROM agents WHERE id = ?').get(agentId) as Agent;
+
+    const createdRows = await db.select().from(agents).where(eq(agents.id, agentId)).limit(1);
+    const createdAgent = createdRows[0];
     const parsedAgent = {
       ...createdAgent,
       config: JSON.parse(createdAgent.config || '{}'),
       taskStats: { total: 0, assigned: 0, in_progress: 0, completed: 0 }
     };
 
-    // Broadcast to SSE clients
     eventBus.broadcast('agent.created', parsedAgent);
 
-    // Write to gateway config if requested
     if (write_to_gateway && finalConfig) {
       try {
         const openclawId = (name || 'agent').toLowerCase().replace(/\s+/g, '-');
@@ -226,13 +187,13 @@ export async function POST(request: NextRequest) {
           action: 'agent_gateway_create',
           actor: getUserFromRequest(request)?.username || 'system',
           target_type: 'agent',
-          target_id: agentId as number,
+          target_id: agentId,
           detail: { name, openclaw_id: openclawId, template: template || null },
           ip_address: ipAddress,
         });
       } catch (gwErr: any) {
         logger.error({ err: gwErr }, 'Gateway write-back failed');
-        return NextResponse.json({ 
+        return NextResponse.json({
           agent: parsedAgent,
           warning: `Agent created in MC but gateway write failed: ${gwErr.message}`
         }, { status: 201 });
@@ -247,114 +208,70 @@ export async function POST(request: NextRequest) {
 }
 
 /**
- * PUT /api/agents - Update agent status (bulk operation for status updates)
+ * PUT /api/agents - Update agent status
  */
 export async function PUT(request: NextRequest) {
-  const auth = requireRole(request, 'operator');
+  const auth = await requireRole(request, 'operator');
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status });
 
   const rateCheck = mutationLimiter(request);
   if (rateCheck) return rateCheck;
 
   try {
-    const db = getDatabase();
     const body = await request.json();
 
-    // Handle single agent update or bulk updates
-    if (body.name) {
-      // Single agent update
-      const { name, status, last_activity, config, session_key, soul_content, role } = body;
-      
-      const agent = db.prepare('SELECT * FROM agents WHERE name = ?').get(name) as Agent;
-      if (!agent) {
-        return NextResponse.json({ error: 'Agent not found' }, { status: 404 });
-      }
-      
-      const now = Math.floor(Date.now() / 1000);
-      
-      // Build dynamic update query
-      const fieldsToUpdate = [];
-      const params: any[] = [];
-      
-      if (status !== undefined) {
-        fieldsToUpdate.push('status = ?');
-        params.push(status);
-        
-        fieldsToUpdate.push('last_seen = ?');
-        params.push(now);
-      }
-      
-      if (last_activity !== undefined) {
-        fieldsToUpdate.push('last_activity = ?');
-        params.push(last_activity);
-      }
-      
-      if (config !== undefined) {
-        fieldsToUpdate.push('config = ?');
-        params.push(JSON.stringify(config));
-      }
-      
-      if (session_key !== undefined) {
-        fieldsToUpdate.push('session_key = ?');
-        params.push(session_key);
-      }
-      
-      if (soul_content !== undefined) {
-        fieldsToUpdate.push('soul_content = ?');
-        params.push(soul_content);
-      }
-      
-      if (role !== undefined) {
-        fieldsToUpdate.push('role = ?');
-        params.push(role);
-      }
-      
-      fieldsToUpdate.push('updated_at = ?');
-      params.push(now);
-      params.push(name);
-      
-      if (fieldsToUpdate.length === 1) { // Only updated_at
-        return NextResponse.json({ error: 'No fields to update' }, { status: 400 });
-      }
-      
-      const stmt = db.prepare(`
-        UPDATE agents 
-        SET ${fieldsToUpdate.join(', ')}
-        WHERE name = ?
-      `);
-      
-      stmt.run(...params);
-      
-      // Log status change if status was updated
-      if (status !== undefined && status !== agent.status) {
-        db_helpers.logActivity(
-          'agent_status_change',
-          'agent',
-          agent.id,
-          name,
-          `Agent status changed from ${agent.status} to ${status}`,
-          {
-            oldStatus: agent.status,
-            newStatus: status,
-            last_activity
-          }
-        );
-      }
-
-      // Broadcast update to SSE clients
-      eventBus.broadcast('agent.updated', {
-        id: agent.id,
-        name,
-        ...(status !== undefined && { status }),
-        ...(last_activity !== undefined && { last_activity }),
-        ...(role !== undefined && { role }),
-        updated_at: now,
-      });
-
-      return NextResponse.json({ success: true });
-    } else {
+    if (!body.name) {
       return NextResponse.json({ error: 'Agent name is required' }, { status: 400 });
     }
+
+    const { name, status, last_activity, config, session_key, soul_content, role } = body;
+
+    const agentRows = await db.select().from(agents).where(eq(agents.name, name)).limit(1);
+    const agent = agentRows[0];
+    if (!agent) {
+      return NextResponse.json({ error: 'Agent not found' }, { status: 404 });
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+    const updateData: any = { updated_at: now };
+
+    if (status !== undefined) {
+      updateData.status = status;
+      updateData.last_seen = now;
+    }
+    if (last_activity !== undefined) updateData.last_activity = last_activity;
+    if (config !== undefined) updateData.config = JSON.stringify(config);
+    if (session_key !== undefined) updateData.session_key = session_key;
+    if (soul_content !== undefined) updateData.soul_content = soul_content;
+    if (role !== undefined) updateData.role = role;
+
+    if (Object.keys(updateData).length === 1) {
+      return NextResponse.json({ error: 'No fields to update' }, { status: 400 });
+    }
+
+    await db.update(agents).set(updateData).where(eq(agents.name, name));
+
+    if (status !== undefined && status !== agent.status) {
+      await db_helpers.logActivity(
+        'agent_status_change',
+        'agent',
+        agent.id,
+        name,
+        `Agent status changed from ${agent.status} to ${status}`,
+        { oldStatus: agent.status, newStatus: status, last_activity }
+      );
+    }
+
+    eventBus.broadcast('agent.updated', {
+      id: agent.id,
+      name,
+      ...(status !== undefined && { status }),
+      ...(last_activity !== undefined && { last_activity }),
+      ...(role !== undefined && { role }),
+      updated_at: now,
+    });
+
+    return NextResponse.json({ success: true });
   } catch (error) {
     logger.error({ err: error }, 'PUT /api/agents error');
     return NextResponse.json({ error: 'Failed to update agent' }, { status: 500 });

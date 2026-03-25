@@ -7,36 +7,34 @@ import {
   getIssue,
   getIssueComments,
   mapCCComment,
-  getCCDatabaseWrite,
 } from '@/lib/cc-db';
+import { db } from '@/db/client';
+import { issueComments } from '@/db/schema';
+import { eq, and } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
 
 /**
- * GET /api/tasks/[id]/comments - Get all comments for an issue from control-center.db
+ * GET /api/tasks/[id]/comments - Get all comments for an issue
  */
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const auth = requireRole(request, 'viewer');
+  const auth = await requireRole(request, 'viewer');
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status });
 
   try {
-    const resolvedParams = await params;
-    const issueId = resolvedParams.id;
+    const { id: issueId } = await params;
 
-    const issue = getIssue(issueId);
+    const issue = await getIssue(issueId);
     if (!issue) {
       return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     }
 
-    const rawComments = getIssueComments(issueId);
+    const rawComments = await getIssueComments(issueId);
     const comments = rawComments.map(mapCCComment);
 
-    return NextResponse.json({
-      comments,
-      total: comments.length,
-    });
+    return NextResponse.json({ comments, total: comments.length });
   } catch (error) {
     logger.error({ err: error }, 'GET /api/tasks/[id]/comments error');
     return NextResponse.json({ error: 'Failed to fetch comments' }, { status: 500 });
@@ -44,21 +42,20 @@ export async function GET(
 }
 
 /**
- * POST /api/tasks/[id]/comments - Add a comment to an issue in control-center.db
+ * POST /api/tasks/[id]/comments - Add a comment to an issue
  */
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const auth = requireRole(request, 'operator');
+  const auth = await requireRole(request, 'operator');
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status });
 
   const rateCheck = mutationLimiter(request);
   if (rateCheck) return rateCheck;
 
   try {
-    const resolvedParams = await params;
-    const issueId = resolvedParams.id;
+    const { id: issueId } = await params;
     const body = await request.json();
 
     const { content, author = 'system', attachments } = body;
@@ -67,7 +64,7 @@ export async function POST(
       return NextResponse.json({ error: 'Comment content or attachments are required' }, { status: 400 });
     }
 
-    const issue = getIssue(issueId);
+    const issue = await getIssue(issueId);
     if (!issue) {
       return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     }
@@ -76,25 +73,24 @@ export async function POST(
     const now = new Date().toISOString();
     const attachmentsJson = attachments ? JSON.stringify(attachments) : '[]';
 
-    const writeDb = getCCDatabaseWrite();
-    try {
-      writeDb.prepare(`
-        INSERT INTO issue_comments (id, issue_id, author, content, created_at, attachments)
-        VALUES (?, ?, ?, ?, ?, ?)
-      `).run(id, issueId, author, content || '', now, attachmentsJson);
-    } finally {
-      writeDb.close();
-    }
+    await db.insert(issueComments).values({
+      id,
+      issue_id: issueId,
+      author,
+      content: content || '',
+      created_at: now,
+      attachments: attachmentsJson,
+    });
 
-    const mentions = db_helpers.parseMentions(content);
+    const mentions = db_helpers.parseMentions(content || '');
 
-    db_helpers.logActivity(
+    await db_helpers.logActivity(
       'comment_added',
       'comment',
       0,
       author,
       `Added comment to task: ${issue.title}`,
-      { task_id: issueId, task_title: issue.title, content_preview: content.substring(0, 100) }
+      { task_id: issueId, task_title: issue.title, content_preview: (content || '').substring(0, 100) }
     );
 
     const comment = {
@@ -117,17 +113,16 @@ export async function POST(
 
 /**
  * PUT /api/tasks/[id]/comments - Edit a comment
- * Body: { commentId, content }
  */
 export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const auth = requireRole(request, 'operator');
+  const auth = await requireRole(request, 'operator');
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status });
 
   try {
-    const resolvedParams = await params;
+    const { id: issueId } = await params;
     const body = await request.json();
     const { commentId, content } = body;
 
@@ -135,13 +130,10 @@ export async function PUT(
       return NextResponse.json({ error: 'commentId and content required' }, { status: 400 });
     }
 
-    const writeDb = getCCDatabaseWrite();
-    try {
-      const result = writeDb.prepare('UPDATE issue_comments SET content = ? WHERE id = ? AND issue_id = ?').run(content.trim(), commentId, resolvedParams.id);
-      if (result.changes === 0) return NextResponse.json({ error: 'Comment not found' }, { status: 404 });
-    } finally {
-      writeDb.close();
-    }
+    const result = await db
+      .update(issueComments)
+      .set({ content: content.trim() })
+      .where(and(eq(issueComments.id, commentId), eq(issueComments.issue_id, issueId)));
 
     return NextResponse.json({ ok: true });
   } catch (error) {
@@ -152,17 +144,16 @@ export async function PUT(
 
 /**
  * DELETE /api/tasks/[id]/comments - Delete a comment
- * Body: { commentId }
  */
 export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const auth = requireRole(request, 'operator');
+  const auth = await requireRole(request, 'operator');
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status });
 
   try {
-    const resolvedParams = await params;
+    const { id: issueId } = await params;
     const body = await request.json();
     const { commentId } = body;
 
@@ -170,13 +161,9 @@ export async function DELETE(
       return NextResponse.json({ error: 'commentId required' }, { status: 400 });
     }
 
-    const writeDb = getCCDatabaseWrite();
-    try {
-      const result = writeDb.prepare('DELETE FROM issue_comments WHERE id = ? AND issue_id = ?').run(commentId, resolvedParams.id);
-      if (result.changes === 0) return NextResponse.json({ error: 'Comment not found' }, { status: 404 });
-    } finally {
-      writeDb.close();
-    }
+    await db
+      .delete(issueComments)
+      .where(and(eq(issueComments.id, commentId), eq(issueComments.issue_id, issueId)));
 
     return NextResponse.json({ ok: true });
   } catch (error) {

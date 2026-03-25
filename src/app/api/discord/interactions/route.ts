@@ -1,10 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import nacl from 'tweetnacl';
 import { logger } from '@/lib/logger';
-import { handleGardenInterest, handleGardenTemporal, handleGardenDismiss } from '@/lib/discord-actions/garden';
+import { handleGardenPin, handleGardenSnooze, handleGardenDismiss } from '@/lib/discord-actions/garden';
 import { handleXFeedRating, getXFeedTaskModal, handleXFeedTaskModalSubmit, handleXFeedHighlight, getXFeedHighlightNoteModal, handleXFeedHighlightNoteSubmit } from '@/lib/discord-actions/xfeed';
-import { getCCDatabase, type TweetRating } from '@/lib/cc-db';
-import { buildGardenCardV2, buildTweetCardV2, type GardenItem } from '@/lib/discord-cards';
+import { type TweetRating } from '@/lib/cc-db';
+import { db as drizzleDb } from '@/db/client';
+import { tweets as tweetsTable, tweetRatings as tweetRatingsTable, garden as gardenTable } from '@/db/schema';
+import { eq } from 'drizzle-orm';
+import { buildGardenEmbed, buildGardenButtons, buildTweetCardV2 } from '@/lib/discord-cards';
 
 // Discord interaction types
 const INTERACTION_PING = 1;
@@ -55,22 +58,20 @@ function parseCustomId(customId: string): { domain: string; action: string; item
 /**
  * Handle garden component interactions (Pin, Snooze, Dismiss).
  */
-function handleGardenAction(
+async function handleGardenAction(
   action: string,
   itemId: string
-): { ephemeralMessage: string; success: boolean } {
-  // Interest buttons
-  if (['info', 'inspiration', 'instrument', 'ingredient', 'idea'].includes(action)) {
-    return handleGardenInterest(itemId, action);
+): Promise<{ ephemeralMessage: string; embedUpdate?: Record<string, unknown>; success: boolean }> {
+  switch (action) {
+    case 'pin':
+      return await handleGardenPin(itemId);
+    case 'snooze':
+      return await handleGardenSnooze(itemId);
+    case 'dismiss':
+      return await handleGardenDismiss(itemId);
+    default:
+      return { success: false, ephemeralMessage: `❌ Unknown garden action: ${action}` };
   }
-  // Temporal buttons
-  if (['now', 'later', 'ever'].includes(action)) {
-    return handleGardenTemporal(itemId, action);
-  }
-  if (action === 'dismiss') {
-    return handleGardenDismiss(itemId);
-  }
-  return { success: false, ephemeralMessage: `❌ Unknown garden action: ${action}` };
 }
 
 /**
@@ -132,7 +133,7 @@ export async function POST(request: NextRequest) {
     if (domain === 'xfeed') {
       if (action === 'task') {
         // "Create Task" button — show modal
-        const modal = getXFeedTaskModal(itemId);
+        const modal = await getXFeedTaskModal(itemId);
         if (!modal) {
           return NextResponse.json({
             type: RESPONSE_CHANNEL_MESSAGE,
@@ -148,9 +149,9 @@ export async function POST(request: NextRequest) {
         });
       }
 
-      // Rating buttons (fire/noise — meh removed, no-rating = implicit neutral)
-      if (['fire', 'noise'].includes(action)) {
-        const result = handleXFeedRating(action as TweetRating, itemId);
+      // Rating buttons (fire/meh/noise)
+      if (['fire', 'meh', 'noise'].includes(action)) {
+        const result = await handleXFeedRating(action as TweetRating, itemId);
 
         if (!result.success) {
           return NextResponse.json({
@@ -162,9 +163,8 @@ export async function POST(request: NextRequest) {
         if (result.updateCard) {
           // Rebuild the card with updated button states
           // Use newRating from the handler directly (avoids read-after-write race)
-          const ccDb = getCCDatabase();
-          const tweet = ccDb.prepare('SELECT * FROM tweets WHERE id = ?')
-            .get(itemId) as Record<string, unknown> | undefined;
+          const tweetRows = await drizzleDb.select().from(tweetsTable).where(eq(tweetsTable.id, itemId)).limit(1);
+          const tweet = tweetRows[0] as Record<string, unknown> | undefined;
 
           if (tweet) {
             const cctweet = {
@@ -180,7 +180,7 @@ export async function POST(request: NextRequest) {
               content: String(tweet.content || ''),
               created_at: String(tweet.created_at || ''),
               scraped_at: String(tweet.scraped_at || ''),
-              pinned: Number(tweet.pinned || 0),
+              pinned: Boolean(tweet.pinned),
               media_urls: String(tweet.media_urls || '[]'),
               triage_status: String(tweet.triage_status || ''),
               snooze_until: tweet.snooze_until as string | null,
@@ -192,8 +192,8 @@ export async function POST(request: NextRequest) {
             };
 
             // Use the rating from the handler, not from DB (avoids race condition)
-            const isHighlighted = !!Number(tweet.highlighted || 0);
-            const card = buildTweetCardV2(cctweet, result.newRating, isHighlighted);
+            const currentHighlight = Boolean(tweet.highlighted);
+            const card = buildTweetCardV2(cctweet, result.newRating, currentHighlight);
 
             return NextResponse.json({
               type: RESPONSE_UPDATE_MESSAGE,
@@ -212,9 +212,9 @@ export async function POST(request: NextRequest) {
         });
       }
 
-      // Highlight button — toggle highlight, signal Uze
+      // Highlight button — toggle highlight for Uze
       if (action === 'highlight') {
-        const result = handleXFeedHighlight(itemId);
+        const result = await handleXFeedHighlight(itemId);
 
         if (!result.success) {
           return NextResponse.json({
@@ -223,46 +223,49 @@ export async function POST(request: NextRequest) {
           });
         }
 
-        // Rebuild card with highlight state
-        const ccDb = getCCDatabase();
-        const tweet = ccDb.prepare('SELECT * FROM tweets WHERE id = ?')
-          .get(itemId) as Record<string, unknown> | undefined;
+        if (result.updateCard) {
+          const tweetRows = await drizzleDb.select().from(tweetsTable).where(eq(tweetsTable.id, itemId)).limit(1);
+          const tweet = tweetRows[0] as Record<string, unknown> | undefined;
 
-        if (tweet) {
-          const cctweet = {
-            id: String(tweet.id),
-            title: String(tweet.title || ''),
-            author: String(tweet.author || ''),
-            theme: String(tweet.theme || ''),
-            verdict: String(tweet.verdict || ''),
-            action: String(tweet.action || ''),
-            source: String(tweet.source || ''),
-            tweet_link: String(tweet.tweet_link || ''),
-            digest: String(tweet.digest || ''),
-            content: String(tweet.content || ''),
-            created_at: String(tweet.created_at || ''),
-            scraped_at: String(tweet.scraped_at || ''),
-            pinned: Number(tweet.pinned || 0),
-            media_urls: String(tweet.media_urls || '[]'),
-            triage_status: String(tweet.triage_status || ''),
-            snooze_until: tweet.snooze_until as string | null,
-            rating: null,
-            summary: String(tweet.summary || ''),
-            digest_id: (tweet.digest_id as string | null) || null,
-            discord_message_id: (tweet.discord_message_id as string | null) || null,
-            discord_posted_at: (tweet.discord_posted_at as string | null) || null,
-          };
+          if (tweet) {
+            const cctweet = {
+              id: String(tweet.id),
+              title: String(tweet.title || ''),
+              author: String(tweet.author || ''),
+              theme: String(tweet.theme || ''),
+              verdict: String(tweet.verdict || ''),
+              action: String(tweet.action || ''),
+              source: String(tweet.source || ''),
+              tweet_link: String(tweet.tweet_link || ''),
+              digest: String(tweet.digest || ''),
+              content: String(tweet.content || ''),
+              created_at: String(tweet.created_at || ''),
+              scraped_at: String(tweet.scraped_at || ''),
+              pinned: Boolean(tweet.pinned),
+              media_urls: String(tweet.media_urls || '[]'),
+              triage_status: String(tweet.triage_status || ''),
+              snooze_until: tweet.snooze_until as string | null,
+              rating: null,
+              summary: String(tweet.summary || ''),
+              digest_id: (tweet.digest_id as string | null) || null,
+              discord_message_id: (tweet.discord_message_id as string | null) || null,
+              discord_posted_at: (tweet.discord_posted_at as string | null) || null,
+            };
 
-          const currentRating = tweet.rating as TweetRating | null;
-          const card = buildTweetCardV2(cctweet, currentRating, result.highlighted);
+            // Get current rating from tweetRatings table for card rebuild
+            const ratingRows = await drizzleDb.select().from(tweetRatingsTable).where(eq(tweetRatingsTable.tweet_id, itemId)).limit(1);
+            const currentRating = (ratingRows[0]?.rating ?? null) as TweetRating | null;
 
-          return NextResponse.json({
-            type: RESPONSE_UPDATE_MESSAGE,
-            data: {
-              components: [card],
-              flags: 32768,
-            },
-          });
+            const card = buildTweetCardV2(cctweet, currentRating, result.highlighted);
+
+            return NextResponse.json({
+              type: RESPONSE_UPDATE_MESSAGE,
+              data: {
+                components: [card],
+                flags: 32768,
+              },
+            });
+          }
         }
 
         return NextResponse.json({
@@ -273,7 +276,7 @@ export async function POST(request: NextRequest) {
 
       // Highlight + Note button — show modal
       if (action === 'highlightnote') {
-        const modal = getXFeedHighlightNoteModal(itemId);
+        const modal = await getXFeedHighlightNoteModal(itemId);
         if (!modal) {
           return NextResponse.json({
             type: RESPONSE_CHANNEL_MESSAGE,
@@ -297,7 +300,7 @@ export async function POST(request: NextRequest) {
 
     // Handle Garden domain (existing)
     if (domain === 'garden') {
-      const result = handleGardenAction(action, itemId);
+      const result = await handleGardenAction(action, itemId);
 
       if (!result.success) {
         return NextResponse.json({
@@ -306,34 +309,37 @@ export async function POST(request: NextRequest) {
         });
       }
 
-      // Rebuild the V2 card with updated state
-      const ccDb = getCCDatabase();
-      const item = ccDb.prepare('SELECT * FROM garden WHERE id = ?').get(itemId) as Record<string, unknown> | undefined;
+      // If we have an embed update, update the original message
+      if (result.embedUpdate) {
+        const gardenRows = await drizzleDb.select().from(gardenTable).where(eq(gardenTable.id, itemId)).limit(1);
+        const item = gardenRows[0] as Record<string, unknown> | undefined;
 
-      if (item) {
-        const gardenItem: GardenItem = {
-          id: String(item.id),
-          content: String(item.content || ''),
-          type: String(item.type || ''),
-          interest: String(item.interest || ''),
-          temporal: String(item.temporal || ''),
-          tags: String(item.tags || '[]'),
-          note: String(item.note || ''),
-          original_source: item.original_source as string | null,
-          media_urls: String(item.media_urls || '[]'),
-          metadata: String(item.metadata || '{}'),
-          saved_at: String(item.saved_at || ''),
-        };
+        if (item) {
+          const gardenItem = {
+            id: String(item.id),
+            content: String(item.content || ''),
+            type: String(item.type || ''),
+            interest: String(item.interest || ''),
+            temporal: String(item.temporal || ''),
+            tags: String(item.tags || '[]'),
+            note: String(item.note || ''),
+            original_source: item.original_source as string | null,
+            media_urls: String(item.media_urls || '[]'),
+            metadata: String(item.metadata || '{}'),
+            saved_at: String(item.saved_at || ''),
+          };
 
-        const v2Components = buildGardenCardV2(gardenItem);
+          const updatedEmbed = buildGardenEmbed(gardenItem, result.embedUpdate);
+          const buttons = buildGardenButtons(itemId);
 
-        return NextResponse.json({
-          type: RESPONSE_UPDATE_MESSAGE,
-          data: {
-            components: v2Components,
-            flags: 32768,
-          },
-        });
+          return NextResponse.json({
+            type: RESPONSE_UPDATE_MESSAGE,
+            data: {
+              embeds: [updatedEmbed],
+              components: buttons,
+            },
+          });
+        }
       }
 
       // Fallback: just send ephemeral confirmation
@@ -380,7 +386,7 @@ export async function POST(request: NextRequest) {
         });
       }
 
-      const result = handleXFeedTaskModalSubmit(tweetId, title, description);
+      const result = await handleXFeedTaskModalSubmit(tweetId, title, description);
 
       return NextResponse.json({
         type: RESPONSE_CHANNEL_MESSAGE,
@@ -404,50 +410,7 @@ export async function POST(request: NextRequest) {
         }
       }
 
-      const result = handleXFeedHighlightNoteSubmit(tweetId, note);
-
-      if (result.updateCard) {
-        const ccDb = getCCDatabase();
-        const tweet = ccDb.prepare('SELECT * FROM tweets WHERE id = ?')
-          .get(tweetId) as Record<string, unknown> | undefined;
-
-        if (tweet) {
-          const cctweet = {
-            id: String(tweet.id),
-            title: String(tweet.title || ''),
-            author: String(tweet.author || ''),
-            theme: String(tweet.theme || ''),
-            verdict: String(tweet.verdict || ''),
-            action: String(tweet.action || ''),
-            source: String(tweet.source || ''),
-            tweet_link: String(tweet.tweet_link || ''),
-            digest: String(tweet.digest || ''),
-            content: String(tweet.content || ''),
-            created_at: String(tweet.created_at || ''),
-            scraped_at: String(tweet.scraped_at || ''),
-            pinned: Number(tweet.pinned || 0),
-            media_urls: String(tweet.media_urls || '[]'),
-            triage_status: String(tweet.triage_status || ''),
-            snooze_until: tweet.snooze_until as string | null,
-            rating: null,
-            summary: String(tweet.summary || ''),
-            digest_id: (tweet.digest_id as string | null) || null,
-            discord_message_id: (tweet.discord_message_id as string | null) || null,
-            discord_posted_at: (tweet.discord_posted_at as string | null) || null,
-          };
-
-          const currentRating = tweet.rating as TweetRating | null;
-          const card = buildTweetCardV2(cctweet, currentRating, true);
-
-          return NextResponse.json({
-            type: RESPONSE_UPDATE_MESSAGE,
-            data: {
-              components: [card],
-              flags: 32768,
-            },
-          });
-        }
-      }
+      const result = await handleXFeedHighlightNoteSubmit(tweetId, note);
 
       return NextResponse.json({
         type: RESPONSE_CHANNEL_MESSAGE,

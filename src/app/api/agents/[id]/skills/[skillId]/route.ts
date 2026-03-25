@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getDatabase } from '@/lib/db'
+import { db } from '@/db/client'
+import { agents } from '@/db/schema'
+import { eq } from 'drizzle-orm'
 import { requireRole } from '@/lib/auth'
-import { toggleSkill, getSkillContent, saveSkillContent } from '@/lib/agent-skills'
+import { toggleSkill, getSkillContent } from '@/lib/agent-skills'
 
 /**
  * PUT /api/agents/[id]/skills/[skillId] - Toggle skill on/off for agent
@@ -10,22 +12,21 @@ export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string; skillId: string }> }
 ) {
-  const auth = requireRole(request, 'operator')
+  const auth = await requireRole(request, 'operator')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   try {
-    const db = getDatabase()
     const resolvedParams = await params
     const agentId = resolvedParams.id
     const skillId = resolvedParams.skillId
 
-    // Get agent by ID or name
-    let agent: any
+    let agentRows
     if (isNaN(Number(agentId))) {
-      agent = db.prepare('SELECT id, name FROM agents WHERE name = ?').get(agentId)
+      agentRows = await db.select({ id: agents.id, name: agents.name }).from(agents).where(eq(agents.name, agentId)).limit(1)
     } else {
-      agent = db.prepare('SELECT id, name FROM agents WHERE id = ?').get(Number(agentId))
+      agentRows = await db.select({ id: agents.id, name: agents.name }).from(agents).where(eq(agents.id, Number(agentId))).limit(1)
     }
+    const agent = agentRows[0]
 
     if (!agent) {
       return NextResponse.json({ error: 'Agent not found' }, { status: 404 })
@@ -38,7 +39,7 @@ export async function PUT(
       return NextResponse.json({ error: 'enabled must be a boolean' }, { status: 400 })
     }
 
-    const result = toggleSkill(agentId, skillId, enabled)
+    const result = await toggleSkill(agentId, skillId, enabled)
 
     if (!result.success) {
       return NextResponse.json({ error: result.error }, { status: 400 })
@@ -58,28 +59,27 @@ export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string; skillId: string }> }
 ) {
-  const auth = requireRole(request, 'viewer')
+  const auth = await requireRole(request, 'viewer')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   try {
-    const db = getDatabase()
     const resolvedParams = await params
     const agentId = resolvedParams.id
     const skillId = resolvedParams.skillId
 
-    // Get agent by ID or name
-    let agent: any
+    let agentRows
     if (isNaN(Number(agentId))) {
-      agent = db.prepare('SELECT id, name FROM agents WHERE name = ?').get(agentId)
+      agentRows = await db.select({ id: agents.id, name: agents.name }).from(agents).where(eq(agents.name, agentId)).limit(1)
     } else {
-      agent = db.prepare('SELECT id, name FROM agents WHERE id = ?').get(Number(agentId))
+      agentRows = await db.select({ id: agents.id, name: agents.name }).from(agents).where(eq(agents.id, Number(agentId))).limit(1)
     }
+    const agent = agentRows[0]
 
     if (!agent) {
       return NextResponse.json({ error: 'Agent not found' }, { status: 404 })
     }
 
-    const result = getSkillContent(agentId, skillId)
+    const result = await getSkillContent(agentId, skillId)
 
     if ('error' in result) {
       return NextResponse.json({ error: result.error }, { status: 404 })

@@ -6,22 +6,22 @@ import { createTenantAndBootstrapJob, listTenants } from '@/lib/super-admin'
  * GET /api/super/tenants - List tenants and latest provisioning status
  */
 export async function GET(request: NextRequest) {
-  const auth = requireRole(request, 'admin')
+  const auth = await requireRole(request, 'admin')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
-  return NextResponse.json({ tenants: listTenants() })
+  return NextResponse.json({ tenants: await listTenants() })
 }
 
 /**
  * POST /api/super/tenants - Create tenant and queue bootstrap job
  */
 export async function POST(request: NextRequest) {
-  const auth = requireRole(request, 'admin')
+  const auth = await requireRole(request, 'admin')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   try {
     const body = await request.json()
-    const created = createTenantAndBootstrapJob(body, auth.user.username)
+    const created = await createTenantAndBootstrapJob(body, auth.user.username)
     return NextResponse.json(created, { status: 201 })
   } catch (error: any) {
     if (String(error?.message || '').includes('UNIQUE')) {

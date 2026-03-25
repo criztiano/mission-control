@@ -1,28 +1,48 @@
 import { randomBytes } from 'crypto'
 import { NextResponse } from 'next/server'
 import { createSession } from '@/lib/auth'
-import { getDatabase, logAuditEvent } from '@/lib/db'
+import { db } from '@/db/client'
+import { accessRequests, users } from '@/db/schema'
+import { logAuditEvent } from '@/lib/db'
+import { eq, sql, or, and } from 'drizzle-orm'
 import { verifyGoogleIdToken } from '@/lib/google-auth'
 import { getMcSessionCookieOptions } from '@/lib/session-cookie'
 
-function upsertAccessRequest(input: {
+async function upsertAccessRequest(input: {
   email: string
   providerUserId: string
   displayName: string
   avatarUrl?: string
 }) {
-  const db = getDatabase()
-  db.prepare(`
-    INSERT INTO access_requests (provider, email, provider_user_id, display_name, avatar_url, status, attempt_count, requested_at, last_attempt_at)
-    VALUES ('google', ?, ?, ?, ?, 'pending', 1, (unixepoch()), (unixepoch()))
-    ON CONFLICT(email, provider) DO UPDATE SET
-      provider_user_id = excluded.provider_user_id,
-      display_name = excluded.display_name,
-      avatar_url = excluded.avatar_url,
-      status = 'pending',
-      attempt_count = access_requests.attempt_count + 1,
-      last_attempt_at = (unixepoch())
-  `).run(input.email.toLowerCase(), input.providerUserId, input.displayName, input.avatarUrl || null)
+  const now = Math.floor(Date.now() / 1000)
+  // Try update first, then insert
+  const existing = await db.select({ id: accessRequests.id, attempt_count: accessRequests.attempt_count })
+    .from(accessRequests)
+    .where(and(eq(accessRequests.email, input.email.toLowerCase()), eq(accessRequests.provider, 'google')))
+    .limit(1)
+  
+  if (existing[0]) {
+    await db.update(accessRequests).set({
+      provider_user_id: input.providerUserId,
+      display_name: input.displayName,
+      avatar_url: input.avatarUrl || null,
+      status: 'pending',
+      attempt_count: (existing[0].attempt_count || 0) + 1,
+      last_attempt_at: now,
+    }).where(eq(accessRequests.id, existing[0].id))
+  } else {
+    await db.insert(accessRequests).values({
+      provider: 'google',
+      email: input.email.toLowerCase(),
+      provider_user_id: input.providerUserId,
+      display_name: input.displayName,
+      avatar_url: input.avatarUrl || null,
+      status: 'pending',
+      attempt_count: 1,
+      requested_at: now,
+      last_attempt_at: now,
+    })
+  }
 }
 
 export async function POST(request: Request) {
@@ -31,25 +51,23 @@ export async function POST(request: Request) {
     const credential = String(body?.credential || '')
     const profile = await verifyGoogleIdToken(credential)
 
-    const db = getDatabase()
     const email = String(profile.email || '').toLowerCase().trim()
     const sub = String(profile.sub || '').trim()
     const displayName = String(profile.name || email.split('@')[0] || 'Google User').trim()
     const avatar = profile.picture ? String(profile.picture) : null
 
-    const row = db.prepare(`
-      SELECT id, username, display_name, role, provider, email, avatar_url, is_approved, created_at, updated_at, last_login_at
-      FROM users
-      WHERE (provider = 'google' AND provider_user_id = ?) OR lower(email) = ?
-      ORDER BY id ASC
-      LIMIT 1
-    `).get(sub, email) as any
+    const row = (await db.select().from(users).where(
+      or(
+        and(eq(users.provider, 'google'), eq(users.provider_user_id, sub)),
+        sql`lower(${users.email}) = ${email}`
+      )
+    ).orderBy(sql`id ASC`).limit(1))[0]
 
     const ipAddress = request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip') || 'unknown'
     const userAgent = request.headers.get('user-agent') || undefined
 
-    if (!row || Number(row.is_approved ?? 1) !== 1) {
-      upsertAccessRequest({
+    if (!row || !row.is_approved) {
+      await upsertAccessRequest({
         email,
         providerUserId: sub,
         displayName,
@@ -70,13 +88,16 @@ export async function POST(request: Request) {
       )
     }
 
-    db.prepare(`
-      UPDATE users
-      SET provider = 'google', provider_user_id = ?, email = ?, avatar_url = COALESCE(?, avatar_url), updated_at = (unixepoch())
-      WHERE id = ?
-    `).run(sub, email, avatar, row.id)
+    const now = Math.floor(Date.now() / 1000)
+    await db.update(users).set({
+      provider: 'google',
+      provider_user_id: sub,
+      email,
+      avatar_url: avatar ?? row.avatar_url,
+      updated_at: now,
+    }).where(eq(users.id, row.id))
 
-    const { token, expiresAt } = createSession(row.id, ipAddress, userAgent)
+    const { token, expiresAt } = await createSession(row.id, ipAddress, userAgent)
 
     logAuditEvent({ action: 'login_google', actor: row.username, actor_id: row.id, ip_address: ipAddress, user_agent: userAgent })
 

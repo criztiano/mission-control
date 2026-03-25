@@ -8,13 +8,15 @@ import {
   getIssues,
   getProject,
   mapIssueToTask,
-  getCCDatabaseWrite,
   PRIORITY_FROM_MC,
   parseBlockedBy,
   getOpenBlockerIds,
   type IssueStatus,
   type KanbanColumn,
 } from '@/lib/cc-db';
+import { db } from '@/db/client';
+import { issues } from '@/db/schema';
+import { eq } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
 import { dispatchTaskNudge } from '@/lib/task-dispatch';
 
@@ -24,7 +26,7 @@ const VALID_STATUSES: Set<string> = new Set(['draft', 'open', 'closed']);
  * GET /api/tasks - List all tasks from control-center.db issues table
  */
 export async function GET(request: NextRequest) {
-  const auth = requireRole(request, 'viewer');
+  const auth = await requireRole(request, 'viewer');
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status });
 
   try {
@@ -37,33 +39,26 @@ export async function GET(request: NextRequest) {
     const limit = Math.min(parseInt(searchParams.get('limit') || '200'), 500);
     const offset = parseInt(searchParams.get('offset') || '0');
 
-    const { issues, total } = getIssues({ status, assigned_to, priority, column, limit, offset });
+    const { issues: issueList, total } = await getIssues({ status, assigned_to, priority, column, limit, offset });
 
-    // Build a project-title cache for the issues in this page
-    const projectIds = [...new Set(issues.map(i => i.project_id).filter(Boolean))] as string[];
+    const projectIds = [...new Set(issueList.map(i => i.project_id).filter(Boolean))] as string[];
     const projectMap = new Map<string, string>();
     for (const pid of projectIds) {
-      const p = getProject(pid);
+      const p = await getProject(pid);
       if (p) projectMap.set(pid, p.title);
     }
 
-    const tasks = issues.map(issue =>
+    const tasks = issueList.map(issue =>
       mapIssueToTask(issue, issue.project_id ? projectMap.get(issue.project_id) : undefined)
     );
 
-    // Batch-compute is_blocked for all tasks that have blockers
     const allBlockerIds = [...new Set(tasks.flatMap(t => t.blocked_by || []))];
-    const openBlockers = getOpenBlockerIds(allBlockerIds);
+    const openBlockers = await getOpenBlockerIds(allBlockerIds);
     for (const task of tasks) {
       (task as any).is_blocked = (task.blocked_by || []).some((id: string) => openBlockers.has(id));
     }
 
-    return NextResponse.json({
-      tasks,
-      total,
-      page: Math.floor(offset / limit) + 1,
-      limit,
-    });
+    return NextResponse.json({ tasks, total, page: Math.floor(offset / limit) + 1, limit });
   } catch (error) {
     logger.error({ err: error }, 'GET /api/tasks error');
     return NextResponse.json({ error: 'Failed to fetch tasks' }, { status: 500 });
@@ -74,7 +69,7 @@ export async function GET(request: NextRequest) {
  * POST /api/tasks - Create a new issue in control-center.db
  */
 export async function POST(request: NextRequest) {
-  const auth = requireRole(request, 'operator');
+  const auth = await requireRole(request, 'operator');
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status });
 
   const rateCheck = mutationLimiter(request);
@@ -94,7 +89,6 @@ export async function POST(request: NextRequest) {
       metadata = {},
     } = body;
 
-    // If no title but has description, generate via AI
     if ((!title || typeof title !== 'string' || title.trim().length === 0) && description.trim().length > 0) {
       const { generateTaskLabel } = await import('@/lib/ai-label');
       const label = await generateTaskLabel(description);
@@ -115,20 +109,24 @@ export async function POST(request: NextRequest) {
     const id = randomUUID();
     const projectId = metadata?.project_id || '';
 
-    // Parse blocked_by if provided
     const blockedBy = Array.isArray(body.blocked_by) ? JSON.stringify(body.blocked_by) : '[]';
 
-    const writeDb = getCCDatabaseWrite();
-    try {
-      writeDb.prepare(`
-        INSERT INTO issues (id, project_id, title, description, status, assignee, creator, priority, created_at, updated_at, blocked_by)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(id, projectId || null, title, description, status as IssueStatus, assigned_to, creator, ccPriority, now, now, blockedBy);
-    } finally {
-      writeDb.close();
-    }
+    await db.insert(issues).values({
+      id,
+      project_id: projectId || null,
+      title,
+      description,
+      status: status as IssueStatus,
+      assignee: assigned_to,
+      creator,
+      priority: ccPriority,
+      created_at: now,
+      updated_at: now,
+      archived: false,
+      blocked_by: blockedBy,
+    });
 
-    const projectTitle = projectId ? getProject(projectId)?.title : undefined;
+    const projectTitle = projectId ? (await getProject(projectId))?.title : undefined;
     const task = mapIssueToTask(
       {
         id,
@@ -141,14 +139,15 @@ export async function POST(request: NextRequest) {
         priority: ccPriority as 'low' | 'normal' | 'high',
         created_at: now,
         updated_at: now,
-        archived: 0,
+        archived: false,
         schedule: '',
         parent_id: null,
         notion_id: '',
         plan_path: null,
+        plan_id: null,
         last_turn_at: null,
         seen_at: null,
-        picked: 0,
+        picked: false,
         picked_at: null,
         picked_by: '',
         blocked_by: '[]',
@@ -156,13 +155,12 @@ export async function POST(request: NextRequest) {
       projectTitle,
     );
 
-    db_helpers.logActivity('task_created', 'task', 0, creator, `Created task: ${title}`, {
+    await db_helpers.logActivity('task_created', 'task', 0, creator, `Created task: ${title}`, {
       title, status, priority, assigned_to,
     });
 
     eventBus.broadcast('task.created', task);
 
-    // Event-driven dispatch (replaces Pinball polling for new assignments)
     void dispatchTaskNudge({
       taskId: id,
       title,
@@ -182,10 +180,9 @@ export async function POST(request: NextRequest) {
 
 /**
  * PUT /api/tasks - Bulk update issues in control-center.db (drag-and-drop)
- * Accepts: { tasks: [{ id, status?, assigned_to? }] }
  */
 export async function PUT(request: NextRequest) {
-  const auth = requireRole(request, 'operator');
+  const auth = await requireRole(request, 'operator');
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status });
 
   const rateCheck = mutationLimiter(request);
@@ -207,26 +204,15 @@ export async function PUT(request: NextRequest) {
     const now = new Date().toISOString();
     const actor = auth.user.username;
 
-    const writeDb = getCCDatabaseWrite();
-    try {
-      const updateStatusStmt = writeDb.prepare('UPDATE issues SET status = ?, updated_at = ? WHERE id = ?');
-      const updateAssigneeStmt = writeDb.prepare('UPDATE issues SET assignee = ?, updated_at = ? WHERE id = ?');
-      const updateBothStmt = writeDb.prepare('UPDATE issues SET status = ?, assignee = ?, updated_at = ? WHERE id = ?');
+    // Update each task individually (Neon doesn't support SQLite transactions the same way)
+    for (const item of tasks) {
+      const updateFields: Record<string, any> = { updated_at: now };
+      if (item.status !== undefined) updateFields.status = item.status;
+      if (item.assigned_to !== undefined) updateFields.assignee = item.assigned_to;
 
-      const transaction = writeDb.transaction((items: Array<{ id: string; status?: string; assigned_to?: string }>) => {
-        for (const item of items) {
-          if (item.status && item.assigned_to !== undefined) {
-            updateBothStmt.run(item.status, item.assigned_to, now, item.id);
-          } else if (item.status) {
-            updateStatusStmt.run(item.status, now, item.id);
-          } else if (item.assigned_to !== undefined) {
-            updateAssigneeStmt.run(item.assigned_to, now, item.id);
-          }
-        }
-      });
-      transaction(tasks);
-    } finally {
-      writeDb.close();
+      if (Object.keys(updateFields).length > 1) {
+        await db.update(issues).set(updateFields).where(eq(issues.id, item.id));
+      }
     }
 
     for (const task of tasks) {
@@ -240,9 +226,7 @@ export async function PUT(request: NextRequest) {
         assigned_to: task.assigned_to,
         updated_at: Math.floor(Date.now() / 1000),
       });
-      db_helpers.logActivity('task_updated', 'task', 0, actor, `Task updated: ${changes.join(', ')}`, {
-        changes,
-      });
+      await db_helpers.logActivity('task_updated', 'task', 0, actor, `Task updated: ${changes.join(', ')}`, { changes });
     }
 
     return NextResponse.json({ success: true, updated: tasks.length });

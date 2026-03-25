@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useMissionControl } from '@/store'
 import { AgentAvatar } from '@/components/ui/agent-avatar'
+import { version } from '../../../package.json'
 
 interface NavItem {
   id: string
@@ -25,8 +26,6 @@ interface AgentListItem {
   team?: string
   config?: any
 }
-
-const APP_VERSION = 'v1.2.0'
 
 const navGroups: NavGroup[] = [
   {
@@ -379,8 +378,8 @@ export function NavRail() {
               </span>
             )}
           </div>
-          <span className={`text-[10px] text-muted-foreground/60 ${sidebarExpanded ? '' : 'mt-1'}`}>
-            {APP_VERSION}
+          <span className={`text-2xs text-muted-foreground/50 ${sidebarExpanded ? '' : 'mt-1'}`}>
+            v{version}
           </span>
         </div>
       </nav>

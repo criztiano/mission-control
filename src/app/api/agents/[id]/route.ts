@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getDatabase, db_helpers, logAuditEvent } from '@/lib/db'
+import { db } from '@/db/client'
+import { db_helpers, logAuditEvent } from '@/lib/db'
+import { agents } from '@/db/schema'
+import { eq } from 'drizzle-orm'
 import { getUserFromRequest, requireRole } from '@/lib/auth'
 import { writeAgentToConfig } from '@/lib/agent-sync'
 import { eventBus } from '@/lib/event-bus'
@@ -11,27 +14,27 @@ export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const auth = requireRole(request, 'viewer')
+  const auth = await requireRole(request, 'viewer')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   try {
-    const db = getDatabase()
     const { id } = await params
 
-    let agent
+    let agentRows
     if (isNaN(Number(id))) {
-      agent = db.prepare('SELECT * FROM agents WHERE name = ?').get(id)
+      agentRows = await db.select().from(agents).where(eq(agents.name, id)).limit(1)
     } else {
-      agent = db.prepare('SELECT * FROM agents WHERE id = ?').get(Number(id))
+      agentRows = await db.select().from(agents).where(eq(agents.id, Number(id))).limit(1)
     }
+    const agent = agentRows[0]
 
     if (!agent) {
       return NextResponse.json({ error: 'Agent not found' }, { status: 404 })
     }
 
     const parsed = {
-      ...(agent as any),
-      config: (agent as any).config ? JSON.parse((agent as any).config) : {},
+      ...agent,
+      config: agent.config ? JSON.parse(agent.config) : {},
     }
 
     return NextResponse.json({ agent: parsed })
@@ -42,33 +45,27 @@ export async function GET(
 }
 
 /**
- * PUT /api/agents/[id] - Update agent config with optional gateway write-back
- *
- * Body: {
- *   role?: string
- *   gateway_config?: object   - OpenClaw agent config fields to update
- *   write_to_gateway?: boolean - If true, also write to openclaw.json
- * }
+ * PUT /api/agents/[id] - Update agent config
  */
 export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const auth = requireRole(request, 'operator')
+  const auth = await requireRole(request, 'operator')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   try {
-    const db = getDatabase()
     const { id } = await params
     const body = await request.json()
     const { role, gateway_config, write_to_gateway } = body
 
-    let agent
+    let agentRows
     if (isNaN(Number(id))) {
-      agent = db.prepare('SELECT * FROM agents WHERE name = ?').get(id) as any
+      agentRows = await db.select().from(agents).where(eq(agents.name, id)).limit(1)
     } else {
-      agent = db.prepare('SELECT * FROM agents WHERE id = ?').get(Number(id)) as any
+      agentRows = await db.select().from(agents).where(eq(agents.id, Number(id))).limit(1)
     }
+    const agent = agentRows[0]
 
     if (!agent) {
       return NextResponse.json({ error: 'Agent not found' }, { status: 404 })
@@ -77,35 +74,20 @@ export async function PUT(
     const now = Math.floor(Date.now() / 1000)
     const existingConfig = agent.config ? JSON.parse(agent.config) : {}
 
-    // Merge gateway_config into existing config
     let newConfig = existingConfig
     if (gateway_config && typeof gateway_config === 'object') {
       newConfig = { ...existingConfig, ...gateway_config }
     }
 
-    // Build update
-    const fields: string[] = ['updated_at = ?']
-    const values: any[] = [now]
+    const updateData: any = { updated_at: now }
+    if (role !== undefined) updateData.role = role
+    if (gateway_config) updateData.config = JSON.stringify(newConfig)
 
-    if (role !== undefined) {
-      fields.push('role = ?')
-      values.push(role)
-    }
+    await db.update(agents).set(updateData).where(eq(agents.id, agent.id))
 
-    if (gateway_config) {
-      fields.push('config = ?')
-      values.push(JSON.stringify(newConfig))
-    }
-
-    values.push(agent.id)
-    db.prepare(`UPDATE agents SET ${fields.join(', ')} WHERE id = ?`).run(...values)
-
-    // Write back to openclaw.json if requested
     if (write_to_gateway && gateway_config) {
       try {
         const openclawId = existingConfig.openclawId || agent.name.toLowerCase().replace(/\s+/g, '-')
-
-        // Build the config to write back (full OpenClaw format)
         const writeBack: any = { id: openclawId }
         if (gateway_config.model) writeBack.model = gateway_config.model
         if (gateway_config.identity) writeBack.identity = gateway_config.identity
@@ -127,7 +109,6 @@ export async function PUT(
           ip_address: ipAddress,
         })
       } catch (err: any) {
-        // Config update succeeded in DB but gateway write failed
         return NextResponse.json({
           warning: `Agent updated in MC but gateway write failed: ${err.message}`,
           agent: { ...agent, config: newConfig, role: role || agent.role, updated_at: now },
@@ -135,8 +116,7 @@ export async function PUT(
       }
     }
 
-    // Log activity
-    db_helpers.logActivity(
+    await db_helpers.logActivity(
       'agent_config_updated',
       'agent',
       agent.id,
@@ -145,7 +125,6 @@ export async function PUT(
       { fields: Object.keys(gateway_config || {}), write_to_gateway }
     )
 
-    // Broadcast update
     eventBus.broadcast('agent.updated', {
       id: agent.id,
       name: agent.name,
@@ -170,27 +149,27 @@ export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const auth = requireRole(request, 'admin')
+  const auth = await requireRole(request, 'admin')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   try {
-    const db = getDatabase()
     const { id } = await params
 
-    let agent
+    let agentRows
     if (isNaN(Number(id))) {
-      agent = db.prepare('SELECT * FROM agents WHERE name = ?').get(id) as any
+      agentRows = await db.select().from(agents).where(eq(agents.name, id)).limit(1)
     } else {
-      agent = db.prepare('SELECT * FROM agents WHERE id = ?').get(Number(id)) as any
+      agentRows = await db.select().from(agents).where(eq(agents.id, Number(id))).limit(1)
     }
+    const agent = agentRows[0]
 
     if (!agent) {
       return NextResponse.json({ error: 'Agent not found' }, { status: 404 })
     }
 
-    db.prepare('DELETE FROM agents WHERE id = ?').run(agent.id)
+    await db.delete(agents).where(eq(agents.id, agent.id))
 
-    db_helpers.logActivity(
+    await db_helpers.logActivity(
       'agent_deleted',
       'agent',
       agent.id,

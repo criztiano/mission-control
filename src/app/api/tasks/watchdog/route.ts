@@ -1,22 +1,22 @@
 import { NextResponse } from 'next/server'
 import { requireRole } from '@/lib/auth'
-import { getTurns, getCCDatabase } from '@/lib/cc-db'
+import { getTurns } from '@/lib/cc-db'
 import { readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { dispatchTaskNudge, isAgentAssignee } from '@/lib/task-dispatch'
 import { logger } from '@/lib/logger'
+import { db } from '@/db/client'
+import { issues } from '@/db/schema'
+import { eq, and, ne, isNull, or } from 'drizzle-orm'
+import { sql } from 'drizzle-orm'
 
 const WATCHDOG_PATH = `${process.env.HOME}/.openclaw/dispatch-watchdog.json`
-const STALE_THRESHOLD_MS = 5 * 60 * 1000 // 5 minutes without a new turn = stale
+const STALE_THRESHOLD_MS = 5 * 60 * 1000 // 5 minutes
 
 /**
  * GET /api/tasks/watchdog — Check for stale dispatches and optionally auto-retry
- * 
- * Query params:
- *   ?auto-retry=true  — automatically re-poke stale tasks
- *   ?threshold=300000 — custom staleness threshold in ms (default 5 min)
  */
 export async function GET(req: Request) {
-  const authResult = requireRole(req, 'viewer')
+  const authResult = await requireRole(req, 'viewer')
   if ('error' in authResult) return NextResponse.json({ error: authResult.error }, { status: authResult.status })
 
   const url = new URL(req.url)
@@ -41,22 +41,18 @@ export async function GET(req: Request) {
   for (const rec of records) {
     const age = now - rec.dispatchedAt
     if (age < threshold) {
-      healthy.push(rec) // too fresh to judge
+      healthy.push(rec)
       continue
     }
 
-    // Check if new turns were posted since dispatch
-    const currentTurns = getTurns(rec.taskId)
+    const currentTurns = await getTurns(rec.taskId)
     if (currentTurns.length > rec.turnCountAtDispatch) {
-      // Agent posted a turn — healthy, remove from watchdog
       continue
     }
 
-    // No new turns after threshold — stale
     stale.push(rec)
   }
 
-  // Auto-retry stale dispatches
   const retried: string[] = []
   if (autoRetry) {
     for (const rec of stale) {
@@ -72,24 +68,24 @@ export async function GET(req: Request) {
     }
   }
 
-  // Update watchdog file — keep only healthy (non-stale, non-completed) entries
   writeFileSync(WATCHDOG_PATH, JSON.stringify(healthy, null, 2))
 
-  // Periodic scan: find orphaned tasks (assigned to agents, open, not picked, no active dispatch)
   const orphanDispatched: string[] = []
   if (autoRetry) {
     try {
-      const db = getCCDatabase()
-      const orphans = db.prepare(`
+      const orphanRows = await db.execute(sql`
         SELECT id, title, assignee FROM issues
-        WHERE status = 'open' AND (picked = 0 OR picked IS NULL)
-        AND assignee != '' AND assignee IS NOT NULL
-        AND LOWER(assignee) != 'cri'
-      `).all() as { id: string; title: string; assignee: string }[]
+        WHERE status = 'open'
+          AND (picked = false OR picked IS NULL)
+          AND assignee != ''
+          AND assignee IS NOT NULL
+          AND LOWER(assignee) != 'cri'
+      `)
+
+      const orphans = orphanRows.rows as { id: string; title: string; assignee: string }[]
 
       for (const orphan of orphans) {
         if (!isAgentAssignee(orphan.assignee)) continue
-        // Skip if already in active watchdog records
         const isTracked = healthy.some(h => h.taskId === orphan.id)
         if (isTracked) continue
 

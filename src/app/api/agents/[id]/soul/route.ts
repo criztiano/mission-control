@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getDatabase, db_helpers } from '@/lib/db';
+import { db } from '@/db/client';
+import { db_helpers } from '@/lib/db';
+import { agents } from '@/db/schema';
+import { eq } from 'drizzle-orm';
 import { readFileSync, existsSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { config } from '@/lib/config';
@@ -9,27 +12,25 @@ import { getAgentWorkspace, readWorkspaceFile, writeWorkspaceFile } from '@/lib/
 
 /**
  * GET /api/agents/[id]/soul - Get agent's SOUL content
- * Reads from disk first ({workspace}/SOUL.md), falls back to DB.
  */
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const auth = requireRole(request, 'viewer')
+  const auth = await requireRole(request, 'viewer')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   try {
-    const db = getDatabase();
     const resolvedParams = await params;
     const agentId = resolvedParams.id;
 
-    // Get agent by ID or name
-    let agent: any;
+    let agentRows;
     if (isNaN(Number(agentId))) {
-      agent = db.prepare('SELECT * FROM agents WHERE name = ?').get(agentId);
+      agentRows = await db.select().from(agents).where(eq(agents.name, agentId)).limit(1);
     } else {
-      agent = db.prepare('SELECT * FROM agents WHERE id = ?').get(Number(agentId));
+      agentRows = await db.select().from(agents).where(eq(agents.id, Number(agentId))).limit(1);
     }
+    const agent = agentRows[0];
 
     if (!agent) {
       return NextResponse.json({ error: 'Agent not found' }, { status: 404 });
@@ -38,7 +39,7 @@ export async function GET(
     // Try disk first
     let soulContent: string | null = null;
     let source: 'disk' | 'db' = 'db';
-    const workspace = getAgentWorkspace(agentId);
+    const workspace = await getAgentWorkspace(agentId);
 
     if (workspace) {
       const diskContent = readWorkspaceFile(workspace, 'SOUL.md');
@@ -87,29 +88,27 @@ export async function GET(
 
 /**
  * PUT /api/agents/[id]/soul - Update agent's SOUL content
- * Writes to disk first ({workspace}/SOUL.md), then updates DB cache.
  */
 export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const auth = requireRole(request, 'operator');
+  const auth = await requireRole(request, 'operator');
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status });
 
   try {
-    const db = getDatabase();
     const resolvedParams = await params;
     const agentId = resolvedParams.id;
     const body = await request.json();
     const { soul_content, template_name } = body;
 
-    // Get agent by ID or name
-    let agent: any;
+    let agentRows;
     if (isNaN(Number(agentId))) {
-      agent = db.prepare('SELECT * FROM agents WHERE name = ?').get(agentId);
+      agentRows = await db.select().from(agents).where(eq(agents.name, agentId)).limit(1);
     } else {
-      agent = db.prepare('SELECT * FROM agents WHERE id = ?').get(Number(agentId));
+      agentRows = await db.select().from(agents).where(eq(agents.id, Number(agentId))).limit(1);
     }
+    const agent = agentRows[0];
 
     if (!agent) {
       return NextResponse.json({ error: 'Agent not found' }, { status: 404 });
@@ -117,7 +116,6 @@ export async function PUT(
 
     let newSoulContent = soul_content;
 
-    // If template_name is provided, load from template
     if (template_name) {
       if (!config.soulTemplatesDir) {
         return NextResponse.json({ error: 'Templates directory not configured' }, { status: 500 });
@@ -147,7 +145,7 @@ export async function PUT(
 
     // Write to disk first
     let wroteToFile = false;
-    const workspace = getAgentWorkspace(agentId);
+    const workspace = await getAgentWorkspace(agentId);
     if (workspace) {
       try {
         writeWorkspaceFile(workspace, 'SOUL.md', newSoulContent);
@@ -159,17 +157,9 @@ export async function PUT(
 
     const now = Math.floor(Date.now() / 1000);
 
-    // Update DB cache
-    const updateStmt = db.prepare(`
-      UPDATE agents
-      SET soul_content = ?, updated_at = ?
-      WHERE ${isNaN(Number(agentId)) ? 'name' : 'id'} = ?
-    `);
+    await db.update(agents).set({ soul_content: newSoulContent, updated_at: now }).where(eq(agents.id, agent.id));
 
-    updateStmt.run(newSoulContent, now, agentId);
-
-    // Log activity
-    db_helpers.logActivity(
+    await db_helpers.logActivity(
       'agent_soul_updated',
       'agent',
       agent.id,
@@ -197,8 +187,7 @@ export async function PUT(
 }
 
 /**
- * GET /api/agents/[id]/soul/templates - Get available SOUL templates
- * Also handles loading specific template content
+ * PATCH /api/agents/[id]/soul - Get available SOUL templates
  */
 export async function PATCH(
   request: NextRequest,
@@ -218,7 +207,6 @@ export async function PATCH(
     }
 
     if (templateName) {
-      // Get specific template content
       let templatePath: string;
       try {
         templatePath = resolveWithin(templatesPath, `${templateName}.md`);
@@ -238,7 +226,6 @@ export async function PATCH(
       });
     }
 
-    // List all available templates
     const files = readdirSync(templatesPath);
     const templates = files
       .filter(file => file.endsWith('.md'))
@@ -247,7 +234,6 @@ export async function PATCH(
         const templatePath = join(templatesPath, file);
         const content = readFileSync(templatePath, 'utf8');
 
-        // Extract first line as description
         const firstLine = content.split('\n')[0];
         const description = firstLine.startsWith('#')
           ? firstLine.replace(/^#+\s*/, '')

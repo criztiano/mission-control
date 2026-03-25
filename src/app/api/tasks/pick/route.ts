@@ -1,25 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireRole } from '@/lib/auth';
 import { logger } from '@/lib/logger';
-import { getCCDatabase, setTaskPicked, getTurns, parseBlockedBy, getOpenBlockerIds } from '@/lib/cc-db';
+import { setTaskPicked, getTurns, parseBlockedBy, getOpenBlockerIds } from '@/lib/cc-db';
+import { db } from '@/db/client';
+import { issues } from '@/db/schema';
+import { sql } from 'drizzle-orm';
 
 /**
  * POST /api/tasks/pick — automatic task assignment
- *
- * Body: { agent: string }  (required — who's picking up work)
- *
- * Finds the highest-priority, oldest open task assigned to this agent
- * that isn't already picked by someone else. Returns full task context.
- *
- * Priority order: urgent > high > normal > low, then oldest first.
- *
- * Returns 204 (no content) if no tasks available — agent should stop.
- *
- * Agent mapping: if agent is "ralph", also picks up tasks assigned to "cody"
- * (Ralph is Cody's PM and handles delegation).
  */
 export async function POST(request: NextRequest) {
-  const auth = requireRole(request, 'operator');
+  const auth = await requireRole(request, 'operator');
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status });
 
   try {
@@ -27,33 +18,22 @@ export async function POST(request: NextRequest) {
     const agent = body.agent;
 
     if (!agent || typeof agent !== 'string') {
-      return NextResponse.json(
-        { error: 'agent is required — identify yourself' },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: 'agent is required — identify yourself' }, { status: 400 });
     }
 
-    const db = getCCDatabase();
-
-    // Build assignee list — ralph also picks up cody's tasks
-    const assignees: string[] = [agent, agent.toLowerCase()];
-    // Capitalize first letter variant
-    const capitalized = agent.charAt(0).toUpperCase() + agent.slice(1).toLowerCase();
-    if (!assignees.includes(capitalized)) assignees.push(capitalized);
-
+    const assignees: string[] = [agent.toLowerCase()];
     if (agent.toLowerCase() === 'ralph') {
-      assignees.push('cody', 'Cody');
+      assignees.push('cody');
     }
 
-    const placeholders = assignees.map(() => '?').join(',');
+    const assigneesStr = assignees.map(a => `'${a.replace(/'/g, "''")}'`).join(',');
 
-    // Find highest priority, oldest tasks that are open and not already picked
-    const candidates = db.prepare(`
+    const candidateRows = await db.execute(sql`
       SELECT * FROM issues
       WHERE status = 'open'
-        AND LOWER(assignee) IN (${assignees.map(a => '?').join(',')})
-        AND (picked = 0 OR picked IS NULL)
-        AND archived = 0
+        AND LOWER(assignee) IN (${sql.raw(assigneesStr)})
+        AND (picked = false OR picked IS NULL)
+        AND archived = false
       ORDER BY
         CASE priority
           WHEN 'urgent' THEN 1
@@ -65,14 +45,15 @@ export async function POST(request: NextRequest) {
         END,
         created_at ASC
       LIMIT 20
-    `).all(...assignees.map(a => a.toLowerCase())) as Record<string, unknown>[];
+    `);
 
-    // Filter out blocked tasks in JS (parse blocked_by, batch-check blocker statuses)
+    const candidates = candidateRows.rows as Record<string, unknown>[];
+
     const allBlockerIds = new Set<string>();
     for (const c of candidates) {
       for (const bid of parseBlockedBy(c.blocked_by as string)) allBlockerIds.add(bid);
     }
-    const openBlockers = getOpenBlockerIds([...allBlockerIds]);
+    const openBlockers = await getOpenBlockerIds([...allBlockerIds]);
 
     const issue = candidates.find(c => {
       const blockers = parseBlockedBy(c.blocked_by as string);
@@ -80,19 +61,15 @@ export async function POST(request: NextRequest) {
     });
 
     if (!issue) {
-      // No unblocked tasks available
       return new NextResponse(null, { status: 204 });
     }
 
     const taskId = issue.id as string;
 
-    // Record the pick
-    setTaskPicked(taskId, agent);
+    await setTaskPicked(taskId, agent);
 
-    // Get all turns for context
-    const turns = getTurns(taskId);
+    const turns = await getTurns(taskId);
 
-    // Determine if this task needs refinement
     const description = (issue.description as string) || '';
     const hasDescription = description.trim().length > 0;
     const needsRefinement = turns.length === 0 && !hasDescription;

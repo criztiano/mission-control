@@ -11,9 +11,11 @@ const openclawHome =
 
 export const config = {
   dataDir: process.env.MISSION_CONTROL_DATA_DIR || defaultDataDir,
+  /** @deprecated SQLite path — kept for reference only. DB is now Neon Postgres via DATABASE_URL. */
   dbPath:
     process.env.MISSION_CONTROL_DB_PATH ||
     path.join(defaultDataDir, 'mission-control.db'),
+  databaseUrl: process.env.DATABASE_URL || '',
   tokensPath:
     process.env.MISSION_CONTROL_TOKENS_PATH ||
     path.join(defaultDataDir, 'mission-control-tokens.json'),

@@ -7,7 +7,7 @@ import os from 'os'
 const CONFIG_PATH = path.join(os.homedir(), '.openclaw/openclaw.json')
 
 export async function PUT(request: NextRequest) {
-  const auth = requireRole(request, 'operator')
+  const auth = await requireRole(request, 'operator')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   try {

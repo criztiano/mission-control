@@ -1,4 +1,6 @@
-import { getCCDatabase, getCCDatabaseWrite } from '@/lib/cc-db';
+import { db } from '@/db/client';
+import { garden } from '@/db/schema';
+import { eq } from 'drizzle-orm';
 import { logger } from '@/lib/logger';
 
 interface GardenActionResult {
@@ -8,102 +10,91 @@ interface GardenActionResult {
 }
 
 /**
- * Set a garden item's interest classification.
+ * Pin a garden item — moves it to "now" temporal with pinned flag.
  */
-export function handleGardenInterest(itemId: string, interest: string): GardenActionResult {
-  const validInterests = ['instrument', 'ingredient', 'idea', 'knowledge', 'info', 'inspiration'];
-  if (!validInterests.includes(interest)) {
-    return { success: false, ephemeralMessage: `❌ Unknown interest: ${interest}` };
-  }
-
-  const db = getCCDatabase();
-  const item = db.prepare('SELECT * FROM garden WHERE id = ?').get(itemId) as Record<string, unknown> | undefined;
+export async function handleGardenPin(itemId: string): Promise<GardenActionResult> {
+  const rows = await db.select().from(garden).where(eq(garden.id, itemId)).limit(1);
+  const item = rows[0];
   if (!item) {
     return { success: false, ephemeralMessage: '❌ Garden item not found.' };
   }
 
-  getCCDatabaseWrite().prepare('UPDATE garden SET interest = ?, saved_at = ? WHERE id = ?')
-    .run(interest, new Date().toISOString(), itemId);
+  const now = new Date().toISOString();
+  let metadata: Record<string, unknown> = {};
+  try { metadata = JSON.parse(item.metadata || '{}'); } catch {}
 
-  const labels: Record<string, string> = {
-    instrument: '🔧 Instrument',
-    ingredient: '🧩 Ingredient',
-    idea: '💡 Idea',
-    knowledge: '📚 Knowledge',
-  };
+  await db.update(garden).set({
+    temporal: 'now',
+    metadata: JSON.stringify({ ...metadata, pinned: true, pinned_at: now }),
+    saved_at: now,
+  }).where(eq(garden.id, itemId));
 
-  logger.info({ itemId, interest }, 'Garden item interest set via Discord');
+  logger.info({ itemId }, 'Garden item pinned via Discord');
 
   return {
     success: true,
-    ephemeralMessage: `${labels[interest]} — interest set`,
-    embedUpdate: { interest },
+    ephemeralMessage: '📌 Pinned to garden',
+    embedUpdate: {
+      color: 0x22c55e, // green
+      footer: { text: '✅ Pinned' },
+    },
   };
 }
 
 /**
- * Set a garden item's temporal classification.
+ * Snooze a garden item — moves to "later" temporal, sets snooze_until to 1 day from now.
  */
-export function handleGardenTemporal(itemId: string, temporal: string): GardenActionResult {
-  const validTemporal = ['now', 'later', 'ever'];
-  if (!validTemporal.includes(temporal)) {
-    return { success: false, ephemeralMessage: `❌ Unknown temporal: ${temporal}` };
-  }
-
-  const db = getCCDatabase();
-  const item = db.prepare('SELECT * FROM garden WHERE id = ?').get(itemId) as Record<string, unknown> | undefined;
-  if (!item) {
+export async function handleGardenSnooze(itemId: string): Promise<GardenActionResult> {
+  const rows = await db.select().from(garden).where(eq(garden.id, itemId)).limit(1);
+  if (!rows[0]) {
     return { success: false, ephemeralMessage: '❌ Garden item not found.' };
   }
 
-  const updates: Record<string, unknown> = {
-    temporal,
-    saved_at: new Date().toISOString(),
-  };
+  const now = new Date();
+  const snoozeUntil = new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString();
 
-  // If snoozing, set snooze_until to 1 day from now
-  if (temporal === 'later') {
-    updates.snooze_until = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
-  } else {
-    updates.snooze_until = null;
-  }
+  await db.update(garden).set({
+    temporal: 'later',
+    snooze_until: snoozeUntil,
+    saved_at: now.toISOString(),
+  }).where(eq(garden.id, itemId));
 
-  getCCDatabaseWrite().prepare('UPDATE garden SET temporal = ?, snooze_until = ?, saved_at = ? WHERE id = ?')
-    .run(updates.temporal, updates.snooze_until, updates.saved_at, itemId);
-
-  const labels: Record<string, string> = {
-    now: '⚡ Now',
-    later: '⏰ Later (1 day)',
-    ever: '♾️ Ever',
-  };
-
-  logger.info({ itemId, temporal }, 'Garden item temporal set via Discord');
+  logger.info({ itemId, snoozeUntil }, 'Garden item snoozed via Discord');
 
   return {
     success: true,
-    ephemeralMessage: `${labels[temporal]} — temporal set`,
-    embedUpdate: { temporal },
+    ephemeralMessage: '⏰ Snoozed for 1 day',
+    embedUpdate: {
+      color: 0x6b7280, // grey
+      footer: { text: '💤 Snoozed — back tomorrow' },
+    },
   };
 }
 
 /**
- * Dismiss a garden item — sets temporal to "never" (soft delete).
+ * Dismiss a garden item — sets temporal to "never" (soft dismiss).
  */
-export function handleGardenDismiss(itemId: string): GardenActionResult {
-  const db = getCCDatabase();
-  const item = db.prepare('SELECT * FROM garden WHERE id = ?').get(itemId) as Record<string, unknown> | undefined;
-  if (!item) {
+export async function handleGardenDismiss(itemId: string): Promise<GardenActionResult> {
+  const rows = await db.select().from(garden).where(eq(garden.id, itemId)).limit(1);
+  if (!rows[0]) {
     return { success: false, ephemeralMessage: '❌ Garden item not found.' };
   }
 
-  getCCDatabaseWrite().prepare('UPDATE garden SET temporal = ?, saved_at = ? WHERE id = ?')
-    .run('never', new Date().toISOString(), itemId);
+  const now = new Date().toISOString();
+
+  await db.update(garden).set({
+    temporal: 'never',
+    saved_at: now,
+  }).where(eq(garden.id, itemId));
 
   logger.info({ itemId }, 'Garden item dismissed via Discord');
 
   return {
     success: true,
     ephemeralMessage: '🗑️ Dismissed',
-    embedUpdate: { temporal: 'never' },
+    embedUpdate: {
+      color: 0x374151, // dim grey
+      footer: { text: '🗑️ Dismissed' },
+    },
   };
 }

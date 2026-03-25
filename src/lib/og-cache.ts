@@ -1,4 +1,6 @@
-import { getCCDatabase, getCCDatabaseWrite } from './cc-db';
+import { db } from '@/db/client';
+import { ogCache } from '@/db/schema';
+import { eq } from 'drizzle-orm';
 import { logger } from './logger';
 
 // --- Types ---
@@ -14,25 +16,10 @@ export interface OGData {
 // --- Schema Migration ---
 
 /**
- * Create og_cache table if it doesn't exist.
- * Safe to call multiple times — idempotent.
+ * No-op: og_cache table is now managed by Drizzle schema.
  */
 export function ensureOGCacheTable(): void {
-  const db = getCCDatabaseWrite();
-  try {
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS og_cache (
-        url TEXT PRIMARY KEY,
-        title TEXT,
-        description TEXT,
-        image TEXT,
-        fetched_at TEXT NOT NULL
-      )
-    `);
-    logger.info('og_cache table ready');
-  } finally {
-    db.close();
-  }
+  // No-op: table created by drizzle-kit migrations
 }
 
 // --- Cache Operations ---
@@ -41,11 +28,9 @@ export function ensureOGCacheTable(): void {
  * Get OG data from cache if it exists and is fresh (< 7 days old).
  * Returns null if not found or stale.
  */
-export function getOGCache(url: string): OGData | null {
-  ensureOGCacheTable();
-
-  const db = getCCDatabase(true);
-  const row = db.prepare('SELECT * FROM og_cache WHERE url = ?').get(url) as OGData | undefined;
+export async function getOGCache(url: string): Promise<OGData | null> {
+  const rows = await db.select().from(ogCache).where(eq(ogCache.url, url)).limit(1);
+  const row = rows[0];
 
   if (!row) return null;
 
@@ -58,32 +43,37 @@ export function getOGCache(url: string): OGData | null {
     return null; // Stale cache
   }
 
-  return row;
+  return {
+    url: row.url,
+    title: row.title ?? null,
+    description: row.description ?? null,
+    image: row.image ?? null,
+    fetched_at: row.fetched_at,
+  };
 }
 
 /**
  * Save OG data to cache.
  */
-export function setOGCache(url: string, data: Omit<OGData, 'url' | 'fetched_at'>): void {
-  ensureOGCacheTable();
-
-  const db = getCCDatabaseWrite();
-  try {
-    const stmt = db.prepare(`
-      INSERT OR REPLACE INTO og_cache (url, title, description, image, fetched_at)
-      VALUES (?, ?, ?, ?, ?)
-    `);
-
-    stmt.run(
+export async function setOGCache(url: string, data: Omit<OGData, 'url' | 'fetched_at'>): Promise<void> {
+  await db
+    .insert(ogCache)
+    .values({
       url,
-      data.title,
-      data.description,
-      data.image,
-      new Date().toISOString()
-    );
+      title: data.title,
+      description: data.description,
+      image: data.image,
+      fetched_at: new Date().toISOString(),
+    })
+    .onConflictDoUpdate({
+      target: ogCache.url,
+      set: {
+        title: data.title,
+        description: data.description,
+        image: data.image,
+        fetched_at: new Date().toISOString(),
+      },
+    });
 
-    logger.info(`OG cache: saved data for ${url}`);
-  } finally {
-    db.close();
-  }
+  logger.info(`OG cache: saved data for ${url}`);
 }

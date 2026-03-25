@@ -8,7 +8,10 @@
 
 import path from 'node:path'
 import { existsSync, readFileSync, writeFileSync, readdirSync, statSync, mkdirSync } from 'node:fs'
-import { getDatabase } from './db'
+import { db } from '@/db/client'
+import { agents } from '@/db/schema'
+import { eq } from 'drizzle-orm'
+import { sql } from 'drizzle-orm'
 
 /** Files that are allowed to be accessed via the files API */
 const ALLOWED_ROOT_FILES = new Set([
@@ -33,14 +36,14 @@ function assertWithinWorkspace(workspace: string, resolved: string): void {
 }
 
 /** Resolve an agent's workspace path from DB config (by name or numeric id) */
-export function getAgentWorkspace(agentNameOrId: string): string | null {
-  const db = getDatabase()
-  let agent: any
+export async function getAgentWorkspace(agentNameOrId: string): Promise<string | null> {
+  let rows: any[]
   if (isNaN(Number(agentNameOrId))) {
-    agent = db.prepare('SELECT config FROM agents WHERE name = ?').get(agentNameOrId)
+    rows = await db.select({ config: agents.config }).from(agents).where(eq(agents.name, agentNameOrId)).limit(1)
   } else {
-    agent = db.prepare('SELECT config FROM agents WHERE id = ?').get(Number(agentNameOrId))
+    rows = await db.select({ config: agents.config }).from(agents).where(eq(agents.id, Number(agentNameOrId))).limit(1)
   }
+  const agent = rows[0]
   if (!agent?.config) return null
 
   try {
@@ -128,7 +131,6 @@ export function isAllowedFile(filename: string): boolean {
   // memory/*.md files
   if (filename.startsWith('memory/') && filename.endsWith('.md')) {
     const basename = path.basename(filename)
-    // Only alphanumeric, dashes, dots in the basename (e.g. 2026-03-01.md)
     if (/^[\w.-]+\.md$/.test(basename)) return true
   }
 

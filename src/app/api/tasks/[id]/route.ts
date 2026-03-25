@@ -8,12 +8,14 @@ import {
   getIssue,
   getProject,
   mapIssueToTask,
-  getCCDatabaseWrite,
   PRIORITY_FROM_MC,
   getOpenBlockerIds,
   getBlockerDetails,
   type IssueStatus,
 } from '@/lib/cc-db';
+import { db } from '@/db/client';
+import { issues } from '@/db/schema';
+import { eq } from 'drizzle-orm';
 import { dispatchTaskNudge } from '@/lib/task-dispatch';
 
 const VALID_STATUSES: Set<string> = new Set(['draft', 'open', 'closed']);
@@ -25,26 +27,24 @@ export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const auth = requireRole(request, 'viewer');
+  const auth = await requireRole(request, 'viewer');
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status });
 
   try {
-    const resolvedParams = await params;
-    const issueId = resolvedParams.id;
+    const { id: issueId } = await params;
 
-    const issue = getIssue(issueId);
+    const issue = await getIssue(issueId);
     if (!issue) {
       return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     }
 
-    const projectTitle = issue.project_id ? getProject(issue.project_id)?.title : undefined;
-    const task = mapIssueToTask(issue, projectTitle);
+    const projectRow = issue.project_id ? await getProject(issue.project_id) : undefined;
+    const task = mapIssueToTask(issue, projectRow?.title);
 
-    // Compute is_blocked + blocker details
     const blockerIds = task.blocked_by || [];
-    const openBlockers = getOpenBlockerIds(blockerIds);
+    const openBlockers = await getOpenBlockerIds(blockerIds);
     (task as any).is_blocked = blockerIds.some((id: string) => openBlockers.has(id));
-    (task as any).blocker_details = getBlockerDetails(blockerIds);
+    (task as any).blocker_details = await getBlockerDetails(blockerIds);
 
     return NextResponse.json({ task });
   } catch (error) {
@@ -60,18 +60,17 @@ export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const auth = requireRole(request, 'operator');
+  const auth = await requireRole(request, 'operator');
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status });
 
   const rateCheck = mutationLimiter(request);
   if (rateCheck) return rateCheck;
 
   try {
-    const resolvedParams = await params;
-    const issueId = resolvedParams.id;
+    const { id: issueId } = await params;
     const body = await request.json();
 
-    const currentIssue = getIssue(issueId);
+    const currentIssue = await getIssue(issueId);
     if (!currentIssue) {
       return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     }
@@ -92,7 +91,6 @@ export async function PUT(
       return NextResponse.json({ error: `Invalid status: ${status}` }, { status: 400 });
     }
 
-    // Agents cannot change status — only humans can. Agents report work via turns.
     if (status !== undefined && auth.user.username === 'api') {
       return NextResponse.json(
         { error: 'Agents cannot change task status. Use /api/tasks/{id}/turns to report work.' },
@@ -102,92 +100,43 @@ export async function PUT(
 
     const now = new Date().toISOString();
 
-    // Build dynamic update
-    const fieldsToUpdate: string[] = [];
-    const updateParams: any[] = [];
+    // Build update object
+    const updateFields: Record<string, any> = { updated_at: now };
 
-    if (title !== undefined) {
-      fieldsToUpdate.push('title = ?');
-      updateParams.push(title);
-    }
-    if (description !== undefined) {
-      fieldsToUpdate.push('description = ?');
-      updateParams.push(description);
-    }
-    if (status !== undefined) {
-      fieldsToUpdate.push('status = ?');
-      updateParams.push(status);
-    }
-    if (priority !== undefined) {
-      fieldsToUpdate.push('priority = ?');
-      updateParams.push(PRIORITY_FROM_MC[priority] || priority);
-    }
-    if (assigned_to !== undefined) {
-      fieldsToUpdate.push('assignee = ?');
-      updateParams.push(assigned_to);
-    }
-    if (creator !== undefined) {
-      fieldsToUpdate.push('creator = ?');
-      updateParams.push(creator);
-    }
-    if (project_id !== undefined) {
-      fieldsToUpdate.push('project_id = ?');
-      updateParams.push(project_id || null);
-    }
-    if (plan_path !== undefined) {
-      fieldsToUpdate.push('plan_path = ?');
-      updateParams.push(plan_path || null);
-    }
+    if (title !== undefined) updateFields.title = title;
+    if (description !== undefined) updateFields.description = description;
+    if (status !== undefined) updateFields.status = status;
+    if (priority !== undefined) updateFields.priority = PRIORITY_FROM_MC[priority] || priority;
+    if (assigned_to !== undefined) updateFields.assignee = assigned_to;
+    if (creator !== undefined) updateFields.creator = creator;
+    if (project_id !== undefined) updateFields.project_id = project_id || null;
+    if (plan_path !== undefined) updateFields.plan_path = plan_path || null;
     if (blocked_by !== undefined) {
       if (!Array.isArray(blocked_by)) {
         return NextResponse.json({ error: 'blocked_by must be an array of task IDs' }, { status: 400 });
       }
-      fieldsToUpdate.push('blocked_by = ?');
-      updateParams.push(JSON.stringify(blocked_by));
-    }
-    if (body.blocked_by !== undefined) {
-      // Accept array of task IDs or empty array
-      const blockedBy = Array.isArray(body.blocked_by) ? JSON.stringify(body.blocked_by) : '[]';
-      fieldsToUpdate.push('blocked_by = ?');
-      updateParams.push(blockedBy);
+      updateFields.blocked_by = JSON.stringify(blocked_by);
     }
 
-    if (fieldsToUpdate.length === 0) {
+    if (Object.keys(updateFields).length <= 1) {
       return NextResponse.json({ error: 'No fields to update' }, { status: 400 });
     }
 
-    fieldsToUpdate.push('updated_at = ?');
-    updateParams.push(now);
-    updateParams.push(issueId);
-
-    const writeDb = getCCDatabaseWrite();
-    try {
-      writeDb.prepare(`UPDATE issues SET ${fieldsToUpdate.join(', ')} WHERE id = ?`).run(...updateParams);
-    } finally {
-      writeDb.close();
-    }
+    await db.update(issues).set(updateFields).where(eq(issues.id, issueId));
 
     // Track changes for activity log
     const changes: string[] = [];
-    if (status && status !== currentIssue.status) {
-      changes.push(`status: ${currentIssue.status} -> ${status}`);
-    }
-    if (assigned_to !== undefined && assigned_to !== currentIssue.assignee) {
-      changes.push(`assigned: ${currentIssue.assignee || 'unassigned'} -> ${assigned_to || 'unassigned'}`);
-    }
-    if (title && title !== currentIssue.title) {
-      changes.push('title updated');
-    }
+    if (status && status !== currentIssue.status) changes.push(`status: ${currentIssue.status} -> ${status}`);
+    if (assigned_to !== undefined && assigned_to !== currentIssue.assignee) changes.push(`assigned: ${currentIssue.assignee || 'unassigned'} -> ${assigned_to || 'unassigned'}`);
+    if (title && title !== currentIssue.title) changes.push('title updated');
     if (priority) {
       const ccOldPriority = currentIssue.priority;
       const ccNewPriority = PRIORITY_FROM_MC[priority] || priority;
-      if (ccNewPriority !== ccOldPriority) {
-        changes.push(`priority: ${ccOldPriority} -> ${ccNewPriority}`);
-      }
+      if (ccNewPriority !== ccOldPriority) changes.push(`priority: ${ccOldPriority} -> ${ccNewPriority}`);
     }
 
     if (changes.length > 0) {
-      db_helpers.logActivity(
+      await db_helpers.logActivity(
         'task_updated',
         'task',
         0,
@@ -197,20 +146,16 @@ export async function PUT(
       );
     }
 
-    // Re-fetch and return mapped task
-    const updatedIssue = getIssue(issueId);
+    const updatedIssue = await getIssue(issueId);
     if (!updatedIssue) {
       return NextResponse.json({ error: 'Task not found after update' }, { status: 500 });
     }
 
-    const projectTitle = updatedIssue.project_id ? getProject(updatedIssue.project_id)?.title : undefined;
-    const task = mapIssueToTask(updatedIssue, projectTitle);
+    const projectRow = updatedIssue.project_id ? await getProject(updatedIssue.project_id) : undefined;
+    const task = mapIssueToTask(updatedIssue, projectRow?.title);
 
     eventBus.broadcast('task.updated', task);
 
-    // Event-driven dispatch:
-    // 1. On reassignment (new assignee)
-    // 2. On status change to 'open' with an existing assignee (e.g. draft→open)
     const assigneeChanged = assigned_to !== undefined && assigned_to !== currentIssue.assignee;
     const becameOpen = status === 'open' && currentIssue.status !== 'open';
     const effectiveAssignee = assigned_to !== undefined ? assigned_to : currentIssue.assignee;
@@ -241,31 +186,23 @@ export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const auth = requireRole(request, 'operator');
+  const auth = await requireRole(request, 'operator');
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status });
 
   const rateCheck = mutationLimiter(request);
   if (rateCheck) return rateCheck;
 
   try {
-    const resolvedParams = await params;
-    const issueId = resolvedParams.id;
+    const { id: issueId } = await params;
 
-    const issue = getIssue(issueId);
+    const issue = await getIssue(issueId);
     if (!issue) {
       return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     }
 
-    // Soft-delete: set archived = 1
-    const writeDb = getCCDatabaseWrite();
-    try {
-      writeDb.prepare('UPDATE issues SET archived = 1, updated_at = ? WHERE id = ?')
-        .run(new Date().toISOString(), issueId);
-    } finally {
-      writeDb.close();
-    }
+    await db.update(issues).set({ archived: true, updated_at: new Date().toISOString() }).where(eq(issues.id, issueId));
 
-    db_helpers.logActivity(
+    await db_helpers.logActivity(
       'task_deleted',
       'task',
       0,

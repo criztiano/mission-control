@@ -1,7 +1,10 @@
 import { readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync } from 'node:fs'
 import { execSync } from 'node:child_process'
 import { runOpenClaw, runOpenClawDetached } from '@/lib/command'
-import { getIssue, getTurns, setTaskPicked, getCCDatabase, getCCDatabaseWrite } from '@/lib/cc-db'
+import { getIssue, getTurns, setTaskPicked } from '@/lib/cc-db'
+import { db } from '@/db/client'
+import { issues } from '@/db/schema'
+import { eq, and, ne, sql } from 'drizzle-orm'
 import { logger } from '@/lib/logger'
 
 type DispatchParams = {
@@ -19,49 +22,16 @@ const DISPATCH_TIMEOUT_MS = 5 * 60 * 1000 // 5 min to post a turn or we auto-ret
 const MAX_RETRIES = 3
 const dispatchRetryCount = new Map<string, number>()
 
-// Agent IDs loaded from OpenClaw config — auto-syncs when agents are added/removed.
-// Human assignees (cri, etc.) are NOT in this set and won't receive dispatches.
-const HUMAN_ASSIGNEES = new Set(['cri'])
-let _knownAgentsCache: Set<string> | null = null
-let _knownAgentsCacheTime = 0
-const AGENT_CACHE_TTL_MS = 60_000 // re-read config every 60s
-
-function loadKnownAgents(): Set<string> {
-  const now = Date.now()
-  if (_knownAgentsCache && (now - _knownAgentsCacheTime) < AGENT_CACHE_TTL_MS) {
-    return _knownAgentsCache
-  }
-  try {
-    const configPath = process.env.OPENCLAW_CONFIG_PATH || `${process.env.HOME}/.openclaw/openclaw.json`
-    const config = JSON.parse(readFileSync(configPath, 'utf-8'))
-    const agents = new Set<string>()
-    const list = config?.agents?.list || []
-    for (const entry of list) {
-      if (entry.id) agents.add(entry.id.toLowerCase())
-      // Also add the agent name as an alias (e.g. "Cseno" → "cseno")
-      if (entry.name) agents.add(entry.name.toLowerCase())
-    }
-    // Always include 'main' for cseno alias resolution
-    agents.add('main')
-    _knownAgentsCache = agents
-    _knownAgentsCacheTime = now
-    logger.info({ agents: [...agents].sort() }, 'task-dispatch: loaded agent list from openclaw.json')
-    return agents
-  } catch (e) {
-    logger.warn({ err: e }, 'task-dispatch: failed to read openclaw.json, using cached agents')
-    if (_knownAgentsCache) return _knownAgentsCache
-    // Ultimate fallback — should never happen in practice
-    return new Set(['main', 'cseno', 'cody', 'worm', 'scottie', 'piem', 'ralph', 'pinball', 'uze', 'dumbo', 'roach', 'rover', 'auwl'])
-  }
-}
+// Known agent IDs that can receive dispatches.
+// Human assignees (cri, etc.) are NOT agents and should not be dispatched to.
+const KNOWN_AGENTS = new Set([
+  'main', 'cseno', 'cody', 'worm', 'ops', 'piem', 'ralph', 'pinball', 'uze', 'dumbo',
+])
 
 function resolveAgentId(assignee: string): string | null {
   const a = (assignee || '').trim().toLowerCase()
   if (!a) return null
-  if (HUMAN_ASSIGNEES.has(a)) return null  // human assignee — skip
-  const known = loadKnownAgents()
-  if (!known.has(a)) return null  // unknown assignee — skip
-  // Alias resolution: agent names → agent IDs
+  if (!KNOWN_AGENTS.has(a)) return null  // human assignee — skip
   if (a === 'cseno') return 'main'
   return a
 }
@@ -130,7 +100,7 @@ function scheduleDispatchWatchdog(taskId: string, agentId: string, turnCountAtDi
     dispatchWatchdogs.delete(key)
     try {
       // Check if agent posted a turn since dispatch
-      const currentTurns = getTurns(taskId)
+      const currentTurns = await getTurns(taskId)
       if (currentTurns.length > turnCountAtDispatch) {
         logger.info({ taskId, agentId }, 'dispatch-watchdog: agent posted turn — healthy')
         dispatchRetryCount.delete(key)
@@ -151,8 +121,7 @@ function scheduleDispatchWatchdog(taskId: string, agentId: string, turnCountAtDi
         logger.warn({ taskId, agentId, retries }, 'dispatch-watchdog: max retries reached — resetting picked, will be caught by periodic scan')
         dispatchRetryCount.delete(key)
         // Reset picked so periodic scan can re-dispatch
-        const writeDb = getCCDatabaseWrite()
-        writeDb.prepare('UPDATE issues SET picked = 0, picked_at = NULL WHERE id = ?').run(taskId)
+        await db.update(issues).set({ picked: false, picked_at: null }).where(eq(issues.id, taskId))
         return
       }
 
@@ -195,9 +164,9 @@ async function isSessionActive(agentId: string): Promise<boolean> {
 }
 
 async function isLikelyBusy(assignee: string): Promise<boolean> {
-  // Non-persistent agents always get fresh sessions — never considered busy
+  // Spawn agents always get fresh sessions — never considered busy
   const a = assignee.toLowerCase()
-  if (!PERSISTENT_AGENTS.has(a)) return false
+  if (SPAWN_AGENTS.has(a)) return false
   // Only guard persistent-session agents that might be mid-conversation
   if (a !== 'cody') return false
 
@@ -219,9 +188,8 @@ async function isLikelyBusy(assignee: string): Promise<boolean> {
   }
 }
 
-// Persistent-session agents — these get heartbeat-only dispatch (no CLI spawn).
-// Everyone else gets fresh-session spawn dispatch.
-const PERSISTENT_AGENTS = new Set(['main'])
+// Agents that use spawn (no persistent main session)
+const SPAWN_AGENTS = new Set(['dumbo', 'uze', 'ralph', 'piem', 'cody'])
 
 async function sendOne(payload: DispatchParams) {
   const assignee = (payload.assignee || '').trim()
@@ -230,35 +198,35 @@ async function sendOne(payload: DispatchParams) {
 
   const compactContext = (payload.content || '').replace(/\s+/g, ' ').trim().slice(0, 240)
 
-  if (!PERSISTENT_AGENTS.has(agentId)) {
+  if (SPAWN_AGENTS.has(agentId)) {
     // Check if agent already has a picked task (busy) — queue drain will handle it later
-    const busyTask = getIssue(payload.taskId) // we need to check OTHER tasks
-    const db = getCCDatabase()
-    const alreadyBusy = db.prepare(
-      "SELECT id FROM issues WHERE LOWER(assignee) = LOWER(?) AND status = 'open' AND picked = 1 AND id != ? LIMIT 1"
-    ).get(agentId, payload.taskId) as { id: string } | undefined
-    if (alreadyBusy) {
+    const { projects } = await import('@/db/schema')
+    const busyRows = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(sql`LOWER(${issues.assignee}) = LOWER(${agentId}) AND ${issues.status} = 'open' AND ${issues.picked} = true AND ${issues.id} != ${payload.taskId}`)
+      .limit(1)
+    if (busyRows.length > 0) {
       return { sent: false as const, reason: 'agent-busy' as const }
     }
 
     // Fetch full task data, mark as picked, and embed everything in the message.
-    // Agent wakes up knowing everything — zero API calls needed to start working.
-    const issue = getIssue(payload.taskId)
+    const issue = await getIssue(payload.taskId)
     if (!issue) {
       return { sent: false as const, reason: 'no-task' as const }
     }
-    setTaskPicked(payload.taskId, agentId)
-    const turns = getTurns(payload.taskId)
+    await setTaskPicked(payload.taskId, agentId)
+    const turns = await getTurns(payload.taskId)
 
     const turnsBlock = turns.length > 0
       ? `## Prior turns\n\n${turns.map(t => `**[${t.type}] ${t.author}** (round ${t.round_number}):\n${t.content}`).join('\n\n---\n\n')}`
       : ''
 
-        // Resolve project local path from the projects table
+    // Resolve project local path from the projects table
     let projectPath = ''
     if (issue.project_id) {
-      const db = getCCDatabase()
-      const proj = db.prepare('SELECT title, local_path FROM projects WHERE id = ?').get(issue.project_id) as any
+      const projRows = await db.select({ title: projects.title, local_path: projects.local_path }).from(projects).where(eq(projects.id, issue.project_id!)).limit(1)
+      const proj = projRows[0]
       const localPath = proj?.local_path?.replace('~', process.env.HOME || '~')
       projectPath = `\n**Project:** ${proj?.title || issue.project_id}${localPath ? `\n**Project path:** \`${localPath}\` — cd here and work in this directory` : ''}`
     }
@@ -445,77 +413,12 @@ ${workflowBlock}
     // Schedule inline watchdog — auto-retry if no turn arrives within 5 min
     scheduleDispatchWatchdog(payload.taskId, agentId, turns.length)
   } else {
-    // Persistent agents (main/cseno) get isolated task sessions.
-    // We spawn a fresh session with a unique ID so the persistent chat session
-    // is untouched — same fresh-context advantage as spawn agents.
-    const issue = getIssue(payload.taskId)
-    if (!issue) {
-      return { sent: false as const, reason: 'no-task' as const }
-    }
-    setTaskPicked(payload.taskId, agentId)
-    const turns = getTurns(payload.taskId)
-
-    const turnsBlock = turns.length > 0
-      ? `## Prior turns\n\n${turns.map(t => `**[${t.type}] ${t.author}** (round ${t.round_number}):\n${t.content}`).join('\n\n---\n\n')}`
-      : ''
-
-    let projectPath = ''
-    if (issue.project_id) {
-      const db = getCCDatabase()
-      const proj = db.prepare('SELECT title, local_path FROM projects WHERE id = ?').get(issue.project_id) as any
-      const localPath = proj?.local_path?.replace('~', process.env.HOME || '~')
-      projectPath = `\n**Project:** ${proj?.title || issue.project_id}${localPath ? `\n**Project path:** \`${localPath}\`` : ''}`
-    }
-
-    const nudgeMsg = `# Task Assignment (isolated session)
-
-**Task ID:** ${payload.taskId}
-**Priority:** ${issue.priority}${projectPath}
-
-## Description
-
-${issue.description || '(no description)'}
-
-${turnsBlock}
-
-## How to report back
-
-Post a turn when done:
-
-\`\`\`bash
-curl -s -X POST "http://localhost:3333/api/tasks/${payload.taskId}/turns" \\
-  -H "Content-Type: application/json" \\
-  -H "x-api-key: mc-api-key-local-dev" \\
-  -d '{"assigned_to":"cri","content":"## ✅ Done\\n\\n<summary>"}'
-\`\`\`
-
-**Critical rules:**
-- Work on THIS task (${payload.taskId}) — do NOT create new tasks.
-- Never change task status — only post turns.
-- After posting your turn, reply NO_REPLY to close your session.`
-
-    const taskSessionId = `task-${payload.taskId.slice(0, 12)}-${Date.now()}`
-    logger.info({ agentId, taskId: payload.taskId, sessionId: taskSessionId }, 'Persistent agent — spawning isolated task session')
-
-    // Record dispatch for watchdog
-    const dispatchRecord = { taskId: payload.taskId, agentId, dispatchedAt: Date.now(), turnCountAtDispatch: turns.length }
-    try {
-      const watchdogPath = `${process.env.HOME}/.openclaw/dispatch-watchdog.json`
-      const existing = existsSync(watchdogPath) ? JSON.parse(readFileSync(watchdogPath, 'utf8')) : []
-      existing.push(dispatchRecord)
-      writeFileSync(watchdogPath, JSON.stringify(existing.slice(-20), null, 2))
-    } catch { /* best-effort */ }
-
-    runOpenClawDetached([
-      'agent',
-      '--agent', agentId,
-      '--session-id', taskSessionId,
-      '--message', nudgeMsg,
-    ], {
-      env: withOpenClawEnv(),
-    })
-
-    scheduleDispatchWatchdog(payload.taskId, agentId, turns.length)
+    // For persistent agents (main/cseno), skip CLI dispatch entirely.
+    // Main agent checks tasks via heartbeats and direct Telegram messages.
+    // CLI dispatch conflicts with active sessions and times out.
+    logger.info({ agentId, taskId: payload.taskId }, 'Persistent agent — task marked, skipping CLI dispatch (checked via heartbeat)')
+    // Just mark it picked so the agent finds it on next check
+    await db.update(issues).set({ picked: true, picked_at: new Date().toISOString(), picked_by: agentId }).where(eq(issues.id, payload.taskId))
   }
 
   return { sent: true as const, agentId }

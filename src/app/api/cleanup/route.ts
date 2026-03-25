@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { db } from '@/db/client'
+import { activities, auditLog, notifications, pipelineRuns } from '@/db/schema'
+import { sql } from 'drizzle-orm'
 import { requireRole } from '@/lib/auth'
-import { getDatabase, logAuditEvent } from '@/lib/db'
+import { logAuditEvent } from '@/lib/db'
 import { config } from '@/lib/config'
 import { heavyLimiter } from '@/lib/rate-limit'
 
@@ -15,28 +18,25 @@ interface CleanupResult {
  * GET /api/cleanup - Show retention policy and what would be cleaned
  */
 export async function GET(request: NextRequest) {
-  const auth = requireRole(request, 'admin')
+  const auth = await requireRole(request, 'admin')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
-  const db = getDatabase()
   const now = Math.floor(Date.now() / 1000)
-  const ret = config.retention
-
   const preview = []
 
-  for (const { table, column, days, label } of getRetentionTargets()) {
+  for (const { table, days, label } of getRetentionTargets()) {
     if (days <= 0) {
       preview.push({ table: label, retention_days: 0, stale_count: 0, note: 'Retention disabled (keep forever)' })
       continue
     }
     const cutoff = now - days * 86400
     try {
-      const row = db.prepare(`SELECT COUNT(*) as c FROM ${table} WHERE ${column} < ?`).get(cutoff) as any
+      const rows = await db.execute(sql`SELECT COUNT(*) as c FROM ${sql.raw(table)} WHERE created_at < ${cutoff}`)
       preview.push({
         table: label,
         retention_days: days,
         cutoff_date: new Date(cutoff * 1000).toISOString().split('T')[0],
-        stale_count: row.c,
+        stale_count: Number((rows.rows[0] as any)?.c || 0),
       })
     } catch {
       preview.push({ table: label, retention_days: days, stale_count: 0, note: 'Table not found' })
@@ -44,6 +44,7 @@ export async function GET(request: NextRequest) {
   }
 
   // Token usage file stats
+  const ret = config.retention
   try {
     const { readFile } = require('fs/promises')
     const data = JSON.parse(await readFile(config.tokensPath, 'utf-8'))
@@ -64,10 +65,9 @@ export async function GET(request: NextRequest) {
 
 /**
  * POST /api/cleanup - Run cleanup (admin only)
- * Body: { dry_run?: boolean }
  */
 export async function POST(request: NextRequest) {
-  const auth = requireRole(request, 'admin')
+  const auth = await requireRole(request, 'admin')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   const rateCheck = heavyLimiter(request)
@@ -76,34 +76,25 @@ export async function POST(request: NextRequest) {
   const body = await request.json().catch(() => ({}))
   const dryRun = body.dry_run === true
 
-  const db = getDatabase()
   const now = Math.floor(Date.now() / 1000)
   const results: CleanupResult[] = []
   let totalDeleted = 0
 
-  for (const { table, column, days, label } of getRetentionTargets()) {
+  for (const { table, days, label } of getRetentionTargets()) {
     if (days <= 0) continue
     const cutoff = now - days * 86400
 
     try {
       if (dryRun) {
-        const row = db.prepare(`SELECT COUNT(*) as c FROM ${table} WHERE ${column} < ?`).get(cutoff) as any
-        results.push({
-          table: label,
-          deleted: row.c,
-          cutoff_date: new Date(cutoff * 1000).toISOString().split('T')[0],
-          retention_days: days,
-        })
-        totalDeleted += row.c
+        const rows = await db.execute(sql`SELECT COUNT(*) as c FROM ${sql.raw(table)} WHERE created_at < ${cutoff}`)
+        const count = Number((rows.rows[0] as any)?.c || 0)
+        results.push({ table: label, deleted: count, cutoff_date: new Date(cutoff * 1000).toISOString().split('T')[0], retention_days: days })
+        totalDeleted += count
       } else {
-        const res = db.prepare(`DELETE FROM ${table} WHERE ${column} < ?`).run(cutoff)
-        results.push({
-          table: label,
-          deleted: res.changes,
-          cutoff_date: new Date(cutoff * 1000).toISOString().split('T')[0],
-          retention_days: days,
-        })
-        totalDeleted += res.changes
+        const rows = await db.execute(sql`DELETE FROM ${sql.raw(table)} WHERE created_at < ${cutoff} RETURNING id`)
+        const count = (rows.rows as any[]).length
+        results.push({ table: label, deleted: count, cutoff_date: new Date(cutoff * 1000).toISOString().split('T')[0], retention_days: days })
+        totalDeleted += count
       }
     } catch {
       results.push({ table: label, deleted: 0, cutoff_date: '', retention_days: days })
@@ -148,19 +139,15 @@ export async function POST(request: NextRequest) {
     })
   }
 
-  return NextResponse.json({
-    dry_run: dryRun,
-    total_deleted: totalDeleted,
-    results,
-  })
+  return NextResponse.json({ dry_run: dryRun, total_deleted: totalDeleted, results })
 }
 
 function getRetentionTargets() {
   const ret = config.retention
   return [
-    { table: 'activities', column: 'created_at', days: ret.activities, label: 'Activities' },
-    { table: 'audit_log', column: 'created_at', days: ret.auditLog, label: 'Audit Log' },
-    { table: 'notifications', column: 'created_at', days: ret.notifications, label: 'Notifications' },
-    { table: 'pipeline_runs', column: 'created_at', days: ret.pipelineRuns, label: 'Pipeline Runs' },
+    { table: 'activities', days: ret.activities, label: 'Activities' },
+    { table: 'audit_log', days: ret.auditLog, label: 'Audit Log' },
+    { table: 'notifications', days: ret.notifications, label: 'Notifications' },
+    { table: 'pipeline_runs', days: ret.pipelineRuns, label: 'Pipeline Runs' },
   ]
 }

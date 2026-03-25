@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getDatabase } from '@/lib/db'
+import { db } from '@/db/client'
+import { webhooks, webhookDeliveries } from '@/db/schema'
+import { eq, sql } from 'drizzle-orm'
 import { requireRole } from '@/lib/auth'
 import { createHmac } from 'crypto'
 
@@ -7,21 +9,17 @@ import { createHmac } from 'crypto'
  * POST /api/webhooks/test - Send a test event to a webhook
  */
 export async function POST(request: NextRequest) {
-  const auth = requireRole(request, 'admin')
+  const auth = await requireRole(request, 'admin')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   try {
-    const db = getDatabase()
     const { id } = await request.json()
 
-    if (!id) {
-      return NextResponse.json({ error: 'Webhook ID is required' }, { status: 400 })
-    }
+    if (!id) return NextResponse.json({ error: 'Webhook ID is required' }, { status: 400 })
 
-    const webhook = db.prepare('SELECT * FROM webhooks WHERE id = ?').get(id) as any
-    if (!webhook) {
-      return NextResponse.json({ error: 'Webhook not found' }, { status: 404 })
-    }
+    const webhookRows = await db.select().from(webhooks).where(eq(webhooks.id, id)).limit(1)
+    const webhook = webhookRows[0]
+    if (!webhook) return NextResponse.json({ error: 'Webhook not found' }, { status: 404 })
 
     const body = JSON.stringify({
       event: 'test.ping',
@@ -54,13 +52,7 @@ export async function POST(request: NextRequest) {
       const controller = new AbortController()
       const timeout = setTimeout(() => controller.abort(), 10000)
 
-      const res = await fetch(webhook.url, {
-        method: 'POST',
-        headers,
-        body,
-        signal: controller.signal,
-      })
-
+      const res = await fetch(webhook.url, { method: 'POST', headers, body, signal: controller.signal })
       clearTimeout(timeout)
       statusCode = res.status
       responseBody = await res.text().catch(() => null)
@@ -72,27 +64,23 @@ export async function POST(request: NextRequest) {
     }
 
     const durationMs = Date.now() - start
+    const now = Math.floor(Date.now() / 1000)
 
-    // Log the test delivery
-    db.prepare(`
-      INSERT INTO webhook_deliveries (webhook_id, event_type, payload, status_code, response_body, error, duration_ms)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(webhook.id, 'test.ping', body, statusCode, responseBody, error, durationMs)
-
-    db.prepare(`
-      UPDATE webhooks SET last_fired_at = unixepoch(), last_status = ?, updated_at = unixepoch()
-      WHERE id = ?
-    `).run(statusCode ?? -1, webhook.id)
-
-    const success = statusCode !== null && statusCode >= 200 && statusCode < 300
-
-    return NextResponse.json({
-      success,
+    await db.insert(webhookDeliveries).values({
+      webhook_id: webhook.id,
+      event_type: 'test.ping',
+      payload: body,
       status_code: statusCode,
       response_body: responseBody,
       error,
       duration_ms: durationMs,
     })
+
+    await db.update(webhooks).set({ last_fired_at: now, last_status: statusCode ?? -1, updated_at: now }).where(eq(webhooks.id, webhook.id))
+
+    const success = statusCode !== null && statusCode >= 200 && statusCode < 300
+
+    return NextResponse.json({ success, status_code: statusCode, response_body: responseBody, error, duration_ms: durationMs })
   } catch (error) {
     console.error('POST /api/webhooks/test error:', error)
     return NextResponse.json({ error: 'Failed to test webhook' }, { status: 500 })

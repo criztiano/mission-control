@@ -1,10 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getUserFromRequest, updateUser , requireRole } from '@/lib/auth'
+import { getUserFromRequest, updateUser, requireRole } from '@/lib/auth'
 import { logAuditEvent } from '@/lib/db'
 import { verifyPassword } from '@/lib/password'
+import { db } from '@/db/client'
+import { users } from '@/db/schema'
+import { eq } from 'drizzle-orm'
 
 export async function GET(request: Request) {
-  const auth = requireRole(request, 'viewer')
+  const auth = await requireRole(request, 'viewer')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   const user = getUserFromRequest(request)
@@ -28,7 +31,6 @@ export async function GET(request: Request) {
 
 /**
  * PATCH /api/auth/me - Self-service password change and display name update.
- * Body: { current_password, new_password } and/or { display_name }
  */
 export async function PATCH(request: NextRequest) {
   const user = getUserFromRequest(request)
@@ -36,7 +38,6 @@ export async function PATCH(request: NextRequest) {
     return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
   }
 
-  // API key users (id=0) cannot change passwords
   if (user.id === 0) {
     return NextResponse.json({ error: 'API key users cannot change passwords' }, { status: 403 })
   }
@@ -46,7 +47,6 @@ export async function PATCH(request: NextRequest) {
 
     const updates: { password?: string; display_name?: string } = {}
 
-    // Handle password change
     if (new_password) {
       if (!current_password) {
         return NextResponse.json({ error: 'Current password is required' }, { status: 400 })
@@ -56,10 +56,8 @@ export async function PATCH(request: NextRequest) {
         return NextResponse.json({ error: 'New password must be at least 8 characters' }, { status: 400 })
       }
 
-      // Verify current password by fetching stored hash
-      const { getDatabase } = await import('@/lib/db')
-      const db = getDatabase()
-      const row = db.prepare('SELECT password_hash FROM users WHERE id = ?').get(user.id) as any
+      const rows = await db.select({ password_hash: users.password_hash }).from(users).where(eq(users.id, user.id)).limit(1)
+      const row = rows[0]
       if (!row || !verifyPassword(current_password, row.password_hash)) {
         return NextResponse.json({ error: 'Current password is incorrect' }, { status: 403 })
       }
@@ -67,7 +65,6 @@ export async function PATCH(request: NextRequest) {
       updates.password = new_password
     }
 
-    // Handle display name update
     if (display_name !== undefined) {
       if (!display_name.trim()) {
         return NextResponse.json({ error: 'Display name cannot be empty' }, { status: 400 })
@@ -79,17 +76,17 @@ export async function PATCH(request: NextRequest) {
       return NextResponse.json({ error: 'No updates provided' }, { status: 400 })
     }
 
-    const updated = updateUser(user.id, updates)
+    const updated = await updateUser(user.id, updates)
     if (!updated) {
       return NextResponse.json({ error: 'User not found' }, { status: 404 })
     }
 
     const ipAddress = request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip') || 'unknown'
     if (updates.password) {
-      logAuditEvent({ action: 'password_change', actor: user.username, actor_id: user.id, ip_address: ipAddress })
+      await logAuditEvent({ action: 'password_change', actor: user.username, actor_id: user.id, ip_address: ipAddress })
     }
     if (updates.display_name) {
-      logAuditEvent({ action: 'profile_update', actor: user.username, actor_id: user.id, detail: { display_name: updates.display_name }, ip_address: ipAddress })
+      await logAuditEvent({ action: 'profile_update', actor: user.username, actor_id: user.id, detail: { display_name: updates.display_name }, ip_address: ipAddress })
     }
 
     return NextResponse.json({

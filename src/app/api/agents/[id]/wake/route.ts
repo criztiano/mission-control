@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getDatabase, db_helpers } from '@/lib/db'
+import { db } from '@/db/client'
+import { db_helpers } from '@/lib/db'
+import { agents } from '@/db/schema'
+import { eq } from 'drizzle-orm'
 import { runOpenClaw } from '@/lib/command'
 import { requireRole } from '@/lib/auth'
 
@@ -7,7 +10,7 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const auth = requireRole(request, 'operator')
+  const auth = await requireRole(request, 'operator')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   try {
@@ -17,10 +20,13 @@ export async function POST(
     const customMessage =
       typeof body?.message === 'string' ? body.message.trim() : ''
 
-    const db = getDatabase()
-    const agent: any = isNaN(Number(agentId))
-      ? db.prepare('SELECT * FROM agents WHERE name = ?').get(agentId)
-      : db.prepare('SELECT * FROM agents WHERE id = ?').get(Number(agentId))
+    let agentRows
+    if (isNaN(Number(agentId))) {
+      agentRows = await db.select().from(agents).where(eq(agents.name, agentId)).limit(1)
+    } else {
+      agentRows = await db.select().from(agents).where(eq(agents.id, Number(agentId))).limit(1)
+    }
+    const agent = agentRows[0]
 
     if (!agent) {
       return NextResponse.json({ error: 'Agent not found' }, { status: 404 })
@@ -49,7 +55,7 @@ export async function POST(
       )
     }
 
-    db_helpers.updateAgentStatus(agent.name, 'idle', 'Manual wake')
+    await db_helpers.updateAgentStatus(agent.name, 'idle', 'Manual wake')
 
     return NextResponse.json({
       success: true,
