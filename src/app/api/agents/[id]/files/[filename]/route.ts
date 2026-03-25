@@ -16,7 +16,7 @@ export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string; filename: string }> }
 ) {
-  const auth = requireRole(request, 'viewer')
+  const auth = await requireRole(request, 'viewer')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   try {
@@ -42,7 +42,7 @@ export async function GET(
       return NextResponse.json({ error: 'Agent not found' }, { status: 404 })
     }
 
-    const workspace = getAgentWorkspace(agentId)
+    const workspace = await getAgentWorkspace(agentId)
     if (!workspace) {
       return NextResponse.json({ error: 'No workspace configured' }, { status: 404 })
     }
@@ -76,7 +76,7 @@ export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string; filename: string }> }
 ) {
-  const auth = requireRole(request, 'operator')
+  const auth = await requireRole(request, 'operator')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   try {
@@ -107,7 +107,7 @@ export async function PUT(
       return NextResponse.json({ error: 'Agent not found' }, { status: 404 })
     }
 
-    const workspace = getAgentWorkspace(agentId)
+    const workspace = await getAgentWorkspace(agentId)
     if (!workspace) {
       return NextResponse.json({ error: 'No workspace configured' }, { status: 404 })
     }

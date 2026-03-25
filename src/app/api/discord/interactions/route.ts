@@ -3,7 +3,10 @@ import nacl from 'tweetnacl';
 import { logger } from '@/lib/logger';
 import { handleGardenPin, handleGardenSnooze, handleGardenDismiss } from '@/lib/discord-actions/garden';
 import { handleXFeedRating, getXFeedTaskModal, handleXFeedTaskModalSubmit } from '@/lib/discord-actions/xfeed';
-import { getCCDatabase, type TweetRating } from '@/lib/cc-db';
+import { type TweetRating } from '@/lib/cc-db';
+import { db as drizzleDb } from '@/db/client';
+import { tweets as tweetsTable, garden as gardenTable } from '@/db/schema';
+import { eq } from 'drizzle-orm';
 import { buildGardenEmbed, buildGardenButtons, buildTweetCardV2 } from '@/lib/discord-cards';
 
 // Discord interaction types
@@ -55,17 +58,17 @@ function parseCustomId(customId: string): { domain: string; action: string; item
 /**
  * Handle garden component interactions (Pin, Snooze, Dismiss).
  */
-function handleGardenAction(
+async function handleGardenAction(
   action: string,
   itemId: string
-): { ephemeralMessage: string; embedUpdate?: Record<string, unknown>; success: boolean } {
+): Promise<{ ephemeralMessage: string; embedUpdate?: Record<string, unknown>; success: boolean }> {
   switch (action) {
     case 'pin':
-      return handleGardenPin(itemId);
+      return await handleGardenPin(itemId);
     case 'snooze':
-      return handleGardenSnooze(itemId);
+      return await handleGardenSnooze(itemId);
     case 'dismiss':
-      return handleGardenDismiss(itemId);
+      return await handleGardenDismiss(itemId);
     default:
       return { success: false, ephemeralMessage: `❌ Unknown garden action: ${action}` };
   }
@@ -130,7 +133,7 @@ export async function POST(request: NextRequest) {
     if (domain === 'xfeed') {
       if (action === 'task') {
         // "Create Task" button — show modal
-        const modal = getXFeedTaskModal(itemId);
+        const modal = await getXFeedTaskModal(itemId);
         if (!modal) {
           return NextResponse.json({
             type: RESPONSE_CHANNEL_MESSAGE,
@@ -148,7 +151,7 @@ export async function POST(request: NextRequest) {
 
       // Rating buttons (fire/meh/noise)
       if (['fire', 'meh', 'noise'].includes(action)) {
-        const result = handleXFeedRating(action as TweetRating, itemId);
+        const result = await handleXFeedRating(action as TweetRating, itemId);
 
         if (!result.success) {
           return NextResponse.json({
@@ -160,9 +163,8 @@ export async function POST(request: NextRequest) {
         if (result.updateCard) {
           // Rebuild the card with updated button states
           // Use newRating from the handler directly (avoids read-after-write race)
-          const ccDb = getCCDatabase();
-          const tweet = ccDb.prepare('SELECT * FROM tweets WHERE id = ?')
-            .get(itemId) as Record<string, unknown> | undefined;
+          const tweetRows = await drizzleDb.select().from(tweetsTable).where(eq(tweetsTable.id, itemId)).limit(1);
+          const tweet = tweetRows[0] as Record<string, unknown> | undefined;
 
           if (tweet) {
             const cctweet = {
@@ -178,7 +180,7 @@ export async function POST(request: NextRequest) {
               content: String(tweet.content || ''),
               created_at: String(tweet.created_at || ''),
               scraped_at: String(tweet.scraped_at || ''),
-              pinned: Number(tweet.pinned || 0),
+              pinned: Boolean(tweet.pinned),
               media_urls: String(tweet.media_urls || '[]'),
               triage_status: String(tweet.triage_status || ''),
               snooze_until: tweet.snooze_until as string | null,
@@ -217,7 +219,7 @@ export async function POST(request: NextRequest) {
 
     // Handle Garden domain (existing)
     if (domain === 'garden') {
-      const result = handleGardenAction(action, itemId);
+      const result = await handleGardenAction(action, itemId);
 
       if (!result.success) {
         return NextResponse.json({
@@ -228,8 +230,8 @@ export async function POST(request: NextRequest) {
 
       // If we have an embed update, update the original message
       if (result.embedUpdate) {
-        const ccDb = getCCDatabase();
-        const item = ccDb.prepare('SELECT * FROM garden WHERE id = ?').get(itemId) as Record<string, unknown> | undefined;
+        const gardenRows = await drizzleDb.select().from(gardenTable).where(eq(gardenTable.id, itemId)).limit(1);
+        const item = gardenRows[0] as Record<string, unknown> | undefined;
 
         if (item) {
           const gardenItem = {
@@ -303,7 +305,7 @@ export async function POST(request: NextRequest) {
         });
       }
 
-      const result = handleXFeedTaskModalSubmit(tweetId, title, description);
+      const result = await handleXFeedTaskModalSubmit(tweetId, title, description);
 
       return NextResponse.json({
         type: RESPONSE_CHANNEL_MESSAGE,

@@ -13,7 +13,7 @@ const MAX_BACKUPS = 10
  * GET /api/backup - List existing backups (admin only)
  */
 export async function GET(request: NextRequest) {
-  const auth = requireRole(request, 'admin')
+  const auth = await requireRole(request, 'admin')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   ensureDirExists(BACKUP_DIR)
@@ -41,7 +41,7 @@ export async function GET(request: NextRequest) {
  * POST /api/backup - Create a new backup (admin only)
  */
 export async function POST(request: NextRequest) {
-  const auth = requireRole(request, 'admin')
+  const auth = await requireRole(request, 'admin')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   const rateCheck = heavyLimiter(request)
@@ -88,7 +88,7 @@ export async function POST(request: NextRequest) {
  * DELETE /api/backup?name=<filename> - Delete a specific backup (admin only)
  */
 export async function DELETE(request: NextRequest) {
-  const auth = requireRole(request, 'admin')
+  const auth = await requireRole(request, 'admin')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   let body: any

@@ -5,28 +5,32 @@ import { logger } from '@/lib/logger';
 import { getIssue, getTurns, createTurn, getProject, type TurnType } from '@/lib/cc-db';
 import { dispatchTaskNudge } from '@/lib/task-dispatch';
 import { postTaskCard } from '@/lib/discord-cards';
+import { db } from '@/db/client';
+import { issues } from '@/db/schema';
+import { eq, and, ne, isNull, or } from 'drizzle-orm';
+import { sql } from 'drizzle-orm';
 
 const SPAWN_AGENTS = new Set(['dumbo', 'uze', 'ralph', 'piem', 'cody']);
 
 /**
- * GET /api/tasks/[id]/turns — all turns for a task, ordered by round ASC, created_at ASC
+ * GET /api/tasks/[id]/turns — all turns for a task
  */
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const auth = requireRole(request, 'viewer');
+  const auth = await requireRole(request, 'viewer');
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status });
 
   try {
     const { id: taskId } = await params;
 
-    const issue = getIssue(taskId);
+    const issue = await getIssue(taskId);
     if (!issue) {
       return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     }
 
-    const turns = getTurns(taskId);
+    const turns = await getTurns(taskId);
 
     return NextResponse.json({ turns, total: turns.length });
   } catch (error) {
@@ -37,14 +41,12 @@ export async function GET(
 
 /**
  * POST /api/tasks/[id]/turns — create a new turn
- * Body: { assigned_to, content, links? }
- * Legacy fields (type, author) are accepted but optional — inferred if missing.
  */
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const auth = requireRole(request, 'operator');
+  const auth = await requireRole(request, 'operator');
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status });
 
   const rateCheck = mutationLimiter(request);
@@ -56,26 +58,19 @@ export async function POST(
 
     const { content, links, assigned_to, type, author } = body;
 
-    // assigned_to is required
     if (!assigned_to) {
-      return NextResponse.json(
-        { error: 'assigned_to is required' },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: 'assigned_to is required' }, { status: 400 });
     }
 
-    const issue = getIssue(taskId);
+    const issue = await getIssue(taskId);
     if (!issue) {
       return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     }
 
-    // Infer author from current assignee if not provided
     const turnAuthor = author || issue.assignee || auth.user?.username || 'system';
-
-    // Default type to 'result' if not provided
     const turnType: TurnType = type || 'result';
 
-    const turn = createTurn(taskId, {
+    const turn = await createTurn(taskId, {
       assigned_to,
       content: content || '',
       links: links || [],
@@ -89,7 +84,7 @@ export async function POST(
         try {
           let projectName: string | undefined;
           if (issue.project_id) {
-            const project = getProject(issue.project_id);
+            const project = await getProject(issue.project_id);
             projectName = project?.title;
           }
           await postTaskCard({
@@ -110,8 +105,8 @@ export async function POST(
       })();
     }
 
-    // Dispatch on every turn (not just instruction/result)
-    const updatedIssue = getIssue(taskId);
+    // Dispatch on every turn
+    const updatedIssue = await getIssue(taskId);
     const newAssignee = updatedIssue?.assignee || '';
 
     if (newAssignee && newAssignee !== turnAuthor) {
@@ -131,16 +126,19 @@ export async function POST(
     // Queue drain: if the author is a known spawn agent, check for their next open task
     if (SPAWN_AGENTS.has(turnAuthor.toLowerCase())) {
       try {
-        const { getCCDatabase } = await import('@/lib/cc-db');
-        const db = getCCDatabase();
-        const nextTask = db.prepare(`
+        const nextTaskRows = await db.execute(sql`
           SELECT id, title FROM issues
-          WHERE LOWER(assignee) = LOWER(?) AND status = 'open' AND (picked = 0 OR picked IS NULL) AND id != ?
+          WHERE LOWER(assignee) = LOWER(${turnAuthor})
+            AND status = 'open'
+            AND (picked = false OR picked IS NULL)
+            AND id != ${taskId}
           ORDER BY
             CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END,
             created_at ASC
           LIMIT 1
-        `).get(turnAuthor, taskId) as { id: string; title: string } | undefined;
+        `);
+
+        const nextTask = nextTaskRows.rows[0] as { id: string; title: string } | undefined;
 
         if (nextTask) {
           logger.info({ agent: turnAuthor, nextTaskId: nextTask.id, nextTitle: nextTask.title }, 'Queue drain: dispatching next task');

@@ -1,7 +1,10 @@
 import { readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync } from 'node:fs'
 import { execSync } from 'node:child_process'
 import { runOpenClaw, runOpenClawDetached } from '@/lib/command'
-import { getIssue, getTurns, setTaskPicked, getCCDatabase, getCCDatabaseWrite } from '@/lib/cc-db'
+import { getIssue, getTurns, setTaskPicked } from '@/lib/cc-db'
+import { db } from '@/db/client'
+import { issues } from '@/db/schema'
+import { eq, and, ne, sql } from 'drizzle-orm'
 import { logger } from '@/lib/logger'
 
 type DispatchParams = {
@@ -97,7 +100,7 @@ function scheduleDispatchWatchdog(taskId: string, agentId: string, turnCountAtDi
     dispatchWatchdogs.delete(key)
     try {
       // Check if agent posted a turn since dispatch
-      const currentTurns = getTurns(taskId)
+      const currentTurns = await getTurns(taskId)
       if (currentTurns.length > turnCountAtDispatch) {
         logger.info({ taskId, agentId }, 'dispatch-watchdog: agent posted turn — healthy')
         dispatchRetryCount.delete(key)
@@ -118,8 +121,7 @@ function scheduleDispatchWatchdog(taskId: string, agentId: string, turnCountAtDi
         logger.warn({ taskId, agentId, retries }, 'dispatch-watchdog: max retries reached — resetting picked, will be caught by periodic scan')
         dispatchRetryCount.delete(key)
         // Reset picked so periodic scan can re-dispatch
-        const writeDb = getCCDatabaseWrite()
-        writeDb.prepare('UPDATE issues SET picked = 0, picked_at = NULL WHERE id = ?').run(taskId)
+        await db.update(issues).set({ picked: false, picked_at: null }).where(eq(issues.id, taskId))
         return
       }
 
@@ -198,33 +200,33 @@ async function sendOne(payload: DispatchParams) {
 
   if (SPAWN_AGENTS.has(agentId)) {
     // Check if agent already has a picked task (busy) — queue drain will handle it later
-    const busyTask = getIssue(payload.taskId) // we need to check OTHER tasks
-    const db = getCCDatabase()
-    const alreadyBusy = db.prepare(
-      "SELECT id FROM issues WHERE LOWER(assignee) = LOWER(?) AND status = 'open' AND picked = 1 AND id != ? LIMIT 1"
-    ).get(agentId, payload.taskId) as { id: string } | undefined
-    if (alreadyBusy) {
+    const { projects } = await import('@/db/schema')
+    const busyRows = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(sql`LOWER(${issues.assignee}) = LOWER(${agentId}) AND ${issues.status} = 'open' AND ${issues.picked} = true AND ${issues.id} != ${payload.taskId}`)
+      .limit(1)
+    if (busyRows.length > 0) {
       return { sent: false as const, reason: 'agent-busy' as const }
     }
 
     // Fetch full task data, mark as picked, and embed everything in the message.
-    // Agent wakes up knowing everything — zero API calls needed to start working.
-    const issue = getIssue(payload.taskId)
+    const issue = await getIssue(payload.taskId)
     if (!issue) {
       return { sent: false as const, reason: 'no-task' as const }
     }
-    setTaskPicked(payload.taskId, agentId)
-    const turns = getTurns(payload.taskId)
+    await setTaskPicked(payload.taskId, agentId)
+    const turns = await getTurns(payload.taskId)
 
     const turnsBlock = turns.length > 0
       ? `## Prior turns\n\n${turns.map(t => `**[${t.type}] ${t.author}** (round ${t.round_number}):\n${t.content}`).join('\n\n---\n\n')}`
       : ''
 
-        // Resolve project local path from the projects table
+    // Resolve project local path from the projects table
     let projectPath = ''
     if (issue.project_id) {
-      const db = getCCDatabase()
-      const proj = db.prepare('SELECT title, local_path FROM projects WHERE id = ?').get(issue.project_id) as any
+      const projRows = await db.select({ title: projects.title, local_path: projects.local_path }).from(projects).where(eq(projects.id, issue.project_id!)).limit(1)
+      const proj = projRows[0]
       const localPath = proj?.local_path?.replace('~', process.env.HOME || '~')
       projectPath = `\n**Project:** ${proj?.title || issue.project_id}${localPath ? `\n**Project path:** \`${localPath}\` — cd here and work in this directory` : ''}`
     }
@@ -416,9 +418,7 @@ ${workflowBlock}
     // CLI dispatch conflicts with active sessions and times out.
     logger.info({ agentId, taskId: payload.taskId }, 'Persistent agent — task marked, skipping CLI dispatch (checked via heartbeat)')
     // Just mark it picked so the agent finds it on next check
-    const writeDb = getCCDatabaseWrite()
-    writeDb.prepare("UPDATE issues SET picked = 1, picked_at = ?, picked_by = ? WHERE id = ?")
-      .run(new Date().toISOString(), agentId, payload.taskId)
+    await db.update(issues).set({ picked: true, picked_at: new Date().toISOString(), picked_by: agentId }).where(eq(issues.id, payload.taskId))
   }
 
   return { sent: true as const, agentId }

@@ -1,143 +1,131 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getDatabase, db_helpers } from '@/lib/db';
+import { db_helpers } from '@/lib/db';
 import { requireRole } from '@/lib/auth';
-import { getCCDatabase } from '@/lib/cc-db';
+import { db } from '@/db/client';
+import { agents, issues } from '@/db/schema';
+import { eq, and, like, sql } from 'drizzle-orm';
 
 /**
  * GET /api/agents/[id]/heartbeat - Agent heartbeat check
- * 
- * Checks for:
- * - @mentions in recent comments
- * - Assigned tasks
- * - Recent activity feed items
- * 
- * Returns work items or "HEARTBEAT_OK" if nothing to do
  */
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const auth = requireRole(request, 'viewer')
+  const auth = await requireRole(request, 'viewer')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   try {
-    const db = getDatabase();
-    const resolvedParams = await params;
-    const agentId = resolvedParams.id;
-    
+    const { id: agentId } = await params;
+
     // Get agent by ID or name
-    let agent: any;
+    let agentRows;
     if (isNaN(Number(agentId))) {
-      // Lookup by name
-      agent = db.prepare('SELECT * FROM agents WHERE name = ?').get(agentId);
+      agentRows = await db.select().from(agents).where(eq(agents.name, agentId)).limit(1);
     } else {
-      // Lookup by ID
-      agent = db.prepare('SELECT * FROM agents WHERE id = ?').get(Number(agentId));
+      agentRows = await db.select().from(agents).where(eq(agents.id, Number(agentId))).limit(1);
     }
-    
+
+    const agent = agentRows[0];
     if (!agent) {
       return NextResponse.json({ error: 'Agent not found' }, { status: 404 });
     }
-    
+
     const workItems: any[] = [];
     const now = Math.floor(Date.now() / 1000);
-    const fourHoursAgo = now - (4 * 60 * 60); // Check last 4 hours
-    
-    // 1. Check for @mentions in recent comments
-    const mentions = db.prepare(`
-      SELECT c.*, t.title as task_title 
+    const fourHoursAgo = now - (4 * 60 * 60);
+
+    // 1. Check for @mentions in recent comments (MC db)
+    const mentionRows = await db.execute(sql`
+      SELECT c.*, t.title as task_title
       FROM comments c
       JOIN tasks t ON c.task_id = t.id
-      WHERE c.mentions LIKE ?
-      AND c.created_at > ?
+      WHERE c.mentions LIKE ${'%"' + agent.name + '"%'}
+      AND c.created_at > ${fourHoursAgo}
       ORDER BY c.created_at DESC
       LIMIT 10
-    `).all(`%"${agent.name}"%`, fourHoursAgo);
-    
-    if (mentions.length > 0) {
+    `);
+
+    if (mentionRows.rows.length > 0) {
       workItems.push({
         type: 'mentions',
-        count: mentions.length,
-        items: mentions.map((m: any) => ({
+        count: mentionRows.rows.length,
+        items: (mentionRows.rows as any[]).map(m => ({
           id: m.id,
           task_title: m.task_title,
           author: m.author,
           content: m.content.substring(0, 100) + '...',
-          created_at: m.created_at
-        }))
+          created_at: m.created_at,
+        })),
       });
     }
-    
-    // 2. Check for assigned tasks from control-center.db
-    const ccDb = getCCDatabase();
-    const assignedTasks = ccDb.prepare(`
-      SELECT * FROM issues
-      WHERE assignee = ?
-      AND status = 'open'
-      AND archived = 0
-      ORDER BY priority DESC, created_at ASC
-      LIMIT 10
-    `).all(agent.name);
-    
-    if (assignedTasks.length > 0) {
+
+    // 2. Check for assigned tasks from control-center.db (CC db)
+    const assignedTaskRows = await db
+      .select()
+      .from(issues)
+      .where(and(
+        eq(issues.assignee, agent.name),
+        eq(issues.status, 'open'),
+        eq(issues.archived, false)
+      ))
+      .limit(10);
+
+    if (assignedTaskRows.length > 0) {
       workItems.push({
         type: 'assigned_tasks',
-        count: assignedTasks.length,
-        items: assignedTasks.map((t: any) => ({
+        count: assignedTaskRows.length,
+        items: assignedTaskRows.map(t => ({
           id: t.id,
           title: t.title,
           status: t.status,
           priority: t.priority,
-          due_date: t.due_date
-        }))
+        })),
       });
     }
-    
+
     // 3. Check for unread notifications
-    const notifications = db_helpers.getUnreadNotifications(agent.name);
-    
-    if (notifications.length > 0) {
+    const notificationList = await db_helpers.getUnreadNotifications(agent.name);
+
+    if (notificationList.length > 0) {
       workItems.push({
         type: 'notifications',
-        count: notifications.length,
-        items: notifications.slice(0, 5).map(n => ({
+        count: notificationList.length,
+        items: notificationList.slice(0, 5).map(n => ({
           id: n.id,
           type: n.type,
           title: n.title,
           message: n.message,
-          created_at: n.created_at
-        }))
+          created_at: n.created_at,
+        })),
       });
     }
-    
-    // 4. Check for urgent activities that might need attention
-    const urgentActivities = db.prepare(`
-      SELECT * FROM activities 
+
+    // 4. Check for urgent activities
+    const urgentActivityRows = await db.execute(sql`
+      SELECT * FROM activities
       WHERE type IN ('task_created', 'task_assigned', 'high_priority_alert')
-      AND created_at > ?
-      AND description LIKE ?
+      AND created_at > ${fourHoursAgo}
+      AND description LIKE ${'%' + agent.name + '%'}
       ORDER BY created_at DESC
       LIMIT 5
-    `).all(fourHoursAgo, `%${agent.name}%`);
-    
-    if (urgentActivities.length > 0) {
+    `);
+
+    if (urgentActivityRows.rows.length > 0) {
       workItems.push({
         type: 'urgent_activities',
-        count: urgentActivities.length,
-        items: urgentActivities.map((a: any) => ({
+        count: urgentActivityRows.rows.length,
+        items: (urgentActivityRows.rows as any[]).map(a => ({
           id: a.id,
           type: a.type,
           description: a.description,
-          created_at: a.created_at
-        }))
+          created_at: a.created_at,
+        })),
       });
     }
-    
-    // Update agent last_seen and status to show heartbeat activity
-    db_helpers.updateAgentStatus(agent.name, 'idle', 'Heartbeat check');
-    
-    // Log heartbeat activity
-    db_helpers.logActivity(
+
+    await db_helpers.updateAgentStatus(agent.name, 'idle', 'Heartbeat check');
+    await db_helpers.logActivity(
       'agent_heartbeat',
       'agent',
       agent.id,
@@ -145,24 +133,23 @@ export async function GET(
       `Heartbeat check completed - ${workItems.length > 0 ? `${workItems.length} work items found` : 'no work items'}`,
       { workItemsCount: workItems.length, workItemTypes: workItems.map(w => w.type) }
     );
-    
+
     if (workItems.length === 0) {
       return NextResponse.json({
         status: 'HEARTBEAT_OK',
         agent: agent.name,
         checked_at: now,
-        message: 'No work items found'
+        message: 'No work items found',
       });
     }
-    
+
     return NextResponse.json({
       status: 'WORK_ITEMS_FOUND',
       agent: agent.name,
       checked_at: now,
       work_items: workItems,
-      total_items: workItems.reduce((sum, item) => sum + item.count, 0)
+      total_items: workItems.reduce((sum, item) => sum + item.count, 0),
     });
-    
   } catch (error) {
     console.error('GET /api/agents/[id]/heartbeat error:', error);
     return NextResponse.json({ error: 'Failed to perform heartbeat check' }, { status: 500 });
@@ -171,15 +158,13 @@ export async function GET(
 
 /**
  * POST /api/agents/[id]/heartbeat - Manual heartbeat trigger
- * Allows manual heartbeat checks from UI or scripts
  */
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const auth = requireRole(request, 'operator');
+  const auth = await requireRole(request, 'operator');
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status });
 
-  // Reuse GET logic for manual triggers
   return GET(request, { params });
 }

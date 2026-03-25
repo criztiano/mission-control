@@ -24,7 +24,7 @@ export interface WorkflowTemplate {
  * GET /api/workflows - List all workflow templates
  */
 export async function GET(request: NextRequest) {
-  const auth = requireRole(request, 'viewer')
+  const auth = await requireRole(request, 'viewer')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   try {
@@ -47,7 +47,7 @@ export async function GET(request: NextRequest) {
  * POST /api/workflows - Create a new workflow template
  */
 export async function POST(request: NextRequest) {
-  const auth = requireRole(request, 'operator')
+  const auth = await requireRole(request, 'operator')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   const rateCheck = mutationLimiter(request)
@@ -83,7 +83,7 @@ export async function POST(request: NextRequest) {
  * PUT /api/workflows - Update a workflow template
  */
 export async function PUT(request: NextRequest) {
-  const auth = requireRole(request, 'operator')
+  const auth = await requireRole(request, 'operator')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   try {
@@ -136,7 +136,7 @@ export async function PUT(request: NextRequest) {
  * DELETE /api/workflows - Delete a workflow template
  */
 export async function DELETE(request: NextRequest) {
-  const auth = requireRole(request, 'operator')
+  const auth = await requireRole(request, 'operator')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   try {

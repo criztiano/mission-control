@@ -41,7 +41,7 @@ function isBlockedUrl(urlStr: string): boolean {
  * Probes gateways from the server where loopback addresses are reachable.
  */
 export async function POST(request: NextRequest) {
-  const auth = requireRole(request, "viewer")
+  const auth = await requireRole(request, "viewer")
   if ("error" in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   const db = getDatabase()

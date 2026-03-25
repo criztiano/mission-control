@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { db } from '@/db/client'
+import { auditLog } from '@/db/schema'
+import { eq, and, sql, SQL } from 'drizzle-orm'
 import { requireRole } from '@/lib/auth'
-import { getDatabase } from '@/lib/db'
 
 function safeParseJson(str: string): any {
   try { return JSON.parse(str) } catch { return str }
@@ -8,10 +10,9 @@ function safeParseJson(str: string): any {
 
 /**
  * GET /api/audit - Query audit log (admin only)
- * Query params: action, actor, limit, offset, since, until
  */
 export async function GET(request: NextRequest) {
-  const auth = requireRole(request, 'admin')
+  const auth = await requireRole(request, 'admin')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   const { searchParams } = new URL(request.url)
@@ -22,40 +23,24 @@ export async function GET(request: NextRequest) {
   const since = searchParams.get('since')
   const until = searchParams.get('until')
 
-  const conditions: string[] = []
-  const params: any[] = []
+  const conditions: SQL[] = []
+  if (action) conditions.push(eq(auditLog.action, action))
+  if (actor) conditions.push(eq(auditLog.actor, actor))
+  if (since) conditions.push(sql`${auditLog.created_at} >= ${parseInt(since)}`)
+  if (until) conditions.push(sql`${auditLog.created_at} <= ${parseInt(until)}`)
 
-  if (action) {
-    conditions.push('action = ?')
-    params.push(action)
-  }
-  if (actor) {
-    conditions.push('actor = ?')
-    params.push(actor)
-  }
-  if (since) {
-    conditions.push('created_at >= ?')
-    params.push(parseInt(since))
-  }
-  if (until) {
-    conditions.push('created_at <= ?')
-    params.push(parseInt(until))
-  }
+  const whereClause = conditions.length > 0 ? and(...conditions) : undefined
 
-  const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
+  const countRows = await db.select({ count: sql<number>`count(*)::int` }).from(auditLog).where(whereClause)
+  const total = countRows[0]?.count ?? 0
 
-  const db = getDatabase()
-
-  const total = (db.prepare(`SELECT COUNT(*) as count FROM audit_log ${where}`).get(...params) as any).count
-
-  const rows = db.prepare(`
-    SELECT * FROM audit_log ${where}
-    ORDER BY created_at DESC
-    LIMIT ? OFFSET ?
-  `).all(...params, limit, offset)
+  const rows = await db.select().from(auditLog).where(whereClause)
+    .orderBy(sql`${auditLog.created_at} DESC`)
+    .limit(limit)
+    .offset(offset)
 
   return NextResponse.json({
-    events: rows.map((row: any) => ({
+    events: rows.map((row) => ({
       ...row,
       detail: row.detail ? safeParseJson(row.detail) : null,
     })),

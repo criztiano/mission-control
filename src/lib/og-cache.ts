@@ -1,7 +1,7 @@
-import { logger } from './logger';
 import { db } from '@/db/client';
 import { ogCache } from '@/db/schema';
 import { eq } from 'drizzle-orm';
+import { logger } from './logger';
 
 // --- Types ---
 
@@ -13,12 +13,16 @@ export interface OGData {
   fetched_at: string;
 }
 
+// --- Schema Migration ---
+
 /**
- * @deprecated No-op — table created by drizzle-kit schema migration.
+ * No-op: og_cache table is now managed by Drizzle schema.
  */
-export async function ensureOGCacheTable(): Promise<void> {
-  logger.info('og_cache table managed by drizzle-kit schema');
+export function ensureOGCacheTable(): void {
+  // No-op: table created by drizzle-kit migrations
 }
+
+// --- Cache Operations ---
 
 /**
  * Get OG data from cache if it exists and is fresh (< 7 days old).
@@ -52,13 +56,23 @@ export async function getOGCache(url: string): Promise<OGData | null> {
  * Save OG data to cache.
  */
 export async function setOGCache(url: string, data: Omit<OGData, 'url' | 'fetched_at'>): Promise<void> {
-  const fetched_at = new Date().toISOString();
   await db
     .insert(ogCache)
-    .values({ url, title: data.title, description: data.description, image: data.image, fetched_at })
+    .values({
+      url,
+      title: data.title,
+      description: data.description,
+      image: data.image,
+      fetched_at: new Date().toISOString(),
+    })
     .onConflictDoUpdate({
       target: ogCache.url,
-      set: { title: data.title, description: data.description, image: data.image, fetched_at },
+      set: {
+        title: data.title,
+        description: data.description,
+        image: data.image,
+        fetched_at: new Date().toISOString(),
+      },
     });
 
   logger.info(`OG cache: saved data for ${url}`);

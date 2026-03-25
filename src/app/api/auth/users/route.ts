@@ -8,7 +8,7 @@ import { mutationLimiter } from '@/lib/rate-limit'
  * GET /api/auth/users - List all users (admin only)
  */
 export async function GET(request: NextRequest) {
-  const auth = requireRole(request, 'viewer')
+  const auth = await requireRole(request, 'viewer')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   const user = getUserFromRequest(request)
@@ -37,10 +37,10 @@ export async function POST(request: NextRequest) {
     if ('error' in result) return result.error
     const { username, password, display_name, role, provider, email } = result.data
 
-    const newUser = createUser(username, password, display_name || username, role, { provider, email: email || null })
+    const newUser = await createUser(username, password, display_name || username, role, { provider, email: email || null })
 
     const ipAddress = request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip') || 'unknown'
-    logAuditEvent({
+    await logAuditEvent({
       action: 'user_create', actor: currentUser.username, actor_id: currentUser.id,
       target_type: 'user', target_id: newUser.id,
       detail: { username, role, provider, email }, ip_address: ipAddress,
@@ -92,13 +92,13 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: 'Cannot change your own role' }, { status: 400 })
     }
 
-    const updated = updateUser(id, { display_name, role, password: password || undefined, is_approved, email, avatar_url })
+    const updated = await updateUser(id, { display_name, role, password: password || undefined, is_approved, email, avatar_url })
     if (!updated) {
       return NextResponse.json({ error: 'User not found' }, { status: 404 })
     }
 
     const ipAddress = request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip') || 'unknown'
-    logAuditEvent({
+    await logAuditEvent({
       action: 'user_update', actor: currentUser.username, actor_id: currentUser.id,
       target_type: 'user', target_id: id,
       detail: { display_name, role, password_changed: !!password, is_approved }, ip_address: ipAddress,
@@ -146,13 +146,13 @@ export async function DELETE(request: NextRequest) {
     return NextResponse.json({ error: 'Cannot delete your own account' }, { status: 400 })
   }
 
-  const deleted = deleteUser(userId)
+  const deleted = await deleteUser(userId)
   if (!deleted) {
     return NextResponse.json({ error: 'User not found' }, { status: 404 })
   }
 
   const ipAddress = request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip') || 'unknown'
-  logAuditEvent({
+  await logAuditEvent({
     action: 'user_delete', actor: currentUser.username, actor_id: currentUser.id,
     target_type: 'user', target_id: userId,
     ip_address: ipAddress,

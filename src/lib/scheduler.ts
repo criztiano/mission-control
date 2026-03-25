@@ -1,11 +1,10 @@
-import { getDatabase, logAuditEvent } from './db'
+import { logAuditEvent } from './db'
 import { syncAgentsFromConfig } from './agent-sync'
-import { config, ensureDirExists } from './config'
-import { join, dirname } from 'path'
-import { readdirSync, statSync, unlinkSync } from 'fs'
+import { config } from './config'
+import { db } from '@/db/client'
+import { settings, agents, activities, notifications } from '@/db/schema'
+import { eq, lt, and, ne, isNull, or, sql } from 'drizzle-orm'
 import { logger } from './logger'
-
-const BACKUP_DIR = join(dirname(config.dbPath), 'backups')
 
 interface ScheduledTask {
   name: string
@@ -21,115 +20,72 @@ const tasks: Map<string, ScheduledTask> = new Map()
 let tickInterval: ReturnType<typeof setInterval> | null = null
 
 /** Check if a setting is enabled (reads from settings table, falls back to default) */
-function isSettingEnabled(key: string, defaultValue: boolean): boolean {
+async function isSettingEnabled(key: string, defaultValue: boolean): Promise<boolean> {
   try {
-    const db = getDatabase()
-    const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value: string } | undefined
-    if (row) return row.value === 'true'
+    const rows = await db.select({ value: settings.value }).from(settings).where(eq(settings.key, key)).limit(1)
+    if (rows[0]) return rows[0].value === 'true'
     return defaultValue
   } catch {
     return defaultValue
   }
 }
 
-function getSettingNumber(key: string, defaultValue: number): number {
+async function getSettingNumber(key: string, defaultValue: number): Promise<number> {
   try {
-    const db = getDatabase()
-    const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value: string } | undefined
-    if (row) return parseInt(row.value) || defaultValue
+    const rows = await db.select({ value: settings.value }).from(settings).where(eq(settings.key, key)).limit(1)
+    if (rows[0]) return parseInt(rows[0].value) || defaultValue
     return defaultValue
   } catch {
     return defaultValue
   }
 }
 
-/** Run a database backup */
+/** Run a database backup — not applicable for Neon (cloud-managed backups) */
 async function runBackup(): Promise<{ ok: boolean; message: string }> {
-  ensureDirExists(BACKUP_DIR)
-
-  const timestamp = new Date().toISOString().replace(/[:.]/g, '-').replace('T', '_').slice(0, 19)
-  const backupPath = join(BACKUP_DIR, `mc-backup-${timestamp}.db`)
-
-  try {
-    const db = getDatabase()
-    await db.backup(backupPath)
-
-    const stat = statSync(backupPath)
-    logAuditEvent({
-      action: 'auto_backup',
-      actor: 'scheduler',
-      detail: { path: backupPath, size: stat.size },
-    })
-
-    // Prune old backups
-    const maxBackups = getSettingNumber('general.backup_retention_count', 10)
-    try {
-      const files = readdirSync(BACKUP_DIR)
-        .filter(f => f.startsWith('mc-backup-') && f.endsWith('.db'))
-        .map(f => ({ name: f, mtime: statSync(join(BACKUP_DIR, f)).mtimeMs }))
-        .sort((a, b) => b.mtime - a.mtime)
-
-      for (const file of files.slice(maxBackups)) {
-        unlinkSync(join(BACKUP_DIR, file.name))
-      }
-    } catch {
-      // Best-effort pruning
-    }
-
-    const sizeKB = Math.round(stat.size / 1024)
-    return { ok: true, message: `Backup created (${sizeKB}KB)` }
-  } catch (err: any) {
-    return { ok: false, message: `Backup failed: ${err.message}` }
-  }
+  // Neon Postgres is cloud-managed — backups are handled by Neon's built-in PITR.
+  // No local backup needed.
+  return { ok: true, message: 'Backup skipped — Neon manages backups automatically' }
 }
 
 /** Run data cleanup based on retention settings */
 async function runCleanup(): Promise<{ ok: boolean; message: string }> {
   try {
-    const db = getDatabase()
     const now = Math.floor(Date.now() / 1000)
     const ret = config.retention
     let totalDeleted = 0
 
-    const targets = [
-      { table: 'activities', column: 'created_at', days: ret.activities },
-      { table: 'audit_log', column: 'created_at', days: ret.auditLog },
-      { table: 'notifications', column: 'created_at', days: ret.notifications },
-      { table: 'pipeline_runs', column: 'created_at', days: ret.pipelineRuns },
-    ]
-
-    for (const { table, column, days } of targets) {
-      if (days <= 0) continue
-      const cutoff = now - days * 86400
-      try {
-        const res = db.prepare(`DELETE FROM ${table} WHERE ${column} < ?`).run(cutoff)
-        totalDeleted += res.changes
-      } catch {
-        // Table might not exist
-      }
+    // Clean activities
+    if (ret.activities > 0) {
+      const cutoff = now - ret.activities * 86400
+      const result = await db.delete(activities).where(lt(activities.created_at, cutoff))
+      totalDeleted += (result as any).rowCount ?? 0
     }
 
-    // Clean token usage file
-    if (ret.tokenUsage > 0) {
-      try {
-        const { readFile, writeFile } = require('fs/promises')
-        const raw = await readFile(config.tokensPath, 'utf-8')
-        const data = JSON.parse(raw)
-        const cutoffMs = Date.now() - ret.tokenUsage * 86400000
-        const kept = data.filter((r: any) => r.timestamp >= cutoffMs)
-        const removed = data.length - kept.length
+    // Clean audit_log
+    if (ret.auditLog > 0) {
+      const { auditLog } = await import('@/db/schema')
+      const cutoff = now - ret.auditLog * 86400
+      const result = await db.delete(auditLog).where(lt(auditLog.created_at, cutoff))
+      totalDeleted += (result as any).rowCount ?? 0
+    }
 
-        if (removed > 0) {
-          await writeFile(config.tokensPath, JSON.stringify(kept, null, 2))
-          totalDeleted += removed
-        }
-      } catch {
-        // No token file
-      }
+    // Clean notifications
+    if (ret.notifications > 0) {
+      const cutoff = now - ret.notifications * 86400
+      const result = await db.delete(notifications).where(lt(notifications.created_at, cutoff))
+      totalDeleted += (result as any).rowCount ?? 0
+    }
+
+    // Clean pipeline_runs
+    if (ret.pipelineRuns > 0) {
+      const { pipelineRuns } = await import('@/db/schema')
+      const cutoff = now - ret.pipelineRuns * 86400
+      const result = await db.delete(pipelineRuns).where(lt(pipelineRuns.created_at, cutoff))
+      totalDeleted += (result as any).rowCount ?? 0
     }
 
     if (totalDeleted > 0) {
-      logAuditEvent({
+      await logAuditEvent({
         action: 'auto_cleanup',
         actor: 'scheduler',
         detail: { total_deleted: totalDeleted },
@@ -145,50 +101,54 @@ async function runCleanup(): Promise<{ ok: boolean; message: string }> {
 /** Check agent liveness - mark agents offline if not seen recently */
 async function runHeartbeatCheck(): Promise<{ ok: boolean; message: string }> {
   try {
-    const db = getDatabase()
     const now = Math.floor(Date.now() / 1000)
-    const timeoutMinutes = getSettingNumber('general.agent_timeout_minutes', 10)
+    const timeoutMinutes = await getSettingNumber('general.agent_timeout_minutes', 10)
     const threshold = now - timeoutMinutes * 60
 
     // Find agents that are not offline but haven't been seen recently
-    const staleAgents = db.prepare(`
-      SELECT id, name, status, last_seen FROM agents
-      WHERE status != 'offline' AND (last_seen IS NULL OR last_seen < ?)
-    `).all(threshold) as Array<{ id: number; name: string; status: string; last_seen: number | null }>
+    const staleAgents = await db
+      .select({ id: agents.id, name: agents.name, status: agents.status, last_seen: agents.last_seen })
+      .from(agents)
+      .where(
+        and(
+          ne(agents.status, 'offline'),
+          or(isNull(agents.last_seen), lt(agents.last_seen, threshold))
+        )
+      )
 
     if (staleAgents.length === 0) {
       return { ok: true, message: 'All agents healthy' }
     }
 
-    // Mark stale agents as offline
-    const markOffline = db.prepare('UPDATE agents SET status = ?, updated_at = ? WHERE id = ?')
-    const logActivity = db.prepare(`
-      INSERT INTO activities (type, entity_type, entity_id, actor, description)
-      VALUES ('agent_status_change', 'agent', ?, 'heartbeat', ?)
-    `)
-
     const names: string[] = []
-    db.transaction(() => {
-      for (const agent of staleAgents) {
-        markOffline.run('offline', now, agent.id)
-        logActivity.run(agent.id, `Agent "${agent.name}" marked offline (no heartbeat for ${timeoutMinutes}m)`)
-        names.push(agent.name)
+    for (const agent of staleAgents) {
+      await db.update(agents).set({ status: 'offline', updated_at: now }).where(eq(agents.id, agent.id))
 
-        // Create notification for each stale agent
-        try {
-          db.prepare(`
-            INSERT INTO notifications (recipient, type, title, message, source_type, source_id)
-            VALUES ('system', 'heartbeat', ?, ?, 'agent', ?)
-          `).run(
-            `Agent offline: ${agent.name}`,
-            `Agent "${agent.name}" was marked offline after ${timeoutMinutes} minutes without heartbeat`,
-            agent.id
-          )
-        } catch { /* notification creation failed */ }
-      }
-    })()
+      await db.insert(activities).values({
+        type: 'agent_status_change',
+        entity_type: 'agent',
+        entity_id: agent.id,
+        actor: 'heartbeat',
+        description: `Agent "${agent.name}" marked offline (no heartbeat for ${timeoutMinutes}m)`,
+        created_at: now,
+      })
 
-    logAuditEvent({
+      names.push(agent.name)
+
+      try {
+        await db.insert(notifications).values({
+          recipient: 'system',
+          type: 'heartbeat',
+          title: `Agent offline: ${agent.name}`,
+          message: `Agent "${agent.name}" was marked offline after ${timeoutMinutes} minutes without heartbeat`,
+          source_type: 'agent',
+          source_id: agent.id,
+          created_at: now,
+        })
+      } catch { /* notification creation failed */ }
+    }
+
+    await logAuditEvent({
       action: 'heartbeat_check',
       actor: 'scheduler',
       detail: { marked_offline: names },
@@ -215,7 +175,6 @@ export function initScheduler() {
 
   // Register tasks
   const now = Date.now()
-  // Stagger the initial runs: backup at ~3 AM, cleanup at ~4 AM (relative to process start)
   const msUntilNextBackup = getNextDailyMs(3)
   const msUntilNextCleanup = getNextDailyMs(4)
 
@@ -248,7 +207,7 @@ export function initScheduler() {
 
   // Start the tick loop
   tickInterval = setInterval(tick, TICK_MS)
-  logger.info('Scheduler initialized - backup at ~3AM, cleanup at ~4AM, heartbeat every 5m')
+  logger.info('Scheduler initialized - cleanup at ~4AM, heartbeat every 5m')
 }
 
 /** Calculate ms until next occurrence of a given hour (UTC) */
@@ -269,11 +228,10 @@ async function tick() {
   for (const [id, task] of tasks) {
     if (task.running || now < task.nextRun) continue
 
-    // Check if this task is enabled in settings (heartbeat is always enabled)
     const settingKey = id === 'auto_backup' ? 'general.auto_backup'
       : id === 'auto_cleanup' ? 'general.auto_cleanup'
       : 'general.agent_heartbeat'
-    if (!isSettingEnabled(settingKey, id === 'agent_heartbeat')) continue
+    if (!(await isSettingEnabled(settingKey, id === 'agent_heartbeat'))) continue
 
     task.running = true
     try {
@@ -304,13 +262,10 @@ export function getSchedulerStatus() {
   }> = []
 
   for (const [id, task] of tasks) {
-    const settingKey = id === 'auto_backup' ? 'general.auto_backup'
-      : id === 'auto_cleanup' ? 'general.auto_cleanup'
-      : 'general.agent_heartbeat'
     result.push({
       id,
       name: task.name,
-      enabled: isSettingEnabled(settingKey, id === 'agent_heartbeat'),
+      enabled: task.enabled,
       lastRun: task.lastRun,
       nextRun: task.nextRun,
       running: task.running,

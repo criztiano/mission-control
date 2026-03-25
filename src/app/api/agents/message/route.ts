@@ -1,12 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getDatabase, db_helpers } from '@/lib/db'
+import { db } from '@/db/client'
+import { db_helpers } from '@/lib/db'
+import { agents } from '@/db/schema'
+import { eq } from 'drizzle-orm'
 import { runOpenClaw } from '@/lib/command'
 import { requireRole } from '@/lib/auth'
 import { validateBody, createMessageSchema } from '@/lib/validation'
 import { mutationLimiter } from '@/lib/rate-limit'
 
 export async function POST(request: NextRequest) {
-  const auth = requireRole(request, 'operator')
+  const auth = await requireRole(request, 'operator')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   const rateCheck = mutationLimiter(request)
@@ -17,8 +20,8 @@ export async function POST(request: NextRequest) {
     if ('error' in result) return result.error
     const { from, to, message } = result.data
 
-    const db = getDatabase()
-    const agent = db.prepare('SELECT * FROM agents WHERE name = ?').get(to) as any
+    const agentRows = await db.select().from(agents).where(eq(agents.name, to)).limit(1)
+    const agent = agentRows[0]
     if (!agent) {
       return NextResponse.json({ error: 'Recipient agent not found' }, { status: 404 })
     }
@@ -41,7 +44,7 @@ export async function POST(request: NextRequest) {
       { timeoutMs: 10000 }
     )
 
-    db_helpers.createNotification(
+    await db_helpers.createNotification(
       to,
       'message',
       'Direct Message',
@@ -50,7 +53,7 @@ export async function POST(request: NextRequest) {
       agent.id
     )
 
-    db_helpers.logActivity(
+    await db_helpers.logActivity(
       'agent_message',
       'agent',
       agent.id,

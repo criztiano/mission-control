@@ -6,7 +6,10 @@
  */
 
 import { config } from './config'
-import { getDatabase, db_helpers, logAuditEvent } from './db'
+import { db_helpers, logAuditEvent } from './db'
+import { db } from '@/db/client'
+import { agents } from '@/db/schema'
+import { eq } from 'drizzle-orm'
 import { eventBus } from './event-bus'
 import { join } from 'path'
 import { readWorkspaceFile } from './agent-workspace'
@@ -88,7 +91,6 @@ function mapAgentToMC(agent: OpenClawAgent): {
   const name = agent.identity?.name || agent.name || agent.id
   const role = agent.identity?.theme || 'agent'
 
-  // Store the full config minus systemPrompt/soul (which can be large)
   const configData = {
     openclawId: agent.id,
     model: agent.model,
@@ -108,59 +110,58 @@ function mapAgentToMC(agent: OpenClawAgent): {
 
 /** Sync agents from openclaw.json into the MC database */
 export async function syncAgentsFromConfig(actor: string = 'system'): Promise<SyncResult> {
-  let agents: OpenClawAgent[]
+  let agentList: OpenClawAgent[]
   try {
-    agents = await readOpenClawAgents()
+    agentList = await readOpenClawAgents()
   } catch (err: any) {
     return { synced: 0, created: 0, updated: 0, agents: [], error: err.message }
   }
 
-  if (agents.length === 0) {
+  if (agentList.length === 0) {
     return { synced: 0, created: 0, updated: 0, agents: [] }
   }
 
-  const db = getDatabase()
   const now = Math.floor(Date.now() / 1000)
   let created = 0
   let updated = 0
   const results: SyncResult['agents'] = []
 
-  const findByName = db.prepare('SELECT id, name, role, config FROM agents WHERE name = ?')
-  const insertAgent = db.prepare(`
-    INSERT INTO agents (name, role, status, created_at, updated_at, config)
-    VALUES (?, ?, 'offline', ?, ?, ?)
-  `)
-  const updateAgent = db.prepare(`
-    UPDATE agents SET role = ?, config = ?, updated_at = ? WHERE name = ?
-  `)
+  for (const agent of agentList) {
+    const mapped = mapAgentToMC(agent)
+    const configJson = JSON.stringify(mapped.config)
 
-  db.transaction(() => {
-    for (const agent of agents) {
-      const mapped = mapAgentToMC(agent)
-      const configJson = JSON.stringify(mapped.config)
-      const existing = findByName.get(mapped.name) as any
+    const existingRows = await db
+      .select({ id: agents.id, name: agents.name, role: agents.role, config: agents.config })
+      .from(agents)
+      .where(eq(agents.name, mapped.name))
+      .limit(1)
+    const existing = existingRows[0]
 
-      if (existing) {
-        // Check if config actually changed
-        const existingConfig = existing.config || '{}'
-        if (existingConfig !== configJson || existing.role !== mapped.role) {
-          updateAgent.run(mapped.role, configJson, now, mapped.name)
-          results.push({ id: agent.id, name: mapped.name, action: 'updated' })
-          updated++
-        } else {
-          results.push({ id: agent.id, name: mapped.name, action: 'unchanged' })
-        }
+    if (existing) {
+      const existingConfig = existing.config || '{}'
+      if (existingConfig !== configJson || existing.role !== mapped.role) {
+        await db.update(agents).set({ role: mapped.role, config: configJson, updated_at: now }).where(eq(agents.name, mapped.name))
+        results.push({ id: agent.id, name: mapped.name, action: 'updated' })
+        updated++
       } else {
-        insertAgent.run(mapped.name, mapped.role, now, now, configJson)
-        results.push({ id: agent.id, name: mapped.name, action: 'created' })
-        created++
+        results.push({ id: agent.id, name: mapped.name, action: 'unchanged' })
       }
+    } else {
+      await db.insert(agents).values({
+        name: mapped.name,
+        role: mapped.role,
+        status: 'offline',
+        created_at: now,
+        updated_at: now,
+        config: configJson,
+      })
+      results.push({ id: agent.id, name: mapped.name, action: 'created' })
+      created++
     }
-  })()
+  }
 
   // Post-sync: populate soul_content and identity from workspace files
-  const updateSoul = db.prepare('UPDATE agents SET soul_content = ? WHERE name = ?')
-  for (const agent of agents) {
+  for (const agent of agentList) {
     const workspace = agent.workspace
     if (!workspace) continue
     const mapped = mapAgentToMC(agent)
@@ -169,7 +170,7 @@ export async function syncAgentsFromConfig(actor: string = 'system'): Promise<Sy
       // Cache SOUL.md content
       const soulContent = readWorkspaceFile(workspace, 'SOUL.md')
       if (soulContent !== null) {
-        updateSoul.run(soulContent, mapped.name)
+        await db.update(agents).set({ soul_content: soulContent }).where(eq(agents.name, mapped.name))
       }
 
       // Read IDENTITY.md and extract name/emoji to update display info
@@ -180,15 +181,15 @@ export async function syncAgentsFromConfig(actor: string = 'system'): Promise<Sy
         if (nameMatch || emojiMatch) {
           const parsedName = nameMatch?.[1]?.trim()
           const parsedEmoji = emojiMatch?.[1]?.trim()
-          // Update config.identity in the stored config
-          const row = findByName.get(mapped.name) as any
+          const rows = await db.select({ config: agents.config }).from(agents).where(eq(agents.name, mapped.name)).limit(1)
+          const row = rows[0]
           if (row?.config) {
             try {
               const cfg = JSON.parse(row.config)
               if (!cfg.identity) cfg.identity = {}
               if (parsedName) cfg.identity.name = parsedName
               if (parsedEmoji) cfg.identity.emoji = parsedEmoji
-              db.prepare('UPDATE agents SET config = ? WHERE name = ?').run(JSON.stringify(cfg), mapped.name)
+              await db.update(agents).set({ config: JSON.stringify(cfg) }).where(eq(agents.name, mapped.name))
             } catch { /* ignore parse errors */ }
           }
         }
@@ -198,17 +199,15 @@ export async function syncAgentsFromConfig(actor: string = 'system'): Promise<Sy
     }
   }
 
-  const synced = agents.length
+  const synced = agentList.length
 
-  // Log audit event
   if (created > 0 || updated > 0) {
-    logAuditEvent({
+    await logAuditEvent({
       action: 'agent_config_sync',
       actor,
       detail: { synced, created, updated, agents: results.filter(a => a.action !== 'unchanged').map(a => a.name) },
     })
 
-    // Broadcast sync event
     eventBus.broadcast('agent.created', { type: 'sync', synced, created, updated })
   }
 
@@ -218,22 +217,21 @@ export async function syncAgentsFromConfig(actor: string = 'system'): Promise<Sy
 
 /** Preview the diff between openclaw.json and MC database without writing */
 export async function previewSyncDiff(): Promise<SyncDiff> {
-  let agents: OpenClawAgent[]
+  let agentList: OpenClawAgent[]
   try {
-    agents = await readOpenClawAgents()
+    agentList = await readOpenClawAgents()
   } catch {
     return { inConfig: 0, inMC: 0, newAgents: [], updatedAgents: [], onlyInMC: [] }
   }
 
-  const db = getDatabase()
-  const allMCAgents = db.prepare('SELECT name, role, config FROM agents').all() as Array<{ name: string; role: string; config: string }>
+  const allMCAgents = await db.select({ name: agents.name, role: agents.role, config: agents.config }).from(agents)
   const mcNames = new Set(allMCAgents.map(a => a.name))
 
   const newAgents: string[] = []
   const updatedAgents: string[] = []
   const configNames = new Set<string>()
 
-  for (const agent of agents) {
+  for (const agent of agentList) {
     const mapped = mapAgentToMC(agent)
     configNames.add(mapped.name)
 
@@ -253,7 +251,7 @@ export async function previewSyncDiff(): Promise<SyncDiff> {
     .filter(name => !configNames.has(name))
 
   return {
-    inConfig: agents.length,
+    inConfig: agentList.length,
     inMC: allMCAgents.length,
     newAgents,
     updatedAgents,
@@ -273,10 +271,8 @@ export async function writeAgentToConfig(agentConfig: any): Promise<void> {
   if (!parsed.agents) parsed.agents = {}
   if (!parsed.agents.list) parsed.agents.list = []
 
-  // Find existing by id
   const idx = parsed.agents.list.findIndex((a: any) => a.id === agentConfig.id)
   if (idx >= 0) {
-    // Deep merge: preserve fields not in update
     parsed.agents.list[idx] = deepMerge(parsed.agents.list[idx], agentConfig)
   } else {
     parsed.agents.list.push(agentConfig)
@@ -285,7 +281,6 @@ export async function writeAgentToConfig(agentConfig: any): Promise<void> {
   await writeFile(configPath, JSON.stringify(parsed, null, 2) + '\n')
 }
 
-/** Deep merge two objects (target <- source), preserving target fields not in source */
 function deepMerge(target: any, source: any): any {
   const result = { ...target }
   for (const key of Object.keys(source)) {

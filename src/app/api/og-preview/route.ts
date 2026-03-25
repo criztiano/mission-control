@@ -68,7 +68,7 @@ async function fetchOGData(url: string): Promise<{ title: string | null; descrip
 
 export async function GET(request: NextRequest) {
   // Auth check
-  const auth = requireRole(request, 'viewer');
+  const auth = await requireRole(request, 'viewer');
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status });
 
   try {
@@ -86,7 +86,7 @@ export async function GET(request: NextRequest) {
     }
 
     // Check cache first
-    const cached = getOGCache(url);
+    const cached = await getOGCache(url);
     if (cached) {
       logger.info(`OG cache hit: ${url}`);
       return NextResponse.json({
@@ -108,7 +108,7 @@ export async function GET(request: NextRequest) {
     const ogData = await fetchOGData(url);
 
     // Save to cache
-    setOGCache(url, ogData);
+    await setOGCache(url, ogData);
 
     return NextResponse.json({
       url,

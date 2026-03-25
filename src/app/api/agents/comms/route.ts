@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
-import { getDatabase, Message } from "@/lib/db"
+import { db } from '@/db/client'
+import { messages } from '@/db/schema'
+import { and, asc, eq, inArray, notInArray, isNotNull, sql, SQL } from 'drizzle-orm'
 import { requireRole } from '@/lib/auth'
 
 /**
@@ -7,11 +9,10 @@ import { requireRole } from '@/lib/auth'
  * Query params: limit, offset, since, agent
  */
 export async function GET(request: NextRequest) {
-  const auth = requireRole(request, 'viewer')
+  const auth = await requireRole(request, 'viewer')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   try {
-    const db = getDatabase()
     const { searchParams } = new URL(request.url)
 
     const limit = parseInt(searchParams.get("limit") || "100")
@@ -19,110 +20,77 @@ export async function GET(request: NextRequest) {
     const since = searchParams.get("since")
     const agent = searchParams.get("agent")
 
-    // Filter out human/system messages - only agent-to-agent
     const humanNames = ["human", "system", "operator"]
-    const humanPlaceholders = humanNames.map(() => "?").join(",")
 
-    // 1. Get inter-agent messages
-    let messagesQuery = `
+    // 1. Get inter-agent messages using raw SQL for complex NOT IN filter
+    const sinceNum = since ? parseInt(since) : null
+    const agentFilter = agent ? agent : null
+
+    const msgRows = await db.execute(sql`
       SELECT * FROM messages
       WHERE to_agent IS NOT NULL
-        AND from_agent NOT IN (${humanPlaceholders})
-        AND to_agent NOT IN (${humanPlaceholders})
-    `
-    const messagesParams: any[] = [...humanNames, ...humanNames]
-
-    if (since) {
-      messagesQuery += " AND created_at > ?"
-      messagesParams.push(parseInt(since))
-    }
-    if (agent) {
-      messagesQuery += " AND (from_agent = ? OR to_agent = ?)"
-      messagesParams.push(agent, agent)
-    }
-
-    // Deterministic chronological ordering prevents visual jumps in UI
-    messagesQuery += " ORDER BY created_at ASC, id ASC LIMIT ? OFFSET ?"
-    messagesParams.push(limit, offset)
-
-    const messages = db.prepare(messagesQuery).all(...messagesParams) as Message[]
+        AND from_agent NOT IN ('human', 'system', 'operator')
+        AND to_agent NOT IN ('human', 'system', 'operator')
+        ${sinceNum ? sql`AND created_at > ${sinceNum}` : sql``}
+        ${agentFilter ? sql`AND (from_agent = ${agentFilter} OR to_agent = ${agentFilter})` : sql``}
+      ORDER BY created_at ASC, id ASC
+      LIMIT ${limit} OFFSET ${offset}
+    `)
 
     // 2. Communication graph edges
-    let graphQuery = `
+    const edgeRows = await db.execute(sql`
       SELECT
         from_agent, to_agent,
         COUNT(*) as message_count,
         MAX(created_at) as last_message_at
       FROM messages
       WHERE to_agent IS NOT NULL
-        AND from_agent NOT IN (${humanPlaceholders})
-        AND to_agent NOT IN (${humanPlaceholders})
-    `
-    const graphParams: any[] = [...humanNames, ...humanNames]
-    if (since) {
-      graphQuery += " AND created_at > ?"
-      graphParams.push(parseInt(since))
-    }
-    graphQuery += " GROUP BY from_agent, to_agent ORDER BY message_count DESC"
+        AND from_agent NOT IN ('human', 'system', 'operator')
+        AND to_agent NOT IN ('human', 'system', 'operator')
+        ${sinceNum ? sql`AND created_at > ${sinceNum}` : sql``}
+      GROUP BY from_agent, to_agent ORDER BY message_count DESC
+    `)
 
-    const edges = db.prepare(graphQuery).all(...graphParams)
-
-    // 3. Per-agent sent/received stats
-    const statsQuery = `
+    // 3. Per-agent stats
+    const statsRows = await db.execute(sql`
       SELECT agent, SUM(sent) as sent, SUM(received) as received FROM (
         SELECT from_agent as agent, COUNT(*) as sent, 0 as received
         FROM messages WHERE to_agent IS NOT NULL
-          AND from_agent NOT IN (${humanPlaceholders})
-          AND to_agent NOT IN (${humanPlaceholders})
+          AND from_agent NOT IN ('human', 'system', 'operator')
+          AND to_agent NOT IN ('human', 'system', 'operator')
         GROUP BY from_agent
         UNION ALL
         SELECT to_agent as agent, 0 as sent, COUNT(*) as received
         FROM messages WHERE to_agent IS NOT NULL
-          AND from_agent NOT IN (${humanPlaceholders})
-          AND to_agent NOT IN (${humanPlaceholders})
+          AND from_agent NOT IN ('human', 'system', 'operator')
+          AND to_agent NOT IN ('human', 'system', 'operator')
         GROUP BY to_agent
-      ) GROUP BY agent ORDER BY (sent + received) DESC
-    `
-    const statsParams = [...humanNames, ...humanNames, ...humanNames, ...humanNames]
-    const agentStats = db.prepare(statsQuery).all(...statsParams)
+      ) t GROUP BY agent ORDER BY (sent + received) DESC
+    `)
 
     // 4. Total count
-    let countQuery = `
+    const countRows = await db.execute(sql`
       SELECT COUNT(*) as total FROM messages
       WHERE to_agent IS NOT NULL
-        AND from_agent NOT IN (${humanPlaceholders})
-        AND to_agent NOT IN (${humanPlaceholders})
-    `
-    const countParams: any[] = [...humanNames, ...humanNames]
-    if (since) {
-      countQuery += " AND created_at > ?"
-      countParams.push(parseInt(since))
-    }
-    if (agent) {
-      countQuery += " AND (from_agent = ? OR to_agent = ?)"
-      countParams.push(agent, agent)
-    }
-    const { total } = db.prepare(countQuery).get(...countParams) as { total: number }
+        AND from_agent NOT IN ('human', 'system', 'operator')
+        AND to_agent NOT IN ('human', 'system', 'operator')
+        ${sinceNum ? sql`AND created_at > ${sinceNum}` : sql``}
+        ${agentFilter ? sql`AND (from_agent = ${agentFilter} OR to_agent = ${agentFilter})` : sql``}
+    `)
 
-    let seededCountQuery = `
+    const total = Number((countRows.rows[0] as any)?.total ?? 0)
+
+    // 5. Seeded count
+    const seededRows = await db.execute(sql`
       SELECT COUNT(*) as seeded FROM messages
       WHERE to_agent IS NOT NULL
-        AND from_agent NOT IN (${humanPlaceholders})
-        AND to_agent NOT IN (${humanPlaceholders})
-        AND conversation_id LIKE ?
-    `
-    const seededParams: any[] = [...humanNames, ...humanNames, "conv-multi-%"]
-    if (since) {
-      seededCountQuery += " AND created_at > ?"
-      seededParams.push(parseInt(since))
-    }
-    if (agent) {
-      seededCountQuery += " AND (from_agent = ? OR to_agent = ?)"
-      seededParams.push(agent, agent)
-    }
-    const { seeded } = db.prepare(seededCountQuery).get(...seededParams) as { seeded: number }
-
-    const seededCount = seeded || 0
+        AND from_agent NOT IN ('human', 'system', 'operator')
+        AND to_agent NOT IN ('human', 'system', 'operator')
+        AND conversation_id LIKE 'conv-multi-%'
+        ${sinceNum ? sql`AND created_at > ${sinceNum}` : sql``}
+        ${agentFilter ? sql`AND (from_agent = ${agentFilter} OR to_agent = ${agentFilter})` : sql``}
+    `)
+    const seededCount = Number((seededRows.rows[0] as any)?.seeded ?? 0)
     const liveCount = Math.max(0, total - seededCount)
     const source =
       total === 0 ? "empty" :
@@ -130,26 +98,22 @@ export async function GET(request: NextRequest) {
       seededCount === 0 ? "live" :
       "mixed"
 
-    const parsed = messages.map((msg) => {
+    const parsed = (msgRows.rows as any[]).map((msg) => {
       let parsedMetadata: any = null
       if (msg.metadata) {
         try {
           parsedMetadata = JSON.parse(msg.metadata)
         } catch {
-          // Keep endpoint resilient even if one legacy row has bad metadata
           parsedMetadata = null
         }
       }
-      return {
-        ...msg,
-        metadata: parsedMetadata,
-      }
+      return { ...msg, metadata: parsedMetadata }
     })
 
     return NextResponse.json({
       messages: parsed,
       total,
-      graph: { edges, agentStats },
+      graph: { edges: edgeRows.rows, agentStats: statsRows.rows },
       source: { mode: source, seededCount, liveCount },
     })
   } catch (error) {

@@ -96,7 +96,7 @@ function extractReplyText(waitPayload: any): string | null {
  * Query params: conversation_id, from_agent, to_agent, limit, offset, since
  */
 export async function GET(request: NextRequest) {
-  const auth = requireRole(request, 'viewer')
+  const auth = await requireRole(request, 'viewer')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   try {
@@ -176,7 +176,7 @@ export async function GET(request: NextRequest) {
  * Body: { from, to, content, message_type, conversation_id, metadata }
  */
 export async function POST(request: NextRequest) {
-  const auth = requireRole(request, 'operator')
+  const auth = await requireRole(request, 'operator')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   try {

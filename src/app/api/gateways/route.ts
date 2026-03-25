@@ -42,7 +42,7 @@ function ensureTable(db: ReturnType<typeof getDatabase>) {
  * GET /api/gateways - List all registered gateways
  */
 export async function GET(request: NextRequest) {
-  const auth = requireRole(request, 'viewer')
+  const auth = await requireRole(request, 'viewer')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   const db = getDatabase()
@@ -75,7 +75,7 @@ export async function GET(request: NextRequest) {
  * POST /api/gateways - Add a new gateway
  */
 export async function POST(request: NextRequest) {
-  const auth = requireRole(request, 'admin')
+  const auth = await requireRole(request, 'admin')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   const db = getDatabase()
@@ -118,7 +118,7 @@ export async function POST(request: NextRequest) {
  * PUT /api/gateways - Update a gateway
  */
 export async function PUT(request: NextRequest) {
-  const auth = requireRole(request, 'admin')
+  const auth = await requireRole(request, 'admin')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   const db = getDatabase()
@@ -162,7 +162,7 @@ export async function PUT(request: NextRequest) {
  * DELETE /api/gateways - Remove a gateway
  */
 export async function DELETE(request: NextRequest) {
-  const auth = requireRole(request, 'admin')
+  const auth = await requireRole(request, 'admin')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   const db = getDatabase()

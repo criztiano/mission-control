@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getDatabase } from '@/lib/db'
+import { db } from '@/db/client'
+import { agents } from '@/db/schema'
+import { eq } from 'drizzle-orm'
 import { requireRole } from '@/lib/auth'
 import { getAgentWorkspace, listWorkspaceFiles } from '@/lib/agent-workspace'
 
@@ -10,27 +12,27 @@ export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const auth = requireRole(request, 'viewer')
+  const auth = await requireRole(request, 'viewer')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   try {
-    const db = getDatabase()
     const resolvedParams = await params
     const agentId = resolvedParams.id
 
     // Get agent by ID or name
-    let agent: any
+    let agentRows
     if (isNaN(Number(agentId))) {
-      agent = db.prepare('SELECT id, name, role FROM agents WHERE name = ?').get(agentId)
+      agentRows = await db.select().from(agents).where(eq(agents.name, agentId)).limit(1)
     } else {
-      agent = db.prepare('SELECT id, name, role FROM agents WHERE id = ?').get(Number(agentId))
+      agentRows = await db.select().from(agents).where(eq(agents.id, Number(agentId))).limit(1)
     }
+    const agent = agentRows[0]
 
     if (!agent) {
       return NextResponse.json({ error: 'Agent not found' }, { status: 404 })
     }
 
-    const workspace = getAgentWorkspace(agentId)
+    const workspace = await getAgentWorkspace(agentId)
     if (!workspace) {
       return NextResponse.json({
         agent: { id: agent.id, name: agent.name },

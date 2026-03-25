@@ -233,7 +233,7 @@ export async function createTurn(
 
   // Update issue: reassign, reset picked, reopen if closed
   const issueRow = await getIssue(taskId);
-  const newStatus = issueRow && (issueRow.status === 'done' || issueRow.status === 'closed') ? 'open' : (issueRow?.status ?? 'open');
+  const newStatus = issueRow && issueRow.status === 'closed' ? 'open' : (issueRow?.status ?? 'open');
 
   await db.update(issues).set({
     assignee: turn.assigned_to,

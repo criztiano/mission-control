@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getDatabase } from '@/lib/db'
+import { db } from '@/db/client'
+import { agents } from '@/db/schema'
+import { eq } from 'drizzle-orm'
 import { requireRole } from '@/lib/auth'
 import { saveSkillContent } from '@/lib/agent-skills'
 
@@ -10,22 +12,21 @@ export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string; skillId: string }> }
 ) {
-  const auth = requireRole(request, 'operator')
+  const auth = await requireRole(request, 'operator')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   try {
-    const db = getDatabase()
     const resolvedParams = await params
     const agentId = resolvedParams.id
     const skillId = resolvedParams.skillId
 
-    // Get agent by ID or name
-    let agent: any
+    let agentRows
     if (isNaN(Number(agentId))) {
-      agent = db.prepare('SELECT id, name FROM agents WHERE name = ?').get(agentId)
+      agentRows = await db.select({ id: agents.id, name: agents.name }).from(agents).where(eq(agents.name, agentId)).limit(1)
     } else {
-      agent = db.prepare('SELECT id, name FROM agents WHERE id = ?').get(Number(agentId))
+      agentRows = await db.select({ id: agents.id, name: agents.name }).from(agents).where(eq(agents.id, Number(agentId))).limit(1)
     }
+    const agent = agentRows[0]
 
     if (!agent) {
       return NextResponse.json({ error: 'Agent not found' }, { status: 404 })
@@ -38,7 +39,7 @@ export async function PUT(
       return NextResponse.json({ error: 'content must be a string' }, { status: 400 })
     }
 
-    const result = saveSkillContent(agentId, skillId, content)
+    const result = await saveSkillContent(agentId, skillId, content)
 
     if (!result.success) {
       return NextResponse.json({ error: result.error }, { status: 400 })

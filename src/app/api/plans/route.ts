@@ -1,15 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { randomUUID } from 'crypto'
 import { requireRole } from '@/lib/auth'
-import { getCCDatabase, getCCDatabaseWrite, type CCPlan } from '@/lib/cc-db'
+import { type CCPlan } from '@/lib/cc-db'
 import { logger } from '@/lib/logger'
+import { db } from '@/db/client'
+import { plans, issues } from '@/db/schema'
+import { eq, and, desc } from 'drizzle-orm'
+import { sql } from 'drizzle-orm'
 
 /**
  * GET /api/plans — list plans
- * Query params: task_id, project_id, status, author
  */
 export async function GET(request: NextRequest) {
-  const auth = requireRole(request, 'viewer')
+  const auth = await requireRole(request, 'viewer')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   try {
@@ -19,19 +22,17 @@ export async function GET(request: NextRequest) {
     const status = searchParams.get('status') || undefined
     const author = searchParams.get('author') || undefined
 
-    const db = getCCDatabase()
-    const conditions: string[] = []
-    const params: string[] = []
+    let whereClause = sql`true`
+    if (task_id) whereClause = sql`${whereClause} AND ${plans.task_id} = ${task_id}`
+    if (project_id) whereClause = sql`${whereClause} AND ${plans.project_id} = ${project_id}`
+    if (status) whereClause = sql`${whereClause} AND ${plans.status} = ${status}`
+    if (author) whereClause = sql`${whereClause} AND ${plans.author} = ${author}`
 
-    if (task_id) { conditions.push('task_id = ?'); params.push(task_id) }
-    if (project_id) { conditions.push('project_id = ?'); params.push(project_id) }
-    if (status) { conditions.push('status = ?'); params.push(status) }
-    if (author) { conditions.push('author = ?'); params.push(author) }
+    const planRows = await db.execute(sql`
+      SELECT * FROM plans WHERE ${whereClause} ORDER BY created_at DESC
+    `)
 
-    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
-    const plans = db.prepare(`SELECT * FROM plans ${where} ORDER BY created_at DESC`).all(...params) as CCPlan[]
-
-    return NextResponse.json({ plans })
+    return NextResponse.json({ plans: planRows.rows as unknown as CCPlan[] })
   } catch (err) {
     logger.error({ err }, 'GET /api/plans failed')
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
@@ -40,10 +41,9 @@ export async function GET(request: NextRequest) {
 
 /**
  * POST /api/plans — create a plan
- * Body: { title, content, task_id?, project_id?, author }
  */
 export async function POST(request: NextRequest) {
-  const auth = requireRole(request, 'operator')
+  const auth = await requireRole(request, 'operator')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   try {
@@ -57,26 +57,28 @@ export async function POST(request: NextRequest) {
     const id = randomUUID()
     const now = new Date().toISOString()
 
-    const db = getCCDatabaseWrite()
-    try {
-      db.prepare(`
-        INSERT INTO plans (id, title, content, task_id, project_id, author, status, responses, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, 'draft', '{}', ?, ?)
-      `).run(id, title.trim(), content.trim(), task_id || null, project_id || null, author.trim(), now, now)
+    await db.insert(plans).values({
+      id,
+      title: title.trim(),
+      content: content.trim(),
+      task_id: task_id || null,
+      project_id: project_id || null,
+      author: author.trim(),
+      status: 'draft',
+      responses: '{}',
+      created_at: now,
+      updated_at: now,
+    })
 
-      // If task_id provided, update the issue's plan_id
-      if (task_id) {
-        db.prepare('UPDATE issues SET plan_id = ?, updated_at = ? WHERE id = ?')
-          .run(id, now, task_id)
-      }
-
-      const plan = db.prepare('SELECT * FROM plans WHERE id = ?').get(id) as CCPlan
-
-      logger.info({ planId: id, title, author }, 'Created plan')
-      return NextResponse.json({ plan }, { status: 201 })
-    } finally {
-      db.close()
+    if (task_id) {
+      await db.update(issues).set({ plan_id: id, updated_at: now }).where(eq(issues.id, task_id))
     }
+
+    const planRows = await db.select().from(plans).where(eq(plans.id, id)).limit(1)
+    const plan = planRows[0] as CCPlan
+
+    logger.info({ planId: id, title, author }, 'Created plan')
+    return NextResponse.json({ plan }, { status: 201 })
   } catch (err) {
     logger.error({ err }, 'POST /api/plans failed')
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })

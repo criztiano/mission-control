@@ -10,7 +10,7 @@ import { validateBody, createWebhookSchema } from '@/lib/validation'
  * GET /api/webhooks - List all webhooks with delivery stats
  */
 export async function GET(request: NextRequest) {
-  const auth = requireRole(request, 'admin')
+  const auth = await requireRole(request, 'admin')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   try {
@@ -43,7 +43,7 @@ export async function GET(request: NextRequest) {
  * POST /api/webhooks - Create a new webhook
  */
 export async function POST(request: NextRequest) {
-  const auth = requireRole(request, 'admin')
+  const auth = await requireRole(request, 'admin')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   const rateCheck = mutationLimiter(request)
@@ -83,7 +83,7 @@ export async function POST(request: NextRequest) {
  * PUT /api/webhooks - Update a webhook
  */
 export async function PUT(request: NextRequest) {
-  const auth = requireRole(request, 'admin')
+  const auth = await requireRole(request, 'admin')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   const rateCheck = mutationLimiter(request)
@@ -141,7 +141,7 @@ export async function PUT(request: NextRequest) {
  * DELETE /api/webhooks - Delete a webhook
  */
 export async function DELETE(request: NextRequest) {
-  const auth = requireRole(request, 'admin')
+  const auth = await requireRole(request, 'admin')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   const rateCheck = mutationLimiter(request)

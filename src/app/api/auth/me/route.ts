@@ -4,7 +4,7 @@ import { logAuditEvent } from '@/lib/db'
 import { verifyPassword } from '@/lib/password'
 
 export async function GET(request: Request) {
-  const auth = requireRole(request, 'viewer')
+  const auth = await requireRole(request, 'viewer')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   const user = getUserFromRequest(request)
@@ -79,17 +79,17 @@ export async function PATCH(request: NextRequest) {
       return NextResponse.json({ error: 'No updates provided' }, { status: 400 })
     }
 
-    const updated = updateUser(user.id, updates)
+    const updated = await updateUser(user.id, updates)
     if (!updated) {
       return NextResponse.json({ error: 'User not found' }, { status: 404 })
     }
 
     const ipAddress = request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip') || 'unknown'
     if (updates.password) {
-      logAuditEvent({ action: 'password_change', actor: user.username, actor_id: user.id, ip_address: ipAddress })
+      await logAuditEvent({ action: 'password_change', actor: user.username, actor_id: user.id, ip_address: ipAddress })
     }
     if (updates.display_name) {
-      logAuditEvent({ action: 'profile_update', actor: user.username, actor_id: user.id, detail: { display_name: updates.display_name }, ip_address: ipAddress })
+      await logAuditEvent({ action: 'profile_update', actor: user.username, actor_id: user.id, detail: { display_name: updates.display_name }, ip_address: ipAddress })
     }
 
     return NextResponse.json({

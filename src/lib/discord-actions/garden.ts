@@ -1,4 +1,6 @@
-import { getCCDatabase } from '@/lib/cc-db';
+import { db } from '@/db/client';
+import { garden } from '@/db/schema';
+import { eq } from 'drizzle-orm';
 import { logger } from '@/lib/logger';
 
 interface GardenActionResult {
@@ -10,23 +12,22 @@ interface GardenActionResult {
 /**
  * Pin a garden item — moves it to "now" temporal with pinned flag.
  */
-export function handleGardenPin(itemId: string): GardenActionResult {
-  const db = getCCDatabase();
-
-  const item = db.prepare('SELECT * FROM garden WHERE id = ?').get(itemId) as Record<string, unknown> | undefined;
+export async function handleGardenPin(itemId: string): Promise<GardenActionResult> {
+  const rows = await db.select().from(garden).where(eq(garden.id, itemId)).limit(1);
+  const item = rows[0];
   if (!item) {
     return { success: false, ephemeralMessage: '❌ Garden item not found.' };
   }
 
-  const writeDb = getCCDatabase();
   const now = new Date().toISOString();
-  writeDb.prepare(`
-    UPDATE garden SET temporal = 'now', metadata = ?, saved_at = ? WHERE id = ?
-  `).run(
-    JSON.stringify({ ...(JSON.parse(String(item.metadata || '{}'))), pinned: true, pinned_at: now }),
-    now,
-    itemId
-  );
+  let metadata: Record<string, unknown> = {};
+  try { metadata = JSON.parse(item.metadata || '{}'); } catch {}
+
+  await db.update(garden).set({
+    temporal: 'now',
+    metadata: JSON.stringify({ ...metadata, pinned: true, pinned_at: now }),
+    saved_at: now,
+  }).where(eq(garden.id, itemId));
 
   logger.info({ itemId }, 'Garden item pinned via Discord');
 
@@ -43,20 +44,20 @@ export function handleGardenPin(itemId: string): GardenActionResult {
 /**
  * Snooze a garden item — moves to "later" temporal, sets snooze_until to 1 day from now.
  */
-export function handleGardenSnooze(itemId: string): GardenActionResult {
-  const db = getCCDatabase();
-
-  const item = db.prepare('SELECT * FROM garden WHERE id = ?').get(itemId) as Record<string, unknown> | undefined;
-  if (!item) {
+export async function handleGardenSnooze(itemId: string): Promise<GardenActionResult> {
+  const rows = await db.select().from(garden).where(eq(garden.id, itemId)).limit(1);
+  if (!rows[0]) {
     return { success: false, ephemeralMessage: '❌ Garden item not found.' };
   }
 
-  const writeDb = getCCDatabase();
   const now = new Date();
   const snoozeUntil = new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString();
-  writeDb.prepare(`
-    UPDATE garden SET temporal = 'later', snooze_until = ?, saved_at = ? WHERE id = ?
-  `).run(snoozeUntil, now.toISOString(), itemId);
+
+  await db.update(garden).set({
+    temporal: 'later',
+    snooze_until: snoozeUntil,
+    saved_at: now.toISOString(),
+  }).where(eq(garden.id, itemId));
 
   logger.info({ itemId, snoozeUntil }, 'Garden item snoozed via Discord');
 
@@ -73,19 +74,18 @@ export function handleGardenSnooze(itemId: string): GardenActionResult {
 /**
  * Dismiss a garden item — sets temporal to "never" (soft dismiss).
  */
-export function handleGardenDismiss(itemId: string): GardenActionResult {
-  const db = getCCDatabase();
-
-  const item = db.prepare('SELECT * FROM garden WHERE id = ?').get(itemId) as Record<string, unknown> | undefined;
-  if (!item) {
+export async function handleGardenDismiss(itemId: string): Promise<GardenActionResult> {
+  const rows = await db.select().from(garden).where(eq(garden.id, itemId)).limit(1);
+  if (!rows[0]) {
     return { success: false, ephemeralMessage: '❌ Garden item not found.' };
   }
 
-  const writeDb = getCCDatabase();
   const now = new Date().toISOString();
-  writeDb.prepare(`
-    UPDATE garden SET temporal = 'never', saved_at = ? WHERE id = ?
-  `).run(now, itemId);
+
+  await db.update(garden).set({
+    temporal: 'never',
+    saved_at: now,
+  }).where(eq(garden.id, itemId));
 
   logger.info({ itemId }, 'Garden item dismissed via Discord');
 

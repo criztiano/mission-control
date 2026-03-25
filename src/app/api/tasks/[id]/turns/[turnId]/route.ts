@@ -12,7 +12,7 @@ export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string; turnId: string }> }
 ) {
-  const auth = requireRole(request, 'operator');
+  const auth = await requireRole(request, 'operator');
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status });
 
   const rateCheck = mutationLimiter(request);

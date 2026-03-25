@@ -1,19 +1,21 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getDatabase, db_helpers } from '@/lib/db'
+import { db_helpers } from '@/lib/db'
 import { runOpenClaw } from '@/lib/command'
 import { requireRole } from '@/lib/auth'
 import { getIssue } from '@/lib/cc-db'
+import { db } from '@/db/client'
+import { agents } from '@/db/schema'
+import { inArray } from 'drizzle-orm'
 
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const auth = requireRole(request, 'operator')
+  const auth = await requireRole(request, 'operator')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   try {
-    const resolvedParams = await params
-    const taskId = resolvedParams.id
+    const { id: taskId } = await params
     const body = await request.json()
     const author = (body.author || 'system') as string
     const message = (body.message || '').trim()
@@ -22,29 +24,29 @@ export async function POST(
       return NextResponse.json({ error: 'Message is required' }, { status: 400 })
     }
 
-    // Look up the issue in control-center.db
-    const issue = getIssue(taskId)
+    const issue = await getIssue(taskId)
     if (!issue) {
       return NextResponse.json({ error: 'Task not found' }, { status: 404 })
     }
 
-    // Subscribers still live in MC's own DB
-    const db = getDatabase()
-    const subscribers = new Set(db_helpers.getTaskSubscribers(parseInt(taskId) || 0))
+    const subscriberList = await db_helpers.getTaskSubscribers(parseInt(taskId) || 0)
+    const subscribers = new Set(subscriberList)
     subscribers.delete(author)
 
     if (subscribers.size === 0) {
       return NextResponse.json({ sent: 0, skipped: 0 })
     }
 
-    const agents = db
-      .prepare('SELECT name, session_key FROM agents WHERE name IN (' + Array.from(subscribers).map(() => '?').join(',') + ')')
-      .all(...Array.from(subscribers)) as Array<{ name: string; session_key?: string }>
+    const subscriberArray = Array.from(subscribers)
+    const agentRows = await db
+      .select({ name: agents.name, session_key: agents.session_key })
+      .from(agents)
+      .where(inArray(agents.name, subscriberArray))
 
     let sent = 0
     let skipped = 0
 
-    for (const agent of agents) {
+    for (const agent of agentRows) {
       if (!agent.session_key) {
         skipped += 1
         continue
@@ -62,7 +64,7 @@ export async function POST(
           { timeoutMs: 10000 }
         )
         sent += 1
-        db_helpers.createNotification(
+        await db_helpers.createNotification(
           agent.name,
           'message',
           'Task Broadcast',
@@ -75,7 +77,7 @@ export async function POST(
       }
     }
 
-    db_helpers.logActivity(
+    await db_helpers.logActivity(
       'task_broadcast',
       'task',
       0,

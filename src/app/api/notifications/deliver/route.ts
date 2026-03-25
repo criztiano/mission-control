@@ -10,7 +10,7 @@ import { requireRole } from '@/lib/auth';
  * via OpenClaw sessions_send command
  */
 export async function POST(request: NextRequest) {
-  const auth = requireRole(request, 'operator');
+  const auth = await requireRole(request, 'operator');
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status });
 
   try {
@@ -184,7 +184,7 @@ export async function POST(request: NextRequest) {
  * GET /api/notifications/deliver - Get delivery status and statistics
  */
 export async function GET(request: NextRequest) {
-  const auth = requireRole(request, 'viewer')
+  const auth = await requireRole(request, 'viewer')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   try {

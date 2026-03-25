@@ -5,16 +5,12 @@ import { getIssue, setTaskPicked, getTurns } from '@/lib/cc-db';
 
 /**
  * POST /api/tasks/[id]/pick — pick a specific task by ID (fallback/manual use)
- *
- * Body: { agent: string }
- *
- * Prefer POST /api/tasks/pick (no ID) for automatic priority-based assignment.
  */
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const auth = requireRole(request, 'operator');
+  const auth = await requireRole(request, 'operator');
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status });
 
   try {
@@ -29,7 +25,7 @@ export async function POST(
       );
     }
 
-    const issue = getIssue(taskId);
+    const issue = await getIssue(taskId);
     if (!issue) {
       return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     }
@@ -38,13 +34,10 @@ export async function POST(
       return NextResponse.json({ error: 'Task is closed' }, { status: 400 });
     }
 
-    // Record the pick
-    setTaskPicked(taskId, agent);
+    await setTaskPicked(taskId, agent);
 
-    // Get all turns for context
-    const turns = getTurns(taskId);
+    const turns = await getTurns(taskId);
 
-    // Determine if this task needs refinement (no turns, no meaningful description)
     const hasDescription = issue.description && issue.description.trim().length > 0;
     const needsRefinement = turns.length === 0 && !hasDescription;
 

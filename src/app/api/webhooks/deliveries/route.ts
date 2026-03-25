@@ -6,7 +6,7 @@ import { requireRole } from '@/lib/auth'
  * GET /api/webhooks/deliveries - Get delivery history for a webhook
  */
 export async function GET(request: NextRequest) {
-  const auth = requireRole(request, 'admin')
+  const auth = await requireRole(request, 'admin')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   try {

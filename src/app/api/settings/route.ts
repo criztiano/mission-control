@@ -39,7 +39,7 @@ const settingDefinitions: Record<string, { category: string; description: string
  * GET /api/settings - List all settings (grouped by category)
  */
 export async function GET(request: NextRequest) {
-  const auth = requireRole(request, 'admin')
+  const auth = await requireRole(request, 'admin')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   const db = getDatabase()
@@ -100,7 +100,7 @@ export async function GET(request: NextRequest) {
  * Body: { settings: { key: value, ... } }
  */
 export async function PUT(request: NextRequest) {
-  const auth = requireRole(request, 'admin')
+  const auth = await requireRole(request, 'admin')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   const rateCheck = mutationLimiter(request)
@@ -158,7 +158,7 @@ export async function PUT(request: NextRequest) {
  * DELETE /api/settings?key=... - Reset a setting to default
  */
 export async function DELETE(request: NextRequest) {
-  const auth = requireRole(request, 'admin')
+  const auth = await requireRole(request, 'admin')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   const rateCheck = mutationLimiter(request)
