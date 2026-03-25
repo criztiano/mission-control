@@ -18,7 +18,7 @@ export async function GET(
     return NextResponse.json({ error: 'Invalid job id' }, { status: 400 })
   }
 
-  const job = getProvisionJob(id)
+  const job = await getProvisionJob(id)
   if (!job) return NextResponse.json({ error: 'Job not found' }, { status: 404 })
 
   return NextResponse.json({ job })
@@ -50,7 +50,7 @@ export async function POST(
       return NextResponse.json({ error: 'Invalid action. Use approve, reject, or cancel.' }, { status: 400 })
     }
 
-    const job = transitionProvisionJobStatus(id, auth.user.username, action, reason)
+    const job = await transitionProvisionJobStatus(id, auth.user.username, action, reason)
     return NextResponse.json({ job })
   } catch (error: any) {
     return NextResponse.json({ error: error?.message || 'Failed to update provisioning job state' }, { status: 400 })

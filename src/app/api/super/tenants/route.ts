@@ -9,7 +9,7 @@ export async function GET(request: NextRequest) {
   const auth = await requireRole(request, 'admin')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
-  return NextResponse.json({ tenants: listTenants() })
+  return NextResponse.json({ tenants: await listTenants() })
 }
 
 /**
@@ -21,7 +21,7 @@ export async function POST(request: NextRequest) {
 
   try {
     const body = await request.json()
-    const created = createTenantAndBootstrapJob(body, auth.user.username)
+    const created = await createTenantAndBootstrapJob(body, auth.user.username)
     return NextResponse.json(created, { status: 201 })
   } catch (error: any) {
     if (String(error?.message || '').includes('UNIQUE')) {

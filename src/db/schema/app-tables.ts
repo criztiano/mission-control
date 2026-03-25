@@ -37,6 +37,11 @@ export const agents = pgTable('agents', {
   created_at: integer('created_at').$defaultFn(() => Math.floor(Date.now() / 1000)),
   updated_at: integer('updated_at').$defaultFn(() => Math.floor(Date.now() / 1000)),
   config: text('config'),
+  team: text('team'),
+  workspace_id: integer('workspace_id').default(1),
+  source: text('source').default('manual'),
+  content_hash: text('content_hash'),
+  workspace_path: text('workspace_path'),
 });
 export type Agent = InferSelectModel<typeof agents>;
 
@@ -62,6 +67,7 @@ export const activities = pgTable('activities', {
   description: text('description').notNull(),
   data: text('data'),
   created_at: integer('created_at').$defaultFn(() => Math.floor(Date.now() / 1000)),
+  workspace_id: integer('workspace_id').default(1),
 });
 export type Activity = InferSelectModel<typeof activities>;
 
@@ -119,6 +125,7 @@ export const messages = pgTable('messages', {
   metadata: text('metadata'),
   read_at: integer('read_at'),
   created_at: integer('created_at').$defaultFn(() => Math.floor(Date.now() / 1000)),
+  workspace_id: integer('workspace_id').default(1),
 });
 export type Message = InferSelectModel<typeof messages>;
 

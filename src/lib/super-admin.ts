@@ -4,7 +4,7 @@ import path from 'path'
 import { appendProvisionEvent, logAuditEvent, Tenant, ProvisionJob } from './db'
 import { db } from '@/db/client'
 import { tenants, provisionJobs, provisionEvents } from '@/db/schema'
-import { eq, desc, sql, and } from 'drizzle-orm'
+import { eq, desc, and, sql } from 'drizzle-orm'
 import { runCommand } from './command'
 import { runProvisionerCommand } from './provisioner-client'
 import { config as appConfig } from './config'
@@ -232,7 +232,7 @@ export function buildDecommissionPlan(tenant: {
 function parseJsonField<T>(raw: string | null | undefined, fallback: T): T {
   if (!raw) return fallback
   try {
-    return JSON.parse(raw) as T
+    return JSON.parse(raw as string) as T
   } catch {
     return fallback
   }
@@ -297,20 +297,35 @@ export async function listTenants() {
 export async function listProvisionJobs(filters: { tenant_id?: number; status?: string; limit?: number } = {}) {
   const limit = Math.min(Math.max(Number(filters.limit || 100), 1), 500)
 
-  const conditions: any[] = []
-  if (filters.tenant_id) conditions.push(sql`pj.tenant_id = ${filters.tenant_id}`)
-  if (filters.status) conditions.push(sql`pj.status = ${filters.status}`)
-
-  const whereClause = conditions.length > 0 ? sql`WHERE ${sql.join(conditions, sql` AND `)}` : sql``
-
-  const rows = await db.execute(sql`
+  let queryStr = `
     SELECT pj.*, t.slug as tenant_slug, t.display_name as tenant_display_name
     FROM provision_jobs pj
     JOIN tenants t ON t.id = pj.tenant_id
-    ${whereClause}
-    ORDER BY pj.created_at DESC, pj.id DESC
-    LIMIT ${limit}
-  `)
+    WHERE 1=1
+  `
+  const params: any[] = []
+
+  if (filters.tenant_id) {
+    queryStr += ' AND pj.tenant_id = $' + (params.length + 1)
+    params.push(filters.tenant_id)
+  }
+  if (filters.status) {
+    queryStr += ' AND pj.status = $' + (params.length + 1)
+    params.push(filters.status)
+  }
+
+  queryStr += ' ORDER BY pj.created_at DESC, pj.id DESC LIMIT ' + limit
+
+  // Replace $N with positional params - Neon SQL
+  let finalQuery = queryStr
+  for (let i = 0; i < params.length; i++) {
+    const escaped = typeof params[i] === 'string'
+      ? `'${String(params[i]).replace(/'/g, "''")}'`
+      : String(params[i])
+    finalQuery = finalQuery.replace('$' + (i + 1), escaped)
+  }
+
+  const rows = await db.execute(sql.raw(finalQuery) as any)
 
   return (rows.rows as any[]).map((row) => ({
     ...row,
@@ -321,32 +336,30 @@ export async function listProvisionJobs(filters: { tenant_id?: number; status?: 
 }
 
 export async function getProvisionJob(jobId: number) {
-  const rowResult = await db.execute(sql`
+  const rows = await db.execute(sql`
     SELECT pj.*, t.slug as tenant_slug, t.display_name as tenant_display_name, t.linux_user, t.openclaw_home, t.workspace_root
     FROM provision_jobs pj
     JOIN tenants t ON t.id = pj.tenant_id
     WHERE pj.id = ${jobId}
   `)
-  const row = (rowResult.rows as any[])[0]
 
+  const row = (rows.rows as any[])[0]
   if (!row) return null
 
-  const eventsResult = await db.execute(sql`
-    SELECT * FROM provision_events WHERE job_id = ${jobId} ORDER BY created_at ASC, id ASC
-  `)
+  const events = await db.select().from(provisionEvents)
+    .where(eq(provisionEvents.job_id, jobId))
+    .orderBy(provisionEvents.created_at, provisionEvents.id)
 
   return {
     ...row,
     request_json: parseJsonField(row.request_json, {}),
     plan_json: parseJsonField(row.plan_json, []),
     result_json: parseJsonField(row.result_json, null),
-    events: eventsResult.rows,
+    events,
   }
 }
 
-export function createTenantAndBootstrapJob(request: TenantBootstrapRequest, actor: string) {
-  const db = getDatabase()
-
+export async function createTenantAndBootstrapJob(request: TenantBootstrapRequest, actor: string) {
   const templateOpenclawJsonPath =
     String(process.env.MC_SUPER_TEMPLATE_OPENCLAW_JSON || (process.env.OPENCLAW_HOME ? path.join(process.env.OPENCLAW_HOME, 'openclaw.json') : '')).trim()
   if (!templateOpenclawJsonPath) {
@@ -387,100 +400,99 @@ export function createTenantAndBootstrapJob(request: TenantBootstrapRequest, act
   const openclawHome = joinPosix(tenantHomeRoot, linuxUser, '.openclaw')
   const workspaceRoot = joinPosix(tenantHomeRoot, linuxUser, workspaceDirname)
 
-  const inserted = db.transaction(() => {
-    const tenantRes = db.prepare(`
-      INSERT INTO tenants (slug, display_name, linux_user, plan_tier, status, openclaw_home, workspace_root, gateway_port, dashboard_port, config, created_by, owner_gateway)
-      VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      slug,
-      displayName,
-      linuxUser,
-      planTier,
-      openclawHome,
-      workspaceRoot,
-      gatewayPort,
-      dashboardPort,
-      JSON.stringify(config),
-      actor,
-      ownerGateway
-    )
+  const now = Math.floor(Date.now() / 1000)
 
-    const tenantId = Number(tenantRes.lastInsertRowid)
+  // Insert tenant
+  const tenantResult = await db.insert(tenants).values({
+    slug,
+    display_name: displayName,
+    linux_user: linuxUser,
+    plan_tier: planTier,
+    status: 'pending',
+    openclaw_home: openclawHome,
+    workspace_root: workspaceRoot,
+    gateway_port: gatewayPort,
+    dashboard_port: dashboardPort,
+    config: JSON.stringify(config),
+    created_by: actor,
+    owner_gateway: ownerGateway,
+    created_at: now,
+    updated_at: now,
+  }).returning({ id: tenants.id })
 
-    const plan = buildBootstrapPlan({
-      slug,
-      linux_user: linuxUser,
-      openclaw_home: openclawHome,
-      workspace_root: workspaceRoot,
-      gateway_port: gatewayPort,
-      dashboard_port: dashboardPort,
-    }, {
-      templateOpenclawJsonPath,
-      gatewaySystemdTemplatePath,
-    })
+  const tenantId = tenantResult[0].id
 
-    const requestPayload = {
-      slug,
-      display_name: displayName,
-      linux_user: linuxUser,
-      gateway_port: gatewayPort,
-      dashboard_port: dashboardPort,
-      plan_tier: planTier,
-      dry_run: dryRun,
-      config,
-      owner_gateway: ownerGateway,
-    }
+  const plan = buildBootstrapPlan({
+    slug,
+    linux_user: linuxUser,
+    openclaw_home: openclawHome,
+    workspace_root: workspaceRoot,
+    gateway_port: gatewayPort,
+    dashboard_port: dashboardPort,
+  }, {
+    templateOpenclawJsonPath,
+    gatewaySystemdTemplatePath,
+  })
 
-    const jobRes = db.prepare(`
-      INSERT INTO provision_jobs (tenant_id, job_type, status, dry_run, requested_by, idempotency_key, request_json, plan_json, updated_at)
-      VALUES (?, 'bootstrap', 'queued', ?, ?, ?, ?, ?, (unixepoch()))
-    `).run(
-      tenantId,
-      dryRun ? 1 : 0,
-      actor,
-      randomUUID(),
-      JSON.stringify(requestPayload),
-      JSON.stringify(plan),
-    )
+  const requestPayload = {
+    slug,
+    display_name: displayName,
+    linux_user: linuxUser,
+    gateway_port: gatewayPort,
+    dashboard_port: dashboardPort,
+    plan_tier: planTier,
+    dry_run: dryRun,
+    config,
+    owner_gateway: ownerGateway,
+  }
 
-    return {
-      tenant_id: tenantId,
-      job_id: Number(jobRes.lastInsertRowid),
-    }
-  })()
+  // Insert provision job
+  const jobResult = await db.insert(provisionJobs).values({
+    tenant_id: tenantId,
+    job_type: 'bootstrap',
+    status: 'queued',
+    dry_run: dryRun,
+    requested_by: actor,
+    idempotency_key: randomUUID(),
+    request_json: JSON.stringify(requestPayload),
+    plan_json: JSON.stringify(plan),
+    created_at: now,
+    updated_at: now,
+  }).returning({ id: provisionJobs.id })
 
-  appendProvisionEvent({
-    job_id: inserted.job_id,
+  const jobId = jobResult[0].id
+
+  await appendProvisionEvent({
+    job_id: jobId,
     level: 'info',
     step_key: 'queued',
     message: `Provisioning request queued (${dryRun ? 'dry-run' : 'execute'})`,
     data: { actor },
   })
 
-  logAuditEvent({
+  await logAuditEvent({
     action: 'tenant_bootstrap_requested',
     actor,
     target_type: 'tenant',
-    target_id: inserted.tenant_id,
+    target_id: tenantId,
     detail: { dry_run: dryRun, slug, linux_user: linuxUser, owner_gateway: ownerGateway },
   })
 
+  const tenantRows = await db.select().from(tenants).where(eq(tenants.id, tenantId)).limit(1)
+
   return {
-    tenant: db.prepare('SELECT * FROM tenants WHERE id = ?').get(inserted.tenant_id),
-    job: getProvisionJob(inserted.job_id),
+    tenant: tenantRows[0],
+    job: await getProvisionJob(jobId),
   }
 }
 
-export function createTenantDecommissionJob(tenantId: number, request: TenantDecommissionRequest, actor: string) {
-  const db = getDatabase()
-
+export async function createTenantDecommissionJob(tenantId: number, request: TenantDecommissionRequest, actor: string) {
   if (!Number.isInteger(tenantId) || tenantId <= 0) {
     throw new Error('Invalid tenant id')
   }
 
-  const tenant = db.prepare(`
-    SELECT * FROM tenants WHERE id = ?
-  `).get(tenantId) as Tenant | undefined
+  const tenantRows = await db.select().from(tenants).where(eq(tenants.id, tenantId)).limit(1)
+  const tenant = tenantRows[0]
 
   if (!tenant) {
     throw new Error('Tenant not found')
@@ -511,21 +523,24 @@ export function createTenantDecommissionJob(tenantId: number, request: TenantDec
     reason: reason || null,
   }
 
-  const jobRes = db.prepare(`
-    INSERT INTO provision_jobs (tenant_id, job_type, status, dry_run, requested_by, idempotency_key, request_json, plan_json, updated_at)
-    VALUES (?, 'decommission', 'queued', ?, ?, ?, ?, ?, (unixepoch()))
-  `).run(
-    tenant.id,
-    dryRun ? 1 : 0,
-    actor,
-    randomUUID(),
-    JSON.stringify(requestPayload),
-    JSON.stringify(plan),
-  )
+  const now = Math.floor(Date.now() / 1000)
 
-  const jobId = Number(jobRes.lastInsertRowid)
+  const jobResult = await db.insert(provisionJobs).values({
+    tenant_id: tenant.id,
+    job_type: 'decommission',
+    status: 'queued',
+    dry_run: dryRun,
+    requested_by: actor,
+    idempotency_key: randomUUID(),
+    request_json: JSON.stringify(requestPayload),
+    plan_json: JSON.stringify(plan),
+    created_at: now,
+    updated_at: now,
+  }).returning({ id: provisionJobs.id })
 
-  appendProvisionEvent({
+  const jobId = jobResult[0].id
+
+  await appendProvisionEvent({
     job_id: jobId,
     level: 'warn',
     step_key: 'queued',
@@ -533,7 +548,7 @@ export function createTenantDecommissionJob(tenantId: number, request: TenantDec
     data: { actor, reason: reason || null, remove_linux_user: removeLinuxUser, remove_state_dirs: removeStateDirs },
   })
 
-  logAuditEvent({
+  await logAuditEvent({
     action: 'tenant_decommission_requested',
     actor,
     target_type: 'tenant',
@@ -541,21 +556,21 @@ export function createTenantDecommissionJob(tenantId: number, request: TenantDec
     detail: { job_id: jobId, dry_run: dryRun, remove_linux_user: removeLinuxUser, remove_state_dirs: removeStateDirs },
   })
 
-  return { tenant, job: getProvisionJob(jobId) }
+  return { tenant, job: await getProvisionJob(jobId) }
 }
 
-export function transitionProvisionJobStatus(
+export async function transitionProvisionJobStatus(
   jobId: number,
   actor: string,
   action: ProvisionJobAction,
   reason?: string
 ) {
-  const db = getDatabase()
-  const job = getProvisionJob(jobId)
+  const job = await getProvisionJob(jobId)
   if (!job) throw new Error('Job not found')
 
   const currentStatus = String(job.status)
   const normalizedReason = (reason || '').trim()
+  const now = Math.floor(Date.now() / 1000)
 
   if (['running', 'completed', 'cancelled'].includes(currentStatus)) {
     throw new Error(`Job status ${currentStatus} is immutable`)
@@ -566,13 +581,14 @@ export function transitionProvisionJobStatus(
       throw new Error(`Cannot approve job from status ${currentStatus}`)
     }
 
-    db.prepare(`
-      UPDATE provision_jobs
-      SET status = 'approved', approved_by = ?, error_text = NULL, updated_at = (unixepoch())
-      WHERE id = ?
-    `).run(actor, jobId)
+    await db.update(provisionJobs).set({
+      status: 'approved',
+      approved_by: actor,
+      error_text: null,
+      updated_at: now,
+    }).where(eq(provisionJobs.id, jobId))
 
-    appendProvisionEvent({
+    await appendProvisionEvent({
       job_id: jobId,
       level: 'info',
       step_key: 'approval',
@@ -580,7 +596,7 @@ export function transitionProvisionJobStatus(
       data: { actor, reason: normalizedReason || null },
     })
 
-    logAuditEvent({
+    await logAuditEvent({
       action: 'provision_job_approved',
       actor,
       target_type: 'tenant',
@@ -591,13 +607,13 @@ export function transitionProvisionJobStatus(
     if (!['queued', 'approved', 'failed'].includes(currentStatus)) {
       throw new Error(`Cannot reject job from status ${currentStatus}`)
     }
-    db.prepare(`
-      UPDATE provision_jobs
-      SET status = 'rejected', updated_at = (unixepoch())
-      WHERE id = ?
-    `).run(jobId)
 
-    appendProvisionEvent({
+    await db.update(provisionJobs).set({
+      status: 'rejected',
+      updated_at: now,
+    }).where(eq(provisionJobs.id, jobId))
+
+    await appendProvisionEvent({
       job_id: jobId,
       level: 'warn',
       step_key: 'approval',
@@ -605,7 +621,7 @@ export function transitionProvisionJobStatus(
       data: { actor, reason: normalizedReason || null },
     })
 
-    logAuditEvent({
+    await logAuditEvent({
       action: 'provision_job_rejected',
       actor,
       target_type: 'tenant',
@@ -616,13 +632,14 @@ export function transitionProvisionJobStatus(
     if (!['queued', 'approved', 'failed', 'rejected'].includes(currentStatus)) {
       throw new Error(`Cannot cancel job from status ${currentStatus}`)
     }
-    db.prepare(`
-      UPDATE provision_jobs
-      SET status = 'cancelled', completed_at = (unixepoch()), updated_at = (unixepoch())
-      WHERE id = ?
-    `).run(jobId)
 
-    appendProvisionEvent({
+    await db.update(provisionJobs).set({
+      status: 'cancelled',
+      completed_at: now,
+      updated_at: now,
+    }).where(eq(provisionJobs.id, jobId))
+
+    await appendProvisionEvent({
       job_id: jobId,
       level: 'warn',
       step_key: 'cancel',
@@ -630,7 +647,7 @@ export function transitionProvisionJobStatus(
       data: { actor, reason: normalizedReason || null },
     })
 
-    logAuditEvent({
+    await logAuditEvent({
       action: 'provision_job_cancelled',
       actor,
       target_type: 'tenant',
@@ -662,33 +679,20 @@ async function runProvisionStep(step: ProvisionStep, dryRun: boolean) {
 
   if (step.requires_root) {
     if (dryRun) {
-      return {
-        stdout: '',
-        stderr: '',
-        code: 0,
-        skipped: true,
-      }
+      return { stdout: '', stderr: '', code: 0, skipped: true }
     }
     return runCommand('sudo', ['-n', command, ...args], { timeoutMs: step.timeout_ms || 15000 })
   }
 
   if (dryRun) {
-    return {
-      stdout: '',
-      stderr: '',
-      code: 0,
-      skipped: true,
-    }
+    return { stdout: '', stderr: '', code: 0, skipped: true }
   }
 
-  return runCommand(command, args, {
-    timeoutMs: step.timeout_ms || 15000,
-  })
+  return runCommand(command, args, { timeoutMs: step.timeout_ms || 15000 })
 }
 
 export async function executeProvisionJob(jobId: number, actor: string) {
-  const db = getDatabase()
-  const job = getProvisionJob(jobId)
+  const job = await getProvisionJob(jobId)
   const jobType = String(job?.job_type || 'bootstrap')
   if (!job) throw new Error('Job not found')
 
@@ -699,9 +703,11 @@ export async function executeProvisionJob(jobId: number, actor: string) {
   const plan = Array.isArray(job.plan_json) ? (job.plan_json as ProvisionStep[]) : []
   if (!plan.length) throw new Error('Job plan is empty')
 
-  const dryRun = Number(job.dry_run) === 1
-  const tenantRow = db.prepare('SELECT status FROM tenants WHERE id = ?').get(job.tenant_id) as { status?: string } | undefined
-  const previousTenantStatus = String(tenantRow?.status || 'pending')
+  const dryRun = Boolean(job.dry_run)
+  const now = Math.floor(Date.now() / 1000)
+
+  const tenantRows = await db.select({ status: tenants.status }).from(tenants).where(eq(tenants.id, job.tenant_id)).limit(1)
+  const previousTenantStatus = String(tenantRows[0]?.status || 'pending')
   const allowExec = String(process.env.MC_SUPER_PROVISION_EXEC || '').toLowerCase() === 'true'
   const requestedBy = String(job.requested_by || '')
   const approvedBy = String(job.approved_by || '')
@@ -728,22 +734,23 @@ export async function executeProvisionJob(jobId: number, actor: string) {
     ensureProvisionArtifacts(job)
   }
 
-  db.prepare(`
-    UPDATE provision_jobs
-    SET status = 'running', started_at = (unixepoch()), updated_at = (unixepoch()), runner_host = ?
-    WHERE id = ?
-  `).run(process.env.HOSTNAME || 'unknown', jobId)
+  await db.update(provisionJobs).set({
+    status: 'running',
+    started_at: now,
+    updated_at: now,
+    runner_host: process.env.HOSTNAME || 'unknown',
+  }).where(eq(provisionJobs.id, jobId))
 
   const startedTenantStatus = dryRun
     ? previousTenantStatus
     : (jobType === 'decommission' ? 'decommissioning' : 'provisioning')
-  db.prepare(`
-    UPDATE tenants
-    SET status = ?, updated_at = (unixepoch())
-    WHERE id = ?
-  `).run(startedTenantStatus, job.tenant_id)
 
-  appendProvisionEvent({
+  await db.update(tenants).set({
+    status: startedTenantStatus,
+    updated_at: now,
+  }).where(eq(tenants.id, job.tenant_id))
+
+  await appendProvisionEvent({
     job_id: jobId,
     level: 'info',
     step_key: 'start',
@@ -754,7 +761,7 @@ export async function executeProvisionJob(jobId: number, actor: string) {
 
   try {
     for (const step of plan) {
-      appendProvisionEvent({
+      await appendProvisionEvent({
         job_id: jobId,
         level: 'info',
         step_key: step.key,
@@ -775,7 +782,7 @@ export async function executeProvisionJob(jobId: number, actor: string) {
       })
 
       if ((result as any)?.skipped) {
-        appendProvisionEvent({
+        await appendProvisionEvent({
           job_id: jobId,
           level: 'info',
           step_key: step.key,
@@ -785,7 +792,7 @@ export async function executeProvisionJob(jobId: number, actor: string) {
         continue
       }
 
-      appendProvisionEvent({
+      await appendProvisionEvent({
         job_id: jobId,
         level: 'info',
         step_key: step.key,
@@ -798,36 +805,36 @@ export async function executeProvisionJob(jobId: number, actor: string) {
       })
     }
 
-    db.prepare(`
-      UPDATE provision_jobs
-      SET status = 'completed', completed_at = (unixepoch()), result_json = ?, error_text = NULL, updated_at = (unixepoch())
-      WHERE id = ?
-    `).run(
-      JSON.stringify({
+    const nowFinish = Math.floor(Date.now() / 1000)
+    await db.update(provisionJobs).set({
+      status: 'completed',
+      completed_at: nowFinish,
+      result_json: JSON.stringify({
         dry_run: dryRun,
         steps_executed: stepResults.length,
         steps: stepResults,
       }),
-      jobId,
-    )
+      error_text: null,
+      updated_at: nowFinish,
+    }).where(eq(provisionJobs.id, jobId))
 
     const completedTenantStatus = dryRun
       ? previousTenantStatus
       : (jobType === 'decommission' ? 'suspended' : 'active')
-    db.prepare(`
-      UPDATE tenants
-      SET status = ?, updated_at = (unixepoch())
-      WHERE id = ?
-    `).run(completedTenantStatus, job.tenant_id)
 
-    appendProvisionEvent({
+    await db.update(tenants).set({
+      status: completedTenantStatus,
+      updated_at: nowFinish,
+    }).where(eq(tenants.id, job.tenant_id))
+
+    await appendProvisionEvent({
       job_id: jobId,
       level: 'info',
       step_key: 'finish',
       message: `${jobType} job completed (${dryRun ? 'dry-run' : 'execute'})`,
     })
 
-    logAuditEvent({
+    await logAuditEvent({
       action: 'tenant_bootstrap_completed',
       actor,
       target_type: 'tenant',
@@ -836,31 +843,29 @@ export async function executeProvisionJob(jobId: number, actor: string) {
     })
   } catch (error: any) {
     const message = error?.message || String(error)
+    const nowErr = Math.floor(Date.now() / 1000)
 
-    db.prepare(`
-      UPDATE provision_jobs
-      SET status = 'failed', completed_at = (unixepoch()), error_text = ?, result_json = ?, updated_at = (unixepoch())
-      WHERE id = ?
-    `).run(
-      message,
-      JSON.stringify({ dry_run: dryRun, steps: stepResults }),
-      jobId,
-    )
+    await db.update(provisionJobs).set({
+      status: 'failed',
+      completed_at: nowErr,
+      error_text: message,
+      result_json: JSON.stringify({ dry_run: dryRun, steps: stepResults }),
+      updated_at: nowErr,
+    }).where(eq(provisionJobs.id, jobId))
 
-    db.prepare(`
-      UPDATE tenants
-      SET status = 'error', updated_at = (unixepoch())
-      WHERE id = ?
-    `).run(job.tenant_id)
+    await db.update(tenants).set({
+      status: 'error',
+      updated_at: nowErr,
+    }).where(eq(tenants.id, job.tenant_id))
 
-    appendProvisionEvent({
+    await appendProvisionEvent({
       job_id: jobId,
       level: 'error',
       step_key: 'error',
       message,
     })
 
-    logAuditEvent({
+    await logAuditEvent({
       action: 'tenant_bootstrap_failed',
       actor,
       target_type: 'tenant',

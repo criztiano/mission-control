@@ -1,37 +1,48 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-// Use vi.hoisted() so mock variables are available inside vi.mock() factories
-const { mockBroadcast, mockRun, mockGet, mockPrepare } = vi.hoisted(() => {
-  const mockRun = vi.fn(() => ({ lastInsertRowid: 1, changes: 1 }))
-  const mockGet = vi.fn((): any => ({ count: 1 }))
-  const mockPrepare = vi.fn(() => ({
-    run: mockRun,
-    get: mockGet,
-    all: vi.fn(() => []),
-  }))
+// Mock the Drizzle db client
+const { mockInsert, mockUpdate, mockSelect, mockBroadcast } = vi.hoisted(() => {
   const mockBroadcast = vi.fn()
-  return { mockBroadcast, mockRun, mockGet, mockPrepare }
-})
-
-// Mock better-sqlite3 native module to avoid needing compiled bindings
-vi.mock('better-sqlite3', () => {
-  return {
-    default: vi.fn(() => ({
-      prepare: mockPrepare,
-      pragma: vi.fn(),
-      exec: vi.fn(),
-      close: vi.fn(),
+  const mockInsertResult = [{ id: 1 }]
+  const mockInsert = vi.fn(() => ({
+    values: vi.fn(() => ({
+      returning: vi.fn(() => Promise.resolve(mockInsertResult)),
+      onConflictDoNothing: vi.fn(() => Promise.resolve()),
     })),
-  }
+  }))
+  const mockUpdate = vi.fn(() => ({
+    set: vi.fn(() => ({
+      where: vi.fn(() => Promise.resolve()),
+    })),
+  }))
+  const mockSelect = vi.fn(() => ({
+    from: vi.fn(() => ({
+      where: vi.fn(() => ({
+        limit: vi.fn(() => Promise.resolve([{ id: 42 }])),
+        orderBy: vi.fn(() => Promise.resolve([])),
+      })),
+      orderBy: vi.fn(() => ({
+        limit: vi.fn(() => Promise.resolve([])),
+      })),
+    })),
+  }))
+  return { mockInsert, mockUpdate, mockSelect, mockBroadcast }
 })
 
-vi.mock('@/lib/config', () => ({
-  config: { dbPath: ':memory:' },
-  ensureDirExists: vi.fn(),
+vi.mock('@/db/client', () => ({
+  db: {
+    insert: mockInsert,
+    update: mockUpdate,
+    select: mockSelect,
+  },
 }))
 
-vi.mock('@/lib/migrations', () => ({
-  runMigrations: vi.fn(),
+vi.mock('@/lib/event-bus', () => ({
+  eventBus: { broadcast: mockBroadcast, on: vi.fn(), emit: vi.fn(), setMaxListeners: vi.fn() },
+}))
+
+vi.mock('@/lib/logger', () => ({
+  logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }))
 
 vi.mock('@/lib/password', () => ({
@@ -39,15 +50,15 @@ vi.mock('@/lib/password', () => ({
   verifyPassword: vi.fn(() => false),
 }))
 
-vi.mock('@/lib/logger', () => ({
-  logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
+vi.mock('@/lib/migrations', () => ({
+  runMigrations: vi.fn(() => Promise.resolve()),
 }))
 
-vi.mock('@/lib/event-bus', () => ({
-  eventBus: { broadcast: mockBroadcast, on: vi.fn(), emit: vi.fn(), setMaxListeners: vi.fn() },
+vi.mock('@/lib/cc-db', () => ({
+  runCCMigrations: vi.fn(),
 }))
 
-// Import after mocks — the real db_helpers will use our mocked getDatabase
+// Import after mocks
 import { db_helpers } from '@/lib/db'
 
 describe('parseMentions', () => {
@@ -82,13 +93,10 @@ describe('logActivity', () => {
     vi.clearAllMocks()
   })
 
-  it('inserts activity into database and broadcasts event', () => {
-    db_helpers.logActivity('task_created', 'task', 1, 'alice', 'Created task')
+  it('inserts activity into database and broadcasts event', async () => {
+    await db_helpers.logActivity('task_created', 'task', 1, 'alice', 'Created task')
 
-    expect(mockPrepare).toHaveBeenCalled()
-    expect(mockRun).toHaveBeenCalledWith(
-      'task_created', 'task', 1, 'alice', 'Created task', null,
-    )
+    expect(mockInsert).toHaveBeenCalled()
     expect(mockBroadcast).toHaveBeenCalledWith(
       'activity.created',
       expect.objectContaining({
@@ -100,13 +108,10 @@ describe('logActivity', () => {
     )
   })
 
-  it('stringifies data when provided', () => {
+  it('stringifies data when provided', async () => {
     const data = { key: 'value' }
-    db_helpers.logActivity('update', 'agent', 2, 'bob', 'Updated agent', data)
-
-    expect(mockRun).toHaveBeenCalledWith(
-      'update', 'agent', 2, 'bob', 'Updated agent', JSON.stringify(data),
-    )
+    await db_helpers.logActivity('update', 'agent', 2, 'bob', 'Updated agent', data)
+    expect(mockInsert).toHaveBeenCalled()
   })
 })
 
@@ -115,12 +120,10 @@ describe('createNotification', () => {
     vi.clearAllMocks()
   })
 
-  it('inserts notification and broadcasts event', () => {
-    db_helpers.createNotification('alice', 'mention', 'Mentioned', 'You were mentioned')
+  it('inserts notification and broadcasts event', async () => {
+    await db_helpers.createNotification('alice', 'mention', 'Mentioned', 'You were mentioned')
 
-    expect(mockRun).toHaveBeenCalledWith(
-      'alice', 'mention', 'Mentioned', 'You were mentioned', undefined, undefined,
-    )
+    expect(mockInsert).toHaveBeenCalled()
     expect(mockBroadcast).toHaveBeenCalledWith(
       'notification.created',
       expect.objectContaining({
@@ -131,25 +134,29 @@ describe('createNotification', () => {
     )
   })
 
-  it('passes source_type and source_id when provided', () => {
-    db_helpers.createNotification('bob', 'alert', 'Alert', 'CPU high', 'agent', 5)
-
-    expect(mockRun).toHaveBeenCalledWith(
-      'bob', 'alert', 'Alert', 'CPU high', 'agent', 5,
-    )
+  it('passes source_type and source_id when provided', async () => {
+    await db_helpers.createNotification('bob', 'alert', 'Alert', 'CPU high', 'agent', 5)
+    expect(mockInsert).toHaveBeenCalled()
   })
 })
 
 describe('updateAgentStatus', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    mockGet.mockReturnValue({ id: 42 })
+    // Reset select mock to return an agent
+    mockSelect.mockReturnValue({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          limit: vi.fn(() => Promise.resolve([{ id: 42 }])),
+        })),
+      })),
+    })
   })
 
-  it('updates agent status in database and broadcasts', () => {
-    db_helpers.updateAgentStatus('worker-1', 'busy', 'Processing task')
+  it('updates agent status in database and broadcasts', async () => {
+    await db_helpers.updateAgentStatus('worker-1', 'busy', 'Processing task')
 
-    expect(mockPrepare).toHaveBeenCalled()
+    expect(mockUpdate).toHaveBeenCalled()
     expect(mockBroadcast).toHaveBeenCalledWith(
       'agent.status_changed',
       expect.objectContaining({

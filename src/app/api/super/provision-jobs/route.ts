@@ -17,7 +17,7 @@ export async function GET(request: NextRequest) {
   const status = searchParams.get('status') || undefined
   const limit = Math.min(parseInt(searchParams.get('limit') || '100', 10), 200)
 
-  const jobs = listProvisionJobs({
+  const jobs = await listProvisionJobs({
     tenant_id: tenant_id ? parseInt(tenant_id, 10) : undefined,
     status,
     limit,
