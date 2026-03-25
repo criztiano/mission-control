@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/db/client'
-import { db_helpers } from '@/lib/db'
 import { agents } from '@/db/schema'
 import { eq } from 'drizzle-orm'
+import { db_helpers } from '@/lib/db'
 import { getUserFromRequest, requireRole } from '@/lib/auth'
 import {
   getAgentWorkspace,
@@ -30,7 +30,8 @@ export async function GET(
       return NextResponse.json({ error: 'File not in whitelist' }, { status: 403 })
     }
 
-    let agentRows
+    // Get agent by ID or name
+    let agentRows: any[]
     if (isNaN(Number(agentId))) {
       agentRows = await db.select({ id: agents.id, name: agents.name }).from(agents).where(eq(agents.name, agentId)).limit(1)
     } else {
@@ -91,7 +92,8 @@ export async function PUT(
       return NextResponse.json({ error: 'USER.md is read-only' }, { status: 403 })
     }
 
-    let agentRows
+    // Get agent by ID or name
+    let agentRows: any[]
     if (isNaN(Number(agentId))) {
       agentRows = await db.select({ id: agents.id, name: agents.name }).from(agents).where(eq(agents.name, agentId)).limit(1)
     } else {

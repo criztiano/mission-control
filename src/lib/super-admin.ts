@@ -1,7 +1,10 @@
 import { randomUUID } from 'crypto'
 import fs from 'fs'
 import path from 'path'
-import { getDatabase, appendProvisionEvent, logAuditEvent, Tenant, ProvisionJob } from './db'
+import { appendProvisionEvent, logAuditEvent, Tenant, ProvisionJob } from './db'
+import { db } from '@/db/client'
+import { tenants, provisionJobs, provisionEvents } from '@/db/schema'
+import { eq, desc, sql, and } from 'drizzle-orm'
 import { runCommand } from './command'
 import { runProvisionerCommand } from './provisioner-client'
 import { config as appConfig } from './config'
@@ -275,50 +278,41 @@ function ensureProvisionArtifacts(job: any) {
   fs.writeFileSync(path.join(artifactDir, 'openclaw-gateway.env'), gatewayEnv, { mode: 0o600 })
 }
 
-export function listTenants() {
-  const db = getDatabase()
-  const rows = db.prepare(`
+export async function listTenants() {
+  const rows = await db.execute(sql`
     SELECT t.*, pj.id as latest_job_id, pj.status as latest_job_status, pj.created_at as latest_job_created_at
     FROM tenants t
     LEFT JOIN provision_jobs pj ON pj.id = (
       SELECT p2.id FROM provision_jobs p2 WHERE p2.tenant_id = t.id ORDER BY p2.created_at DESC, p2.id DESC LIMIT 1
     )
     ORDER BY t.created_at DESC, t.id DESC
-  `).all() as Array<Tenant & { latest_job_id: number | null; latest_job_status: string | null; latest_job_created_at: number | null }>
+  `)
 
-  return rows.map((row) => ({
+  return (rows.rows as any[]).map((row) => ({
     ...row,
     config: parseJsonField(row.config, {}),
   }))
 }
 
-export function listProvisionJobs(filters: { tenant_id?: number; status?: string; limit?: number } = {}) {
-  const db = getDatabase()
-  const where: string[] = ['1=1']
-  const params: any[] = []
-
-  if (filters.tenant_id) {
-    where.push('pj.tenant_id = ?')
-    params.push(filters.tenant_id)
-  }
-  if (filters.status) {
-    where.push('pj.status = ?')
-    params.push(filters.status)
-  }
-
+export async function listProvisionJobs(filters: { tenant_id?: number; status?: string; limit?: number } = {}) {
   const limit = Math.min(Math.max(Number(filters.limit || 100), 1), 500)
-  params.push(limit)
 
-  const rows = db.prepare(`
+  const conditions: any[] = []
+  if (filters.tenant_id) conditions.push(sql`pj.tenant_id = ${filters.tenant_id}`)
+  if (filters.status) conditions.push(sql`pj.status = ${filters.status}`)
+
+  const whereClause = conditions.length > 0 ? sql`WHERE ${sql.join(conditions, sql` AND `)}` : sql``
+
+  const rows = await db.execute(sql`
     SELECT pj.*, t.slug as tenant_slug, t.display_name as tenant_display_name
     FROM provision_jobs pj
     JOIN tenants t ON t.id = pj.tenant_id
-    WHERE ${where.join(' AND ')}
+    ${whereClause}
     ORDER BY pj.created_at DESC, pj.id DESC
-    LIMIT ?
-  `).all(...params) as Array<ProvisionJob & { tenant_slug: string; tenant_display_name: string }>
+    LIMIT ${limit}
+  `)
 
-  return rows.map((row) => ({
+  return (rows.rows as any[]).map((row) => ({
     ...row,
     request_json: parseJsonField(row.request_json, {}),
     plan_json: parseJsonField(row.plan_json, []),
@@ -326,27 +320,27 @@ export function listProvisionJobs(filters: { tenant_id?: number; status?: string
   }))
 }
 
-export function getProvisionJob(jobId: number) {
-  const db = getDatabase()
-  const row = db.prepare(`
+export async function getProvisionJob(jobId: number) {
+  const rowResult = await db.execute(sql`
     SELECT pj.*, t.slug as tenant_slug, t.display_name as tenant_display_name, t.linux_user, t.openclaw_home, t.workspace_root
     FROM provision_jobs pj
     JOIN tenants t ON t.id = pj.tenant_id
-    WHERE pj.id = ?
-  `).get(jobId) as any
+    WHERE pj.id = ${jobId}
+  `)
+  const row = (rowResult.rows as any[])[0]
 
   if (!row) return null
 
-  const events = db.prepare(`
-    SELECT * FROM provision_events WHERE job_id = ? ORDER BY created_at ASC, id ASC
-  `).all(jobId)
+  const eventsResult = await db.execute(sql`
+    SELECT * FROM provision_events WHERE job_id = ${jobId} ORDER BY created_at ASC, id ASC
+  `)
 
   return {
     ...row,
     request_json: parseJsonField(row.request_json, {}),
     plan_json: parseJsonField(row.plan_json, []),
     result_json: parseJsonField(row.result_json, null),
-    events,
+    events: eventsResult.rows,
   }
 }
 
