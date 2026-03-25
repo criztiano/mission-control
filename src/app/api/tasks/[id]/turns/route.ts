@@ -2,8 +2,9 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireRole } from '@/lib/auth';
 import { mutationLimiter } from '@/lib/rate-limit';
 import { logger } from '@/lib/logger';
-import { getIssue, getTurns, createTurn, type TurnType } from '@/lib/cc-db';
+import { getIssue, getTurns, createTurn, getProject, type TurnType } from '@/lib/cc-db';
 import { dispatchTaskNudge } from '@/lib/task-dispatch';
+import { postTaskCard } from '@/lib/discord-cards';
 
 const SPAWN_AGENTS = new Set(['dumbo', 'uze', 'ralph', 'piem', 'cody']);
 
@@ -81,6 +82,32 @@ export async function POST(
       type: turnType,
       author: turnAuthor,
     });
+
+    // Fire-and-forget Discord notification when turn is assigned to a human
+    if (assigned_to && !SPAWN_AGENTS.has(assigned_to.toLowerCase())) {
+      void (async () => {
+        try {
+          let projectName: string | undefined;
+          if (issue.project_id) {
+            const project = getProject(issue.project_id);
+            projectName = project?.title;
+          }
+          await postTaskCard({
+            taskId,
+            title: issue.title,
+            description: issue.description,
+            project: projectName,
+            turn: {
+              author: turnAuthor,
+              content: content || '',
+              links: links || [],
+            },
+          });
+        } catch (e) {
+          logger.warn({ err: e, taskId }, 'Discord task card notification failed');
+        }
+      })();
+    }
 
     // Dispatch on every turn (not just instruction/result)
     const updatedIssue = getIssue(taskId);
