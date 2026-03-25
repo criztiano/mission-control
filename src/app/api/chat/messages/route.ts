@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/db/client'
 import { db_helpers } from '@/lib/db'
-import { messages, agents } from '@/db/schema'
-import { eq, and, asc, sql, SQL } from 'drizzle-orm'
+import { messages } from '@/db/schema'
+import { eq, asc, and, gt, sql } from 'drizzle-orm'
 import { runOpenClaw } from '@/lib/command'
 import { getAllGatewaySessions } from '@/lib/sessions'
 import { eventBus } from '@/lib/event-bus'
@@ -41,18 +41,20 @@ async function createChatReply(
   messageType: 'text' | 'status' = 'status',
   metadata: Record<string, any> | null = null
 ) {
-  const result = await db.insert(messages).values({
-    conversation_id: conversationId,
-    from_agent: fromAgent,
-    to_agent: toAgent,
-    content,
-    message_type: messageType,
-    metadata: metadata ? JSON.stringify(metadata) : null,
-  }).returning({ id: messages.id })
+  const rows = await db
+    .insert(messages)
+    .values({
+      conversation_id: conversationId,
+      from_agent: fromAgent,
+      to_agent: toAgent,
+      content,
+      message_type: messageType,
+      metadata: metadata ? JSON.stringify(metadata) : null,
+      created_at: Math.floor(Date.now() / 1000),
+    })
+    .returning()
 
-  const rows = await db.select().from(messages).where(eq(messages.id, result[0].id)).limit(1)
   const row = rows[0]
-
   eventBus.broadcast('chat.message', {
     ...row,
     metadata: row.metadata ? JSON.parse(row.metadata) : null,
@@ -62,13 +64,23 @@ async function createChatReply(
 function extractReplyText(waitPayload: any): string | null {
   if (!waitPayload || typeof waitPayload !== 'object') return null
 
-  const directCandidates = [waitPayload.text, waitPayload.message, waitPayload.response, waitPayload.output, waitPayload.result]
+  const directCandidates = [
+    waitPayload.text,
+    waitPayload.message,
+    waitPayload.response,
+    waitPayload.output,
+    waitPayload.result,
+  ]
   for (const value of directCandidates) {
     if (typeof value === 'string' && value.trim()) return value.trim()
   }
 
   if (typeof waitPayload.output === 'object' && waitPayload.output) {
-    const nested = [waitPayload.output.text, waitPayload.output.message, waitPayload.output.content]
+    const nested = [
+      waitPayload.output.text,
+      waitPayload.output.message,
+      waitPayload.output.content,
+    ]
     for (const value of nested) {
       if (typeof value === 'string' && value.trim()) return value.trim()
     }
@@ -79,6 +91,7 @@ function extractReplyText(waitPayload: any): string | null {
 
 /**
  * GET /api/chat/messages - List messages with filters
+ * Query params: conversation_id, from_agent, to_agent, limit, offset, since
  */
 export async function GET(request: NextRequest) {
   const auth = await requireRole(request, 'viewer')
@@ -94,26 +107,35 @@ export async function GET(request: NextRequest) {
     const offset = parseInt(searchParams.get('offset') || '0')
     const since = searchParams.get('since')
 
-    const conditions: SQL[] = []
+    // Build where conditions
+    const conditions = []
     if (conversation_id) conditions.push(eq(messages.conversation_id, conversation_id))
     if (from_agent) conditions.push(eq(messages.from_agent, from_agent))
     if (to_agent) conditions.push(eq(messages.to_agent, to_agent))
-    if (since) conditions.push(sql`${messages.created_at} > ${parseInt(since)}`)
+    if (since) conditions.push(gt(messages.created_at, parseInt(since)))
 
-    const msgRows = await db.select().from(messages)
-      .where(conditions.length ? and(...conditions) : undefined)
+    const whereClause = conditions.length > 0 ? and(...conditions) : undefined
+
+    const rows = await db
+      .select()
+      .from(messages)
+      .where(whereClause)
       .orderBy(asc(messages.created_at))
       .limit(limit)
       .offset(offset)
 
-    const parsed = msgRows.map((msg) => ({
+    const parsed = rows.map((msg) => ({
       ...msg,
-      metadata: msg.metadata ? JSON.parse(msg.metadata) : null
+      metadata: msg.metadata ? JSON.parse(msg.metadata) : null,
     }))
 
-    const countRows = await db.select({ total: sql<number>`count(*)::int` }).from(messages)
-      .where(conditions.length ? and(...conditions) : undefined)
-    const total = countRows[0]?.total ?? 0
+    // Get total count
+    const countResult = await db
+      .select({ total: sql<number>`count(*)` })
+      .from(messages)
+      .where(whereClause)
+
+    const total = Number(countResult[0]?.total ?? 0)
 
     return NextResponse.json({ messages: parsed, total, page: Math.floor(offset / limit) + 1, limit })
   } catch (error) {
@@ -124,6 +146,7 @@ export async function GET(request: NextRequest) {
 
 /**
  * POST /api/chat/messages - Send a new message
+ * Body: { from, to, content, message_type, conversation_id, metadata }
  */
 export async function POST(request: NextRequest) {
   const auth = await requireRole(request, 'operator')
@@ -140,22 +163,29 @@ export async function POST(request: NextRequest) {
     const metadata = body.metadata || null
 
     if (!from || !content) {
-      return NextResponse.json({ error: '"from" and "content" are required' }, { status: 400 })
+      return NextResponse.json(
+        { error: '"from" and "content" are required' },
+        { status: 400 }
+      )
     }
 
-    const result = await db.insert(messages).values({
-      conversation_id,
-      from_agent: from,
-      to_agent: to,
-      content,
-      message_type,
-      metadata: metadata ? JSON.stringify(metadata) : null,
-    }).returning({ id: messages.id })
+    const inserted = await db
+      .insert(messages)
+      .values({
+        conversation_id,
+        from_agent: from,
+        to_agent: to,
+        content,
+        message_type,
+        metadata: metadata ? JSON.stringify(metadata) : null,
+        created_at: Math.floor(Date.now() / 1000),
+      })
+      .returning()
 
-    const messageId = result[0].id
-
+    const messageId = inserted[0].id
     let forwardInfo: ForwardInfo | null = null
 
+    // Log activity
     await db_helpers.logActivity(
       'chat_message',
       'message',
@@ -165,6 +195,7 @@ export async function POST(request: NextRequest) {
       { conversation_id, to, message_type }
     )
 
+    // Create notification for recipient if specified
     if (to) {
       await db_helpers.createNotification(
         to,
@@ -175,20 +206,25 @@ export async function POST(request: NextRequest) {
         messageId
       )
 
+      // Optionally forward to agent via gateway
       if (body.forward) {
         forwardInfo = { attempted: true, delivered: false }
 
-        const agentRows = await db.select().from(agents).where(sql`lower(${agents.name}) = lower(${to})`).limit(1)
-        const agent = agentRows[0]
+        const agentRows = await db.execute(sql`SELECT * FROM agents WHERE lower(name) = lower(${to}) LIMIT 1`)
+        const agent = (agentRows.rows as any[])[0] ?? null
 
         let sessionKey: string | null = agent?.session_key || null
 
+        // Fallback: derive session from on-disk gateway session stores
         if (!sessionKey) {
           const sessions = getAllGatewaySessions()
-          const match = sessions.find((s) => s.agent.toLowerCase() === String(to).toLowerCase())
+          const match = sessions.find(
+            (s) => s.agent.toLowerCase() === String(to).toLowerCase()
+          )
           sessionKey = match?.key || match?.sessionId || null
         }
 
+        // Prefer configured openclawId when present, fallback to normalized name
         let openclawAgentId: string | null = null
         if (agent?.config) {
           try {
@@ -196,7 +232,9 @@ export async function POST(request: NextRequest) {
             if (cfg?.openclawId && typeof cfg.openclawId === 'string') {
               openclawAgentId = cfg.openclawId
             }
-          } catch {}
+          } catch {
+            // ignore parse issues
+          }
         }
         if (!openclawAgentId && typeof to === 'string') {
           openclawAgentId = to.toLowerCase().replace(/\s+/g, '-')
@@ -230,7 +268,16 @@ export async function POST(request: NextRequest) {
             else invokeParams.agentId = openclawAgentId
 
             const invokeResult = await runOpenClaw(
-              ['gateway', 'call', 'agent', '--timeout', '10000', '--params', JSON.stringify(invokeParams), '--json'],
+              [
+                'gateway',
+                'call',
+                'agent',
+                '--timeout',
+                '10000',
+                '--params',
+                JSON.stringify(invokeParams),
+                '--json',
+              ],
               { timeoutMs: 12000 }
             )
             const acceptedPayload = parseGatewayJson(invokeResult.stdout)
@@ -269,7 +316,11 @@ export async function POST(request: NextRequest) {
             }
           }
 
-          if (typeof conversation_id === 'string' && conversation_id.startsWith('coord:') && forwardInfo.delivered) {
+          if (
+            typeof conversation_id === 'string' &&
+            conversation_id.startsWith('coord:') &&
+            forwardInfo.delivered
+          ) {
             try {
               await createChatReply(
                 conversation_id,
@@ -286,7 +337,16 @@ export async function POST(request: NextRequest) {
             if (forwardInfo.runId) {
               try {
                 const waitResult = await runOpenClaw(
-                  ['gateway', 'call', 'agent.wait', '--timeout', '8000', '--params', JSON.stringify({ runId: forwardInfo.runId, timeoutMs: 6000 }), '--json'],
+                  [
+                    'gateway',
+                    'call',
+                    'agent.wait',
+                    '--timeout',
+                    '8000',
+                    '--params',
+                    JSON.stringify({ runId: forwardInfo.runId, timeoutMs: 6000 }),
+                    '--json',
+                  ],
                   { timeoutMs: 9000 }
                 )
 
@@ -294,27 +354,66 @@ export async function POST(request: NextRequest) {
                 const waitStatus = String(waitPayload?.status || '').toLowerCase()
 
                 if (waitStatus === 'error') {
-                  const reason = typeof waitPayload?.error === 'string' ? waitPayload.error : 'Unknown runtime error'
-                  await createChatReply(conversation_id, COORDINATOR_AGENT, from, `I received your message, but execution failed: ${reason}`, 'status', { status: 'error', runId: forwardInfo.runId })
+                  const reason =
+                    typeof waitPayload?.error === 'string'
+                      ? waitPayload.error
+                      : 'Unknown runtime error'
+                  await createChatReply(
+                    conversation_id,
+                    COORDINATOR_AGENT,
+                    from,
+                    `I received your message, but execution failed: ${reason}`,
+                    'status',
+                    { status: 'error', runId: forwardInfo.runId }
+                  )
                 } else if (waitStatus === 'timeout') {
-                  await createChatReply(conversation_id, COORDINATOR_AGENT, from, 'I received your message and I am still processing it. I will post results as soon as execution completes.', 'status', { status: 'processing', runId: forwardInfo.runId })
+                  await createChatReply(
+                    conversation_id,
+                    COORDINATOR_AGENT,
+                    from,
+                    'I received your message and I am still processing it. I will post results as soon as execution completes.',
+                    'status',
+                    { status: 'processing', runId: forwardInfo.runId }
+                  )
                 } else {
                   const replyText = extractReplyText(waitPayload)
                   if (replyText) {
-                    await createChatReply(conversation_id, COORDINATOR_AGENT, from, replyText, 'text', { status: waitStatus || 'completed', runId: forwardInfo.runId })
+                    await createChatReply(
+                      conversation_id,
+                      COORDINATOR_AGENT,
+                      from,
+                      replyText,
+                      'text',
+                      { status: waitStatus || 'completed', runId: forwardInfo.runId }
+                    )
                   } else {
-                    await createChatReply(conversation_id, COORDINATOR_AGENT, from, 'Execution accepted and completed. No textual response payload was returned by the runtime.', 'status', { status: waitStatus || 'completed', runId: forwardInfo.runId })
+                    await createChatReply(
+                      conversation_id,
+                      COORDINATOR_AGENT,
+                      from,
+                      'Execution accepted and completed. No textual response payload was returned by the runtime.',
+                      'status',
+                      { status: waitStatus || 'completed', runId: forwardInfo.runId }
+                    )
                   }
                 }
               } catch (waitErr) {
                 const maybeWaitStdout = String((waitErr as any)?.stdout || '')
                 const maybeWaitStderr = String((waitErr as any)?.stderr || '')
                 const waitPayload = parseGatewayJson(maybeWaitStdout)
-                const reason = typeof waitPayload?.error === 'string'
-                  ? waitPayload.error
-                  : (maybeWaitStderr || maybeWaitStdout || 'Unable to read completion status from coordinator runtime.').trim()
+                const reason =
+                  typeof waitPayload?.error === 'string'
+                    ? waitPayload.error
+                    : (maybeWaitStderr || maybeWaitStdout || 'Unable to read completion status from coordinator runtime.').trim()
 
-                await createChatReply(conversation_id, COORDINATOR_AGENT, from, `I received your message, but I could not retrieve completion output yet: ${reason}`, 'status', { status: 'unknown', runId: forwardInfo.runId })
+                await createChatReply(
+                  conversation_id,
+                  COORDINATOR_AGENT,
+                  from,
+                  `I received your message, but I could not retrieve completion output yet: ${reason}`,
+                  'status',
+                  { status: 'unknown', runId: forwardInfo.runId }
+                )
               }
             }
           }
@@ -326,9 +425,10 @@ export async function POST(request: NextRequest) {
     const created = createdRows[0]
     const parsedMessage = {
       ...created,
-      metadata: created.metadata ? JSON.parse(created.metadata) : null
+      metadata: created.metadata ? JSON.parse(created.metadata) : null,
     }
 
+    // Broadcast to SSE clients
     eventBus.broadcast('chat.message', parsedMessage)
 
     return NextResponse.json({ message: parsedMessage, forward: forwardInfo }, { status: 201 })

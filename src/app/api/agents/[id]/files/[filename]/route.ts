@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getDatabase, db_helpers } from '@/lib/db'
+import { db } from '@/db/client'
+import { db_helpers } from '@/lib/db'
+import { agents } from '@/db/schema'
+import { eq } from 'drizzle-orm'
 import { getUserFromRequest, requireRole } from '@/lib/auth'
 import {
   getAgentWorkspace,
@@ -10,7 +13,6 @@ import {
 
 /**
  * GET /api/agents/[id]/files/[filename] - Read a specific workspace file
- * Filename can be e.g. "SOUL.md", "IDENTITY.md", or "memory/2026-03-01.md"
  */
 export async function GET(
   request: NextRequest,
@@ -20,29 +22,27 @@ export async function GET(
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   try {
-    const db = getDatabase()
     const resolvedParams = await params
     const agentId = resolvedParams.id
     const filename = decodeURIComponent(resolvedParams.filename)
 
-    // Whitelist check
     if (!isAllowedFile(filename)) {
       return NextResponse.json({ error: 'File not in whitelist' }, { status: 403 })
     }
 
-    // Get agent by ID or name
-    let agent: any
+    let agentRows
     if (isNaN(Number(agentId))) {
-      agent = db.prepare('SELECT id, name FROM agents WHERE name = ?').get(agentId)
+      agentRows = await db.select({ id: agents.id, name: agents.name }).from(agents).where(eq(agents.name, agentId)).limit(1)
     } else {
-      agent = db.prepare('SELECT id, name FROM agents WHERE id = ?').get(Number(agentId))
+      agentRows = await db.select({ id: agents.id, name: agents.name }).from(agents).where(eq(agents.id, Number(agentId))).limit(1)
     }
+    const agent = agentRows[0]
 
     if (!agent) {
       return NextResponse.json({ error: 'Agent not found' }, { status: 404 })
     }
 
-    const workspace = await getAgentWorkspace(agentId)
+    const workspace = getAgentWorkspace(agentId)
     if (!workspace) {
       return NextResponse.json({ error: 'No workspace configured' }, { status: 404 })
     }
@@ -70,7 +70,6 @@ export async function GET(
 
 /**
  * PUT /api/agents/[id]/files/[filename] - Write a specific workspace file
- * USER.md is read-only (rejected here).
  */
 export async function PUT(
   request: NextRequest,
@@ -80,34 +79,31 @@ export async function PUT(
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   try {
-    const db = getDatabase()
     const resolvedParams = await params
     const agentId = resolvedParams.id
     const filename = decodeURIComponent(resolvedParams.filename)
 
-    // Whitelist check
     if (!isAllowedFile(filename)) {
       return NextResponse.json({ error: 'File not in whitelist' }, { status: 403 })
     }
 
-    // USER.md is read-only
     if (filename === 'USER.md') {
       return NextResponse.json({ error: 'USER.md is read-only' }, { status: 403 })
     }
 
-    // Get agent by ID or name
-    let agent: any
+    let agentRows
     if (isNaN(Number(agentId))) {
-      agent = db.prepare('SELECT id, name FROM agents WHERE name = ?').get(agentId)
+      agentRows = await db.select({ id: agents.id, name: agents.name }).from(agents).where(eq(agents.name, agentId)).limit(1)
     } else {
-      agent = db.prepare('SELECT id, name FROM agents WHERE id = ?').get(Number(agentId))
+      agentRows = await db.select({ id: agents.id, name: agents.name }).from(agents).where(eq(agents.id, Number(agentId))).limit(1)
     }
+    const agent = agentRows[0]
 
     if (!agent) {
       return NextResponse.json({ error: 'Agent not found' }, { status: 404 })
     }
 
-    const workspace = await getAgentWorkspace(agentId)
+    const workspace = getAgentWorkspace(agentId)
     if (!workspace) {
       return NextResponse.json({ error: 'No workspace configured' }, { status: 404 })
     }
@@ -120,8 +116,7 @@ export async function PUT(
 
     writeWorkspaceFile(workspace, filename, content)
 
-    // Log activity
-    db_helpers.logActivity(
+    await db_helpers.logActivity(
       'agent_file_updated',
       'agent',
       agent.id,
