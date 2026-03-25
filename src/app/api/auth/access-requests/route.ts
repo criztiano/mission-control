@@ -149,7 +149,7 @@ export async function POST(request: NextRequest) {
     is_approved: users.is_approved,
   }).from(users).where(eq(users.id, userId)).limit(1)
 
-  logAuditEvent({
+  await logAuditEvent({
     action: 'access_request_approved',
     actor: admin.username,
     actor_id: admin.id,

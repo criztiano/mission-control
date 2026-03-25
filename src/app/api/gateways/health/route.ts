@@ -1,16 +1,8 @@
 import { NextRequest, NextResponse } from "next/server"
+import { db } from '@/db/client'
+import { gateways } from '@/db/schema'
+import { eq, desc, sql } from 'drizzle-orm'
 import { requireRole } from "@/lib/auth"
-import { getDatabase } from "@/lib/db"
-
-interface GatewayEntry {
-  id: number
-  name: string
-  host: string
-  port: number
-  token: string
-  is_primary: number
-  status: string
-}
 
 interface HealthResult {
   id: number
@@ -26,38 +18,25 @@ function isBlockedUrl(urlStr: string): boolean {
   try {
     const url = new URL(urlStr)
     const hostname = url.hostname
-    // Block link-local / cloud metadata endpoints
     if (hostname.startsWith('169.254.')) return true
-    // Block well-known cloud metadata hostnames
     if (hostname === 'metadata.google.internal') return true
     return false
   } catch {
-    return true // Block malformed URLs
+    return true
   }
 }
 
 /**
  * POST /api/gateways/health - Server-side health probe for all gateways
- * Probes gateways from the server where loopback addresses are reachable.
  */
 export async function POST(request: NextRequest) {
   const auth = await requireRole(request, "viewer")
   if ("error" in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
-  const db = getDatabase()
-  const gateways = db.prepare("SELECT * FROM gateways ORDER BY is_primary DESC, name ASC").all() as GatewayEntry[]
-
-  // Prepare update statements once (avoids N+1)
-  const updateOnlineStmt = db.prepare(
-    "UPDATE gateways SET status = ?, latency = ?, last_seen = (unixepoch()), updated_at = (unixepoch()) WHERE id = ?"
-  )
-  const updateOfflineStmt = db.prepare(
-    "UPDATE gateways SET status = ?, latency = NULL, updated_at = (unixepoch()) WHERE id = ?"
-  )
-
+  const gwRows = await db.select().from(gateways).orderBy(sql`is_primary DESC, name ASC`)
   const results: HealthResult[] = []
 
-  for (const gw of gateways) {
+  for (const gw of gwRows) {
     const probeUrl = "http://" + gw.host + ":" + gw.port + "/"
 
     if (isBlockedUrl(probeUrl)) {
@@ -70,26 +49,19 @@ export async function POST(request: NextRequest) {
       const controller = new AbortController()
       const timeout = setTimeout(() => controller.abort(), 5000)
 
-      const res = await fetch(probeUrl, {
-        signal: controller.signal,
-      })
+      const res = await fetch(probeUrl, { signal: controller.signal })
       clearTimeout(timeout)
 
       const latency = Date.now() - start
       const status = res.ok ? "online" : "error"
 
-      updateOnlineStmt.run(status, latency, gw.id)
+      const now = Math.floor(Date.now() / 1000)
+      await db.update(gateways).set({ status, latency, last_seen: now, updated_at: now }).where(eq(gateways.id, gw.id))
 
-      results.push({
-        id: gw.id,
-        name: gw.name,
-        status: status as "online" | "error",
-        latency,
-        agents: [],
-        sessions_count: 0,
-      })
+      results.push({ id: gw.id, name: gw.name, status: status as "online" | "error", latency, agents: [], sessions_count: 0 })
     } catch (err: any) {
-      updateOfflineStmt.run("offline", gw.id)
+      const now = Math.floor(Date.now() / 1000)
+      await db.update(gateways).set({ status: 'offline', latency: null, updated_at: now }).where(eq(gateways.id, gw.id))
 
       results.push({
         id: gw.id,

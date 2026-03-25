@@ -1,11 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { db } from '@/db/client'
+import { auditLog, tasks, activities, pipelineRuns, workflowPipelines } from '@/db/schema'
+import { sql, and, SQL } from 'drizzle-orm'
 import { requireRole } from '@/lib/auth'
-import { getDatabase, logAuditEvent } from '@/lib/db'
+import { logAuditEvent } from '@/lib/db'
 import { heavyLimiter } from '@/lib/rate-limit'
 
 /**
- * GET /api/export?type=audit|tasks|activities|pipelines&format=csv|json&since=UNIX&until=UNIX
- * Admin-only data export endpoint.
+ * GET /api/export?type=audit|tasks|activities|pipelines&format=csv|json
  */
 export async function GET(request: NextRequest) {
   const auth = await requireRole(request, 'admin')
@@ -21,30 +23,18 @@ export async function GET(request: NextRequest) {
   const until = searchParams.get('until')
 
   if (!type || !['audit', 'tasks', 'activities', 'pipelines'].includes(type)) {
-    return NextResponse.json(
-      { error: 'type required: audit, tasks, activities, pipelines' },
-      { status: 400 }
-    )
+    return NextResponse.json({ error: 'type required: audit, tasks, activities, pipelines' }, { status: 400 })
   }
-
-  const db = getDatabase()
-  const conditions: string[] = []
-  const params: any[] = []
-
-  if (since) {
-    conditions.push('created_at >= ?')
-    params.push(parseInt(since))
-  }
-  if (until) {
-    conditions.push('created_at <= ?')
-    params.push(parseInt(until))
-  }
-
-  const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
 
   const requestedLimit = parseInt(searchParams.get('limit') || '10000')
   const maxLimit = 50000
   const limit = Math.min(requestedLimit, maxLimit)
+
+  const conditions: string[] = []
+  const params: any[] = []
+  if (since) { conditions.push(`created_at >= ${parseInt(since)}`) }
+  if (until) { conditions.push(`created_at <= ${parseInt(until)}`) }
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
 
   let rows: any[] = []
   let headers: string[] = []
@@ -52,32 +42,40 @@ export async function GET(request: NextRequest) {
 
   switch (type) {
     case 'audit': {
-      rows = db.prepare(`SELECT * FROM audit_log ${where} ORDER BY created_at DESC LIMIT ?`).all(...params, limit)
+      const result = await db.execute(sql`SELECT * FROM audit_log ${sql.raw(where)} ORDER BY created_at DESC LIMIT ${limit}`)
+      rows = result.rows as any[]
       headers = ['id', 'action', 'actor', 'actor_id', 'target_type', 'target_id', 'detail', 'ip_address', 'user_agent', 'created_at']
       filename = 'audit-log'
       break
     }
     case 'tasks': {
-      rows = db.prepare(`SELECT * FROM tasks ${where} ORDER BY created_at DESC LIMIT ?`).all(...params, limit)
+      const result = await db.execute(sql`SELECT * FROM tasks ${sql.raw(where)} ORDER BY created_at DESC LIMIT ${limit}`)
+      rows = result.rows as any[]
       headers = ['id', 'title', 'description', 'status', 'priority', 'assigned_to', 'creator', 'created_at', 'updated_at', 'tags']
       filename = 'tasks'
       break
     }
     case 'activities': {
-      rows = db.prepare(`SELECT * FROM activities ${where} ORDER BY created_at DESC LIMIT ?`).all(...params, limit)
+      const result = await db.execute(sql`SELECT * FROM activities ${sql.raw(where)} ORDER BY created_at DESC LIMIT ${limit}`)
+      rows = result.rows as any[]
       headers = ['id', 'type', 'entity_type', 'entity_id', 'actor', 'description', 'data', 'created_at']
       filename = 'activities'
       break
     }
     case 'pipelines': {
-      rows = db.prepare(`SELECT pr.*, wp.name as pipeline_name FROM pipeline_runs pr LEFT JOIN workflow_pipelines wp ON pr.pipeline_id = wp.id ${where ? where.replace('created_at', 'pr.created_at') : ''} ORDER BY pr.created_at DESC LIMIT ?`).all(...params, limit)
+      const pipelineWhere = where.replace('created_at', 'pr.created_at')
+      const result = await db.execute(sql`
+        SELECT pr.*, wp.name as pipeline_name FROM pipeline_runs pr
+        LEFT JOIN workflow_pipelines wp ON pr.pipeline_id = wp.id
+        ${sql.raw(pipelineWhere)} ORDER BY pr.created_at DESC LIMIT ${limit}
+      `)
+      rows = result.rows as any[]
       headers = ['id', 'pipeline_id', 'pipeline_name', 'status', 'current_step', 'steps_snapshot', 'started_at', 'completed_at', 'triggered_by', 'created_at']
       filename = 'pipeline-runs'
       break
     }
   }
 
-  // Log the export
   const ipAddress = request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip') || 'unknown'
   logAuditEvent({
     action: 'data_export',
@@ -96,7 +94,6 @@ export async function GET(request: NextRequest) {
         const val = row[h]
         if (val == null) return ''
         const str = String(val)
-        // Escape CSV: wrap in quotes if contains comma, newline, or quote
         if (str.includes(',') || str.includes('\n') || str.includes('"')) {
           return `"${str.replace(/"/g, '""')}"`
         }
@@ -113,7 +110,6 @@ export async function GET(request: NextRequest) {
     })
   }
 
-  // JSON format
   return NextResponse.json(
     { type, exported_at: new Date().toISOString(), count: rows.length, data: rows },
     {

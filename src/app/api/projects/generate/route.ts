@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
-import Database from 'better-sqlite3'
 import { readFileSync, existsSync } from 'fs'
 import { randomUUID } from 'crypto'
 import path from 'path'
+import { db } from '@/db/client'
+import { issues, projects } from '@/db/schema'
+import { eq } from 'drizzle-orm'
 
-const DB_PATH = path.join(process.env.HOME || '', '.openclaw/control-center.db')
 const OPENCLAW_CONFIG = path.join(process.env.HOME || '', '.openclaw/openclaw.json')
 const SESSIONS_DIR = path.join(process.env.HOME || '', '.openclaw/agents/main/sessions')
 const SESSIONS_JSON = path.join(SESSIONS_DIR, 'sessions.json')
@@ -120,12 +121,12 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'taskId is required' }, { status: 400 })
     }
 
-    // Read the task from DB
-    const db = new Database(DB_PATH, { readonly: true })
-    const task = db.prepare('SELECT title, description FROM issues WHERE id = ?').get(taskId) as
-      | { title: string; description: string }
-      | undefined
-    db.close()
+    // Read the task from DB via Drizzle
+    const [task] = await db
+      .select({ title: issues.title, description: issues.description })
+      .from(issues)
+      .where(eq(issues.id, taskId))
+      .limit(1)
 
     if (!task) {
       return NextResponse.json({ error: 'Task not found' }, { status: 404 })
@@ -156,24 +157,24 @@ export async function POST(request: NextRequest) {
       })
     }
 
-    // Create the project in DB
+    // Create the project in DB via Drizzle
     const projectId = randomUUID()
     const now = new Date().toISOString()
-    const dbWrite = new Database(DB_PATH)
 
-    dbWrite
-      .prepare(
-        `INSERT INTO projects (id, title, description, emoji, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?)`
-      )
-      .run(projectId, projectData.name, projectData.description, projectData.emoji, now, now)
+    await db.insert(projects).values({
+      id: projectId,
+      title: projectData.name,
+      description: projectData.description,
+      emoji: projectData.emoji,
+      created_at: now,
+      updated_at: now,
+    })
 
     // Assign the project to the task
-    dbWrite
-      .prepare('UPDATE issues SET project_id = ?, updated_at = ? WHERE id = ?')
-      .run(projectId, now, taskId)
-
-    dbWrite.close()
+    await db
+      .update(issues)
+      .set({ project_id: projectId, updated_at: now })
+      .where(eq(issues.id, taskId))
 
     return NextResponse.json({
       id: projectId,
