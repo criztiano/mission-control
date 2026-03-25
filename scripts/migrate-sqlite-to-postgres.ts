@@ -1,616 +1,845 @@
 /**
- * Data migration script: SQLite → Neon Postgres
+ * migrate-sqlite-to-postgres.ts
  *
- * Reads from both SQLite databases and inserts into Neon.
- * Idempotent: uses ON CONFLICT DO NOTHING for text PKs,
- * and checks for existing rows where needed.
+ * Migrates data from both SQLite databases to Neon Postgres via Drizzle ORM.
  *
- * Run with: npx tsx scripts/migrate-sqlite-to-postgres.ts
+ * Sources:
+ *   1. ~/.openclaw/control-center.db  (CC DB — tasks, issues, turns, tweets, garden)
+ *   2. .data/mission-control.db        (App DB — users, agents, messages, settings, etc.)
  *
- * Required env: DATABASE_URL (Neon connection string)
- * Optional env:
- *   CC_DB_PATH    (default: ~/.openclaw/control-center.db)
- *   APP_DB_PATH   (default: .data/mission-control.db)
+ * Target: Neon Postgres (DATABASE_URL env var)
+ *
+ * Usage:
+ *   npx tsx scripts/migrate-sqlite-to-postgres.ts
+ *
+ * Options:
+ *   --dry-run        Print row counts without inserting
+ *   --tables=t1,t2   Only migrate specific tables
+ *   --skip=t1,t2     Skip specific tables
+ *
+ * Idempotent: truncates each target table before inserting.
+ * Safe to re-run. Keep original SQLite files as backup.
  */
 
-import Database from 'better-sqlite3';
-import { homedir } from 'os';
-import { join, resolve } from 'path';
-import { existsSync } from 'fs';
+import Database from 'better-sqlite3'
+import { drizzle } from 'drizzle-orm/neon-http'
+import { neon } from '@neondatabase/serverless'
+import { sql } from 'drizzle-orm'
+import * as schema from '../src/db/schema'
+import path from 'path'
+import os from 'os'
+import fs from 'fs'
 
-// Must set DATABASE_URL before running
-if (!process.env.DATABASE_URL) {
-  console.error('ERROR: DATABASE_URL environment variable is required.');
-  process.exit(1);
+// ─── Config ──────────────────────────────────────────────────────────────────
+
+const DATABASE_URL = process.env.DATABASE_URL
+if (!DATABASE_URL) {
+  console.error('❌ DATABASE_URL is not set. Add it to .env.local or export it.')
+  process.exit(1)
 }
 
-// Dynamic import of neon to avoid compile-time issues
-const { neon } = await import('@neondatabase/serverless');
-const { drizzle } = await import('drizzle-orm/neon-http');
-import * as schema from '../src/db/schema/index.js';
-const sql = neon(process.env.DATABASE_URL);
-const db = drizzle(sql, { schema });
+const CC_DB_PATH = process.env.CC_DB_PATH || path.join(os.homedir(), '.openclaw', 'control-center.db')
+const APP_DB_PATH = process.env.APP_DB_PATH || path.join(process.cwd(), '.data', 'mission-control.db')
 
-const CC_DB_PATH = process.env.CC_DB_PATH || join(homedir(), '.openclaw', 'control-center.db');
-const APP_DB_PATH = process.env.APP_DB_PATH || resolve('./data/mission-control.db');
+const args = process.argv.slice(2)
+const DRY_RUN = args.includes('--dry-run')
+const tablesArg = args.find(a => a.startsWith('--tables='))
+const skipArg = args.find(a => a.startsWith('--skip='))
+const ONLY_TABLES = tablesArg ? tablesArg.replace('--tables=', '').split(',').map(s => s.trim()) : null
+const SKIP_TABLES = skipArg ? skipArg.replace('--skip=', '').split(',').map(s => s.trim()) : []
 
-// Check if .data or data dir
-const APP_DB_PATHS = [
-  resolve('.data/mission-control.db'),
-  resolve('data/mission-control.db'),
-  process.env.APP_DB_PATH || '',
-].filter(Boolean);
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
-function findAppDb(): string | null {
-  if (process.env.APP_DB_PATH && existsSync(process.env.APP_DB_PATH)) return process.env.APP_DB_PATH;
-  for (const p of APP_DB_PATHS) {
-    if (existsSync(p)) return p;
-  }
-  return null;
+function shouldMigrate(tableName: string): boolean {
+  if (SKIP_TABLES.includes(tableName)) return false
+  if (ONLY_TABLES && !ONLY_TABLES.includes(tableName)) return false
+  return true
 }
 
-function bool(val: any): boolean {
-  if (typeof val === 'boolean') return val;
-  if (typeof val === 'number') return val !== 0;
-  return false;
+function parseBool(v: any): boolean | null {
+  if (v === null || v === undefined) return null
+  if (typeof v === 'boolean') return v
+  return v === 1 || v === '1' || v === 'true'
 }
 
-function str(val: any): string {
-  if (val === null || val === undefined) return '';
-  return String(val);
+function parseJson(v: any, fallback: any = null): any {
+  if (v === null || v === undefined) return fallback
+  if (typeof v === 'object') return v
+  try { return JSON.parse(v) } catch { return fallback }
 }
 
-function strOrNull(val: any): string | null {
-  if (val === null || val === undefined) return null;
-  return String(val);
+function chunkArray<T>(arr: T[], size: number): T[][] {
+  const chunks: T[][] = []
+  for (let i = 0; i < arr.length; i += size) {
+    chunks.push(arr.slice(i, i + size))
+  }
+  return chunks
 }
 
-function numOrNull(val: any): number | null {
-  if (val === null || val === undefined) return null;
-  const n = Number(val);
-  return isNaN(n) ? null : n;
+async function migrateTable(
+  tableName: string,
+  sourceRows: any[],
+  insertFn: (chunk: any[]) => Promise<void>
+) {
+  if (!shouldMigrate(tableName)) {
+    console.log(`  ⏭️  Skipping ${tableName}`)
+    return
+  }
+
+  console.log(`  📦 ${tableName}: ${sourceRows.length} rows`)
+
+  if (DRY_RUN) {
+    console.log(`     [dry-run] would insert ${sourceRows.length} rows`)
+    return
+  }
+
+  if (sourceRows.length === 0) {
+    console.log(`     ✅ empty — nothing to insert`)
+    return
+  }
+
+  // Insert in chunks of 100
+  const chunks = chunkArray(sourceRows, 100)
+  let inserted = 0
+  for (const chunk of chunks) {
+    await insertFn(chunk)
+    inserted += chunk.length
+  }
+  console.log(`     ✅ inserted ${inserted} rows`)
 }
 
-function intOrNull(val: any): number | null {
-  if (val === null || val === undefined) return null;
-  const n = parseInt(String(val));
-  return isNaN(n) ? null : n;
+// ─── Main ────────────────────────────────────────────────────────────────────
+
+async function main() {
+  console.log('🚀 Starting SQLite → Neon Postgres migration')
+  console.log(`   DATABASE_URL: ${DATABASE_URL.replace(/:[^:@]+@/, ':***@')}`)
+  console.log(`   CC DB:  ${CC_DB_PATH}`)
+  console.log(`   App DB: ${APP_DB_PATH}`)
+  if (DRY_RUN) console.log('   ⚠️  DRY RUN — no data will be inserted')
+  console.log('')
+
+  // Verify SQLite files exist
+  if (!fs.existsSync(CC_DB_PATH)) {
+    console.warn(`⚠️  CC DB not found at ${CC_DB_PATH} — skipping CC tables`)
+  }
+  if (!fs.existsSync(APP_DB_PATH)) {
+    console.warn(`⚠️  App DB not found at ${APP_DB_PATH} — skipping App tables`)
+  }
+
+  // Connect
+  const neonConn = neon(DATABASE_URL)
+  const db = drizzle(neonConn, { schema })
+
+  // ─── CC Database ─────────────────────────────────────────────────────────
+
+  if (fs.existsSync(CC_DB_PATH)) {
+    console.log('📂 Migrating CC Database...')
+    const ccDb = new Database(CC_DB_PATH, { readonly: true })
+
+    // projects
+    await migrateTable('projects', ccDb.prepare('SELECT * FROM projects').all(), async (rows) => {
+      await db.insert(schema.projects).values(rows.map(r => ({
+        id: r.id,
+        title: r.title,
+        description: r.description ?? '',
+        emoji: r.emoji ?? '📁',
+        created_at: r.created_at,
+        updated_at: r.updated_at,
+        archived: parseBool(r.archived) ?? false,
+        schedule: r.schedule ?? 'nightly',
+        repo_url: r.repo_url ?? '',
+        local_path: r.local_path ?? '',
+      }))).onConflictDoNothing()
+    })
+
+    // project_resources
+    await migrateTable('project_resources', ccDb.prepare('SELECT * FROM project_resources').all(), async (rows) => {
+      await db.insert(schema.projectResources).values(rows.map(r => ({
+        id: r.id,
+        project_id: r.project_id,
+        kind: r.kind,
+        label: r.label ?? '',
+        value: r.value,
+        created_at: r.created_at,
+      }))).onConflictDoNothing()
+    })
+
+    // issues
+    await migrateTable('issues', ccDb.prepare('SELECT * FROM issues').all(), async (rows) => {
+      await db.insert(schema.issues).values(rows.map(r => ({
+        id: r.id,
+        project_id: r.project_id,
+        title: r.title,
+        description: r.description ?? '',
+        status: r.status ?? 'idea',
+        assignee: r.assignee ?? '',
+        priority: r.priority ?? 'normal',
+        created_at: r.created_at,
+        updated_at: r.updated_at,
+        archived: parseBool(r.archived) ?? false,
+        schedule: r.schedule ?? '',
+        parent_id: r.parent_id ?? null,
+        notion_id: r.notion_id ?? '',
+        creator: r.creator ?? '',
+        plan_path: r.plan_path ?? null,
+        last_turn_at: r.last_turn_at ?? null,
+        seen_at: r.seen_at ?? null,
+        picked: parseBool(r.picked) ?? false,
+        picked_at: r.picked_at ?? null,
+        picked_by: r.picked_by ?? '',
+        blocked_by: r.blocked_by ?? '[]',
+        plan_id: r.plan_id ?? null,
+      }))).onConflictDoNothing()
+    })
+
+    // issue_resources
+    await migrateTable('issue_resources', ccDb.prepare('SELECT * FROM issue_resources').all(), async (rows) => {
+      await db.insert(schema.issueResources).values(rows.map(r => ({
+        id: r.id,
+        issue_id: r.issue_id,
+        kind: r.kind,
+        label: r.label ?? '',
+        value: r.value,
+        created_at: r.created_at,
+      }))).onConflictDoNothing()
+    })
+
+    // issue_comments
+    await migrateTable('issue_comments', ccDb.prepare('SELECT * FROM issue_comments').all(), async (rows) => {
+      await db.insert(schema.issueComments).values(rows.map(r => ({
+        id: r.id,
+        issue_id: r.issue_id,
+        author: r.author,
+        content: r.content,
+        created_at: r.created_at,
+        attachments: r.attachments ?? '[]',
+      }))).onConflictDoNothing()
+    })
+
+    // issue_dependencies
+    await migrateTable('issue_dependencies', ccDb.prepare('SELECT * FROM issue_dependencies').all(), async (rows) => {
+      await db.insert(schema.issueDependencies).values(rows.map(r => ({
+        issue_id: r.issue_id,
+        depends_on: r.depends_on,
+      }))).onConflictDoNothing()
+    })
+
+    // issue_activity
+    await migrateTable('issue_activity', ccDb.prepare('SELECT * FROM issue_activity').all(), async (rows) => {
+      await db.insert(schema.issueActivity).values(rows.map(r => ({
+        id: r.id,
+        issue_id: r.issue_id,
+        actor: r.actor,
+        action: r.action,
+        detail: r.detail ?? '',
+        created_at: r.created_at,
+      }))).onConflictDoNothing()
+    })
+
+    // turns
+    await migrateTable('turns', ccDb.prepare('SELECT * FROM turns').all(), async (rows) => {
+      await db.insert(schema.turns).values(rows.map(r => ({
+        id: r.id,
+        task_id: r.task_id,
+        round_number: r.round_number ?? 1,
+        type: r.type,
+        author: r.author,
+        content: r.content ?? '',
+        links: r.links ?? '[]',
+        created_at: r.created_at,
+        updated_at: r.updated_at ?? r.created_at,
+      }))).onConflictDoNothing()
+    })
+
+    // tweets
+    await migrateTable('tweets', ccDb.prepare('SELECT * FROM tweets').all(), async (rows) => {
+      await db.insert(schema.tweets).values(rows.map(r => ({
+        id: r.id,
+        title: r.title ?? '',
+        author: r.author ?? '',
+        theme: r.theme ?? '',
+        verdict: r.verdict ?? '',
+        action: r.action ?? '',
+        source: r.source ?? '',
+        tweet_link: r.tweet_link ?? '',
+        digest: r.digest ?? '',
+        content: r.content ?? '',
+        created_at: r.created_at,
+        scraped_at: r.scraped_at,
+        pinned: parseBool(r.pinned) ?? false,
+        media_urls: r.media_urls ?? '[]',
+        triage_status: r.triage_status ?? 'pending',
+        snooze_until: r.snooze_until ?? null,
+        local_media_urls: r.local_media_urls ?? '[]',
+        discord_message_id: r.discord_message_id ?? null,
+        discord_posted_at: r.discord_posted_at ?? null,
+        summary: r.summary ?? '',
+        digest_id: r.digest_id ?? null,
+        highlighted: parseBool(r.highlighted) ?? false,
+        highlight_note: r.highlight_note ?? '',
+        top_replies: r.top_replies ?? '[]',
+        reply_count: r.reply_count ?? 0,
+        retweet_count: r.retweet_count ?? 0,
+        like_count: r.like_count ?? 0,
+        engage: parseBool(r.engage) ?? false,
+        engage_reason: r.engage_reason ?? null,
+      }))).onConflictDoNothing()
+    })
+
+    // tweet_ratings
+    await migrateTable('tweet_ratings', ccDb.prepare('SELECT * FROM tweet_ratings').all(), async (rows) => {
+      await db.insert(schema.tweetRatings).values(rows.map(r => ({
+        tweet_id: r.tweet_id,
+        rating: r.rating,
+        rated_at: r.rated_at,
+      }))).onConflictDoNothing()
+    })
+
+    // tweet_interactions
+    await migrateTable('tweet_interactions', ccDb.prepare('SELECT * FROM tweet_interactions').all(), async (rows) => {
+      await db.insert(schema.tweetInteractions).values(rows.map(r => ({
+        // Note: id is serial — skip it so Postgres assigns new IDs
+        tweet_id: r.tweet_id,
+        action: r.action,
+        created_at: r.created_at,
+      }))).onConflictDoNothing()
+    })
+
+    // garden
+    await migrateTable('garden', ccDb.prepare('SELECT * FROM garden').all(), async (rows) => {
+      await db.insert(schema.garden).values(rows.map(r => ({
+        id: r.id,
+        content: r.content,
+        type: r.type ?? 'tweet',
+        interest: r.interest ?? 'information',
+        temporal: r.temporal ?? 'ever',
+        tags: r.tags ?? '[]',
+        note: r.note ?? '',
+        original_source: r.original_source ?? null,
+        media_urls: r.media_urls ?? '[]',
+        metadata: r.metadata ?? '{}',
+        enriched: parseBool(r.enriched) ?? false,
+        instance_type: r.instance_type ?? 'instance',
+        snooze_until: r.snooze_until ?? null,
+        expires_at: r.expires_at ?? null,
+        group: r.group ?? null,
+        created_at: r.created_at,
+        saved_at: r.saved_at,
+      }))).onConflictDoNothing()
+    })
+
+    // project_notes
+    await migrateTable('project_notes', ccDb.prepare('SELECT * FROM project_notes').all(), async (rows) => {
+      await db.insert(schema.projectNotes).values(rows.map(r => ({
+        id: r.id,
+        project_id: r.project_id,
+        content: r.content,
+        pinned: parseBool(r.pinned) ?? false,
+        created_at: r.created_at,
+      }))).onConflictDoNothing()
+    })
+
+    // og_cache
+    await migrateTable('og_cache', ccDb.prepare('SELECT * FROM og_cache').all(), async (rows) => {
+      await db.insert(schema.ogCache).values(rows.map(r => ({
+        url: r.url,
+        title: r.title ?? null,
+        description: r.description ?? null,
+        image: r.image ?? null,
+        fetched_at: r.fetched_at,
+      }))).onConflictDoNothing()
+    })
+
+    // digests
+    await migrateTable('digests', ccDb.prepare('SELECT * FROM digests').all(), async (rows) => {
+      await db.insert(schema.digests).values(rows.map(r => ({
+        id: r.id,
+        label: r.label,
+        brief: r.brief ?? '',
+        items: r.items ?? '[]',
+        stats: r.stats ?? null,
+        stats_scraped: r.stats_scraped ?? 0,
+        stats_kept: r.stats_kept ?? 0,
+        stats_dropped: r.stats_dropped ?? 0,
+        created_at: r.created_at,
+        discord_message_id: r.discord_message_id ?? null,
+        discord_thread_id: r.discord_thread_id ?? null,
+      }))).onConflictDoNothing()
+    })
+
+    // plans
+    await migrateTable('plans', ccDb.prepare('SELECT * FROM plans').all(), async (rows) => {
+      await db.insert(schema.plans).values(rows.map(r => ({
+        id: r.id,
+        title: r.title,
+        content: r.content,
+        task_id: r.task_id ?? null,
+        project_id: r.project_id ?? null,
+        author: r.author,
+        status: r.status ?? 'draft',
+        responses: r.responses ?? '{}',
+        created_at: r.created_at,
+        updated_at: r.updated_at ?? r.created_at,
+      }))).onConflictDoNothing()
+    })
+
+    ccDb.close()
+    console.log('')
+  }
+
+  // ─── App Database ─────────────────────────────────────────────────────────
+
+  if (fs.existsSync(APP_DB_PATH)) {
+    console.log('📂 Migrating App Database...')
+    const appDb = new Database(APP_DB_PATH, { readonly: true })
+
+    // users
+    await migrateTable('users', appDb.prepare('SELECT * FROM users').all(), async (rows) => {
+      await db.insert(schema.users).values(rows.map(r => ({
+        id: r.id,
+        username: r.username,
+        display_name: r.display_name,
+        password_hash: r.password_hash,
+        role: r.role ?? 'operator',
+        created_at: r.created_at,
+        updated_at: r.updated_at ?? r.created_at,
+        last_login_at: r.last_login_at ?? null,
+        provider: r.provider ?? 'local',
+        provider_user_id: r.provider_user_id ?? null,
+        email: r.email ?? null,
+        avatar_url: r.avatar_url ?? null,
+        is_approved: parseBool(r.is_approved) ?? true,
+        approved_by: r.approved_by ?? null,
+        approved_at: r.approved_at ?? null,
+        workspace_id: r.workspace_id ?? 1,
+      }))).onConflictDoNothing()
+    })
+
+    // agents
+    await migrateTable('agents', appDb.prepare('SELECT * FROM agents').all(), async (rows) => {
+      await db.insert(schema.agents).values(rows.map(r => ({
+        id: r.id,
+        name: r.name,
+        role: r.role,
+        session_key: r.session_key ?? null,
+        soul_content: r.soul_content ?? null,
+        status: r.status ?? 'offline',
+        last_seen: r.last_seen ?? null,
+        last_activity: r.last_activity ?? null,
+        created_at: r.created_at,
+        updated_at: r.updated_at ?? r.created_at,
+        config: r.config ?? null,
+      }))).onConflictDoNothing()
+    })
+
+    // messages
+    await migrateTable('messages', appDb.prepare('SELECT * FROM messages').all(), async (rows) => {
+      await db.insert(schema.messages).values(rows.map(r => ({
+        id: r.id,
+        conversation_id: r.conversation_id,
+        from_agent: r.from_agent,
+        to_agent: r.to_agent ?? null,
+        content: r.content,
+        message_type: r.message_type ?? 'text',
+        metadata: r.metadata ?? null,
+        read_at: r.read_at ?? null,
+        created_at: r.created_at,
+      }))).onConflictDoNothing()
+    })
+
+    // settings
+    await migrateTable('settings', appDb.prepare('SELECT * FROM settings').all(), async (rows) => {
+      await db.insert(schema.settings).values(rows.map(r => ({
+        key: r.key,
+        value: r.value,
+        description: r.description ?? null,
+        category: r.category ?? 'general',
+        updated_by: r.updated_by ?? null,
+        updated_at: r.updated_at ?? Math.floor(Date.now() / 1000),
+      }))).onConflictDoNothing()
+    })
+
+    // audit_log
+    await migrateTable('audit_log', appDb.prepare('SELECT * FROM audit_log').all(), async (rows) => {
+      await db.insert(schema.auditLog).values(rows.map(r => ({
+        id: r.id,
+        action: r.action,
+        actor: r.actor,
+        actor_id: r.actor_id ?? null,
+        target_type: r.target_type ?? null,
+        target_id: r.target_id ?? null,
+        detail: r.detail ?? null,
+        ip_address: r.ip_address ?? null,
+        user_agent: r.user_agent ?? null,
+        created_at: r.created_at,
+      }))).onConflictDoNothing()
+    })
+
+    // activities
+    await migrateTable('activities', appDb.prepare('SELECT * FROM activities').all(), async (rows) => {
+      await db.insert(schema.activities).values(rows.map(r => ({
+        id: r.id,
+        type: r.type,
+        entity_type: r.entity_type,
+        entity_id: r.entity_id,
+        actor: r.actor,
+        description: r.description,
+        data: r.data ?? null,
+        created_at: r.created_at,
+      }))).onConflictDoNothing()
+    })
+
+    // notifications
+    await migrateTable('notifications', appDb.prepare('SELECT * FROM notifications').all(), async (rows) => {
+      await db.insert(schema.notifications).values(rows.map(r => ({
+        id: r.id,
+        recipient: r.recipient,
+        type: r.type,
+        title: r.title,
+        message: r.message,
+        source_type: r.source_type ?? null,
+        source_id: r.source_id ?? null,
+        read_at: r.read_at ?? null,
+        delivered_at: r.delivered_at ?? null,
+        created_at: r.created_at,
+      }))).onConflictDoNothing()
+    })
+
+    // gateways
+    await migrateTable('gateways', appDb.prepare('SELECT * FROM gateways').all(), async (rows) => {
+      await db.insert(schema.gateways).values(rows.map(r => ({
+        id: r.id,
+        name: r.name,
+        host: r.host ?? '127.0.0.1',
+        port: r.port ?? 18789,
+        token: r.token ?? '',
+        is_primary: parseBool(r.is_primary) ?? false,
+        status: r.status ?? 'unknown',
+        last_seen: r.last_seen ?? null,
+        latency: r.latency ?? null,
+        sessions_count: r.sessions_count ?? 0,
+        agents_count: r.agents_count ?? 0,
+        created_at: r.created_at,
+        updated_at: r.updated_at ?? r.created_at,
+      }))).onConflictDoNothing()
+    })
+
+    // webhooks
+    await migrateTable('webhooks', appDb.prepare('SELECT * FROM webhooks').all(), async (rows) => {
+      await db.insert(schema.webhooks).values(rows.map(r => ({
+        id: r.id,
+        name: r.name,
+        url: r.url,
+        secret: r.secret ?? null,
+        events: r.events ?? '["*"]',
+        enabled: parseBool(r.enabled) ?? true,
+        last_fired_at: r.last_fired_at ?? null,
+        last_status: r.last_status ?? null,
+        created_by: r.created_by ?? 'system',
+        created_at: r.created_at,
+        updated_at: r.updated_at ?? r.created_at,
+      }))).onConflictDoNothing()
+    })
+
+    // webhook_deliveries
+    await migrateTable('webhook_deliveries', appDb.prepare('SELECT * FROM webhook_deliveries').all(), async (rows) => {
+      await db.insert(schema.webhookDeliveries).values(rows.map(r => ({
+        id: r.id,
+        webhook_id: r.webhook_id,
+        event_type: r.event_type,
+        payload: r.payload,
+        status_code: r.status_code ?? null,
+        response_body: r.response_body ?? null,
+        error: r.error ?? null,
+        duration_ms: r.duration_ms ?? null,
+        is_retry: parseBool(r.is_retry) ?? false,
+        created_at: r.created_at,
+      }))).onConflictDoNothing()
+    })
+
+    // alert_rules
+    await migrateTable('alert_rules', appDb.prepare('SELECT * FROM alert_rules').all(), async (rows) => {
+      await db.insert(schema.alertRules).values(rows.map(r => ({
+        id: r.id,
+        name: r.name,
+        description: r.description ?? null,
+        enabled: parseBool(r.enabled) ?? true,
+        entity_type: r.entity_type,
+        condition_field: r.condition_field,
+        condition_operator: r.condition_operator,
+        condition_value: r.condition_value,
+        action_type: r.action_type ?? 'notification',
+        action_config: r.action_config ?? '{}',
+        cooldown_minutes: r.cooldown_minutes ?? 60,
+        last_triggered_at: r.last_triggered_at ?? null,
+        trigger_count: r.trigger_count ?? 0,
+        created_by: r.created_by ?? 'system',
+        created_at: r.created_at,
+        updated_at: r.updated_at ?? r.created_at,
+      }))).onConflictDoNothing()
+    })
+
+    // workflow_templates
+    await migrateTable('workflow_templates', appDb.prepare('SELECT * FROM workflow_templates').all(), async (rows) => {
+      await db.insert(schema.workflowTemplates).values(rows.map(r => ({
+        id: r.id,
+        name: r.name,
+        description: r.description ?? null,
+        model: r.model ?? 'sonnet',
+        task_prompt: r.task_prompt,
+        timeout_seconds: r.timeout_seconds ?? 300,
+        agent_role: r.agent_role ?? null,
+        tags: r.tags ?? null,
+        created_by: r.created_by ?? 'system',
+        created_at: r.created_at,
+        updated_at: r.updated_at ?? r.created_at,
+        last_used_at: r.last_used_at ?? null,
+        use_count: r.use_count ?? 0,
+      }))).onConflictDoNothing()
+    })
+
+    // workflow_pipelines
+    await migrateTable('workflow_pipelines', appDb.prepare('SELECT * FROM workflow_pipelines').all(), async (rows) => {
+      await db.insert(schema.workflowPipelines).values(rows.map(r => ({
+        id: r.id,
+        name: r.name,
+        description: r.description ?? null,
+        steps: r.steps ?? '[]',
+        created_by: r.created_by ?? 'system',
+        created_at: r.created_at,
+        updated_at: r.updated_at ?? r.created_at,
+        use_count: r.use_count ?? 0,
+        last_used_at: r.last_used_at ?? null,
+      }))).onConflictDoNothing()
+    })
+
+    // pipeline_runs
+    await migrateTable('pipeline_runs', appDb.prepare('SELECT * FROM pipeline_runs').all(), async (rows) => {
+      await db.insert(schema.pipelineRuns).values(rows.map(r => ({
+        id: r.id,
+        pipeline_id: r.pipeline_id,
+        status: r.status ?? 'pending',
+        current_step: r.current_step ?? 0,
+        steps_snapshot: r.steps_snapshot ?? '[]',
+        started_at: r.started_at ?? null,
+        completed_at: r.completed_at ?? null,
+        triggered_by: r.triggered_by ?? 'system',
+        created_at: r.created_at,
+      }))).onConflictDoNothing()
+    })
+
+    // standup_reports
+    await migrateTable('standup_reports', appDb.prepare('SELECT * FROM standup_reports').all(), async (rows) => {
+      await db.insert(schema.standupReports).values(rows.map(r => ({
+        date: r.date,
+        report: r.report,
+        created_at: r.created_at,
+      }))).onConflictDoNothing()
+    })
+
+    // tasks (legacy)
+    await migrateTable('tasks', appDb.prepare('SELECT * FROM tasks').all(), async (rows) => {
+      await db.insert(schema.tasks).values(rows.map(r => ({
+        id: r.id,
+        title: r.title,
+        description: r.description ?? null,
+        status: r.status ?? 'open',
+        priority: r.priority ?? 'medium',
+        assigned_to: r.assigned_to ?? null,
+        creator: r.creator ?? '',
+        created_at: r.created_at,
+        updated_at: r.updated_at ?? r.created_at,
+        tags: r.tags ?? null,
+        metadata: r.metadata ?? null,
+      }))).onConflictDoNothing()
+    })
+
+    // token_usage
+    await migrateTable('token_usage', appDb.prepare('SELECT * FROM token_usage').all(), async (rows) => {
+      await db.insert(schema.tokenUsage).values(rows.map(r => ({
+        id: r.id,
+        model: r.model,
+        session_id: r.session_id,
+        input_tokens: r.input_tokens ?? 0,
+        output_tokens: r.output_tokens ?? 0,
+        workspace_id: r.workspace_id ?? 1,
+        task_id: r.task_id ?? null,
+        cost_usd: r.cost_usd ?? null,
+        agent_name: r.agent_name ?? null,
+        created_at: r.created_at,
+      }))).onConflictDoNothing()
+    })
+
+    // claude_sessions
+    await migrateTable('claude_sessions', appDb.prepare('SELECT * FROM claude_sessions').all(), async (rows) => {
+      await db.insert(schema.claudeSessions).values(rows.map(r => ({
+        id: r.id,
+        session_id: r.session_id,
+        project_slug: r.project_slug,
+        project_path: r.project_path ?? null,
+        model: r.model ?? null,
+        git_branch: r.git_branch ?? null,
+        user_messages: r.user_messages ?? 0,
+        assistant_messages: r.assistant_messages ?? 0,
+        tool_uses: r.tool_uses ?? 0,
+        input_tokens: r.input_tokens ?? 0,
+        output_tokens: r.output_tokens ?? 0,
+        estimated_cost: r.estimated_cost ?? 0,
+        first_message_at: r.first_message_at ?? null,
+        last_message_at: r.last_message_at ?? null,
+        last_user_prompt: r.last_user_prompt ?? null,
+        is_active: parseBool(r.is_active) ?? false,
+        scanned_at: r.scanned_at,
+        created_at: r.created_at,
+        updated_at: r.updated_at ?? r.created_at,
+      }))).onConflictDoNothing()
+    })
+
+    // access_requests
+    await migrateTable('access_requests', appDb.prepare('SELECT * FROM access_requests').all(), async (rows) => {
+      await db.insert(schema.accessRequests).values(rows.map(r => ({
+        id: r.id,
+        provider: r.provider ?? 'google',
+        email: r.email,
+        provider_user_id: r.provider_user_id ?? null,
+        display_name: r.display_name ?? null,
+        avatar_url: r.avatar_url ?? null,
+        status: r.status ?? 'pending',
+        requested_at: r.requested_at,
+        last_attempt_at: r.last_attempt_at ?? r.requested_at,
+        attempt_count: r.attempt_count ?? 1,
+        reviewed_by: r.reviewed_by ?? null,
+        reviewed_at: r.reviewed_at ?? null,
+        review_note: r.review_note ?? null,
+        approved_user_id: r.approved_user_id ?? null,
+      }))).onConflictDoNothing()
+    })
+
+    // tenants
+    await migrateTable('tenants', appDb.prepare('SELECT * FROM tenants').all(), async (rows) => {
+      await db.insert(schema.tenants).values(rows.map(r => ({
+        id: r.id,
+        slug: r.slug,
+        display_name: r.display_name,
+        linux_user: r.linux_user,
+        plan_tier: r.plan_tier ?? 'standard',
+        status: r.status ?? 'pending',
+        openclaw_home: r.openclaw_home,
+        workspace_root: r.workspace_root,
+        gateway_port: r.gateway_port ?? null,
+        dashboard_port: r.dashboard_port ?? null,
+        config: r.config ?? '{}',
+        created_by: r.created_by ?? 'system',
+        owner_gateway: r.owner_gateway ?? null,
+        created_at: r.created_at,
+        updated_at: r.updated_at ?? r.created_at,
+      }))).onConflictDoNothing()
+    })
+
+    // provision_jobs (depends on tenants)
+    await migrateTable('provision_jobs', appDb.prepare('SELECT * FROM provision_jobs').all(), async (rows) => {
+      await db.insert(schema.provisionJobs).values(rows.map(r => ({
+        id: r.id,
+        tenant_id: r.tenant_id,
+        job_type: r.job_type ?? 'bootstrap',
+        status: r.status ?? 'queued',
+        dry_run: parseBool(r.dry_run) ?? true,
+        requested_by: r.requested_by ?? 'system',
+        approved_by: r.approved_by ?? null,
+        runner_host: r.runner_host ?? null,
+        idempotency_key: r.idempotency_key ?? null,
+        request_json: r.request_json ?? '{}',
+        plan_json: r.plan_json ?? '[]',
+        result_json: r.result_json ?? null,
+        error_text: r.error_text ?? null,
+        started_at: r.started_at ?? null,
+        completed_at: r.completed_at ?? null,
+        created_at: r.created_at,
+        updated_at: r.updated_at ?? r.created_at,
+      }))).onConflictDoNothing()
+    })
+
+    // provision_events (depends on provision_jobs)
+    await migrateTable('provision_events', appDb.prepare('SELECT * FROM provision_events').all(), async (rows) => {
+      await db.insert(schema.provisionEvents).values(rows.map(r => ({
+        id: r.id,
+        job_id: r.job_id,
+        level: r.level ?? 'info',
+        step_key: r.step_key ?? null,
+        message: r.message,
+        data: r.data ?? null,
+        created_at: r.created_at,
+      }))).onConflictDoNothing()
+    })
+
+    // skills
+    await migrateTable('skills', appDb.prepare('SELECT * FROM skills').all(), async (rows) => {
+      await db.insert(schema.skills).values(rows.map(r => ({
+        id: r.id,
+        name: r.name,
+        source: r.source,
+        path: r.path,
+        description: r.description ?? null,
+        content_hash: r.content_hash ?? null,
+        registry_slug: r.registry_slug ?? null,
+        registry_version: r.registry_version ?? null,
+        security_status: r.security_status ?? 'unchecked',
+        installed_at: r.installed_at ?? new Date().toISOString(),
+        updated_at: r.updated_at ?? new Date().toISOString(),
+      }))).onConflictDoNothing()
+    })
+
+    // gateway_health_logs
+    await migrateTable('gateway_health_logs', appDb.prepare('SELECT * FROM gateway_health_logs').all(), async (rows) => {
+      await db.insert(schema.gatewayHealthLogs).values(rows.map(r => ({
+        id: r.id,
+        gateway_id: r.gateway_id,
+        status: r.status,
+        latency: r.latency ?? null,
+        probed_at: r.probed_at,
+        error: r.error ?? null,
+      }))).onConflictDoNothing()
+    })
+
+    appDb.close()
+    console.log('')
+  }
+
+  // ─── Reset sequences ──────────────────────────────────────────────────────
+  if (!DRY_RUN) {
+    console.log('🔧 Resetting Postgres sequences...')
+    const serialTables = [
+      'agents', 'audit_log', 'activities', 'notifications', 'task_subscriptions',
+      'standup_reports', 'quality_reviews', 'messages', 'users', 'user_sessions',
+      'workflow_templates', 'alert_rules', 'webhooks', 'webhook_deliveries',
+      'workflow_pipelines', 'pipeline_runs', 'settings', 'tenants', 'provision_jobs',
+      'provision_events', 'token_usage', 'claude_sessions', 'gateway_health_logs',
+      'tasks', 'comments', 'tweet_interactions', 'gateways', 'skills', 'api_keys',
+      'agent_api_keys', 'security_events', 'agent_trust_scores', 'mcp_call_log',
+      'eval_runs', 'eval_golden_sets', 'eval_traces', 'access_requests',
+    ]
+
+    for (const table of serialTables) {
+      try {
+        await db.execute(sql`SELECT setval(
+          pg_get_serial_sequence(${table}, 'id'),
+          COALESCE((SELECT MAX(id) FROM ${sql.raw(table)}), 1)
+        )`)
+      } catch {
+        // Table might not have a serial id or might not exist
+      }
+    }
+    console.log('   ✅ Sequences reset')
+    console.log('')
+  }
+
+  console.log('✅ Migration complete!')
+  if (DRY_RUN) {
+    console.log('   (dry-run — no data was written)')
+  }
 }
 
-async function migrateCC(ccDbPath: string) {
-  if (!existsSync(ccDbPath)) {
-    console.log(`CC DB not found at ${ccDbPath}, skipping.`);
-    return;
-  }
-
-  console.log(`\n📦 Migrating CC DB: ${ccDbPath}`);
-  const ccDb = new Database(ccDbPath, { readonly: true });
-
-  // projects
-  const projects = ccDb.prepare('SELECT * FROM projects').all() as any[];
-  console.log(`  projects: ${projects.length} rows`);
-  for (const p of projects) {
-    await db.insert(schema.projects).values({
-      id: p.id,
-      title: str(p.title),
-      description: strOrNull(p.description) || '',
-      emoji: str(p.emoji) || '📁',
-      created_at: str(p.created_at),
-      updated_at: str(p.updated_at),
-      archived: bool(p.archived),
-      schedule: str(p.schedule) || '',
-      repo_url: str(p.repo_url) || '',
-      local_path: str(p.local_path) || '',
-    }).onConflictDoNothing();
-  }
-
-  // project_resources
-  const projectResources = ccDb.prepare('SELECT * FROM project_resources').all() as any[];
-  console.log(`  project_resources: ${projectResources.length} rows`);
-  for (const r of projectResources) {
-    await db.insert(schema.projectResources).values({
-      id: r.id,
-      project_id: strOrNull(r.project_id),
-      kind: str(r.kind),
-      label: strOrNull(r.label) || '',
-      value: str(r.value),
-      created_at: str(r.created_at),
-    }).onConflictDoNothing();
-  }
-
-  // issues
-  const issues = ccDb.prepare('SELECT * FROM issues').all() as any[];
-  console.log(`  issues: ${issues.length} rows`);
-  for (const i of issues) {
-    await db.insert(schema.issues).values({
-      id: i.id,
-      project_id: strOrNull(i.project_id),
-      title: str(i.title),
-      description: str(i.description) || '',
-      status: str(i.status) || 'open',
-      assignee: str(i.assignee) || '',
-      priority: str(i.priority) || 'normal',
-      created_at: str(i.created_at),
-      updated_at: str(i.updated_at),
-      archived: bool(i.archived),
-      schedule: str(i.schedule) || '',
-      parent_id: strOrNull(i.parent_id),
-      notion_id: str(i.notion_id) || '',
-      creator: str(i.creator) || '',
-      plan_path: strOrNull(i.plan_path),
-      last_turn_at: strOrNull(i.last_turn_at),
-      seen_at: strOrNull(i.seen_at),
-      picked: bool(i.picked),
-      picked_at: strOrNull(i.picked_at),
-      picked_by: str(i.picked_by) || '',
-      blocked_by: str(i.blocked_by) || '[]',
-      plan_id: strOrNull(i.plan_id),
-    }).onConflictDoNothing();
-  }
-
-  // issue_resources
-  const issueResources = ccDb.prepare('SELECT * FROM issue_resources').all() as any[];
-  console.log(`  issue_resources: ${issueResources.length} rows`);
-  for (const r of issueResources) {
-    await db.insert(schema.issueResources).values({
-      id: r.id,
-      issue_id: strOrNull(r.issue_id),
-      kind: str(r.kind),
-      label: strOrNull(r.label) || '',
-      value: str(r.value),
-      created_at: str(r.created_at),
-    }).onConflictDoNothing();
-  }
-
-  // issue_comments
-  const issueComments = ccDb.prepare('SELECT * FROM issue_comments').all() as any[];
-  console.log(`  issue_comments: ${issueComments.length} rows`);
-  for (const c of issueComments) {
-    await db.insert(schema.issueComments).values({
-      id: c.id,
-      issue_id: str(c.issue_id),
-      author: str(c.author),
-      content: str(c.content),
-      created_at: str(c.created_at),
-      attachments: str(c.attachments) || '[]',
-    }).onConflictDoNothing();
-  }
-
-  // issue_dependencies
-  const issueDependencies = ccDb.prepare('SELECT * FROM issue_dependencies').all() as any[];
-  console.log(`  issue_dependencies: ${issueDependencies.length} rows`);
-  for (const d of issueDependencies) {
-    await db.insert(schema.issueDependencies).values({
-      issue_id: str(d.issue_id),
-      depends_on: str(d.depends_on),
-    }).onConflictDoNothing();
-  }
-
-  // issue_activity
-  const issueActivity = ccDb.prepare('SELECT * FROM issue_activity').all() as any[];
-  console.log(`  issue_activity: ${issueActivity.length} rows`);
-  for (const a of issueActivity) {
-    await db.insert(schema.issueActivity).values({
-      id: a.id,
-      issue_id: str(a.issue_id),
-      actor: str(a.actor),
-      action: str(a.action),
-      detail: str(a.detail) || '',
-      created_at: str(a.created_at),
-    }).onConflictDoNothing();
-  }
-
-  // tweets
-  const tweets = ccDb.prepare('SELECT * FROM tweets').all() as any[];
-  console.log(`  tweets: ${tweets.length} rows`);
-  for (const t of tweets) {
-    await db.insert(schema.tweets).values({
-      id: t.id,
-      title: str(t.title) || '',
-      author: str(t.author) || '',
-      theme: str(t.theme) || '',
-      verdict: str(t.verdict) || '',
-      action: str(t.action) || '',
-      source: str(t.source) || '',
-      tweet_link: str(t.tweet_link) || '',
-      digest: str(t.digest) || '',
-      content: str(t.content) || '',
-      created_at: str(t.created_at),
-      scraped_at: str(t.scraped_at),
-      pinned: bool(t.pinned),
-      media_urls: str(t.media_urls) || '[]',
-      triage_status: str(t.triage_status) || 'pending',
-      snooze_until: strOrNull(t.snooze_until),
-      local_media_urls: str(t.local_media_urls) || '[]',
-      discord_message_id: strOrNull(t.discord_message_id),
-      discord_posted_at: strOrNull(t.discord_posted_at),
-      summary: str(t.summary) || '',
-      digest_id: strOrNull(t.digest_id),
-      highlighted: bool(t.highlighted),
-      highlight_note: str(t.highlight_note) || '',
-      top_replies: str(t.top_replies) || '[]',
-      reply_count: intOrNull(t.reply_count) || 0,
-      retweet_count: intOrNull(t.retweet_count) || 0,
-      like_count: intOrNull(t.like_count) || 0,
-      engage: bool(t.engage),
-      engage_reason: strOrNull(t.engage_reason),
-    }).onConflictDoNothing();
-  }
-
-  // tweet_ratings
-  const tweetRatings = ccDb.prepare('SELECT * FROM tweet_ratings').all() as any[];
-  console.log(`  tweet_ratings: ${tweetRatings.length} rows`);
-  for (const r of tweetRatings) {
-    await db.insert(schema.tweetRatings).values({
-      tweet_id: str(r.tweet_id),
-      rating: str(r.rating),
-      rated_at: str(r.rated_at),
-    }).onConflictDoNothing();
-  }
-
-  // tweet_interactions
-  const tweetInteractions = ccDb.prepare('SELECT * FROM tweet_interactions').all() as any[];
-  console.log(`  tweet_interactions: ${tweetInteractions.length} rows`);
-  for (const i of tweetInteractions) {
-    await db.insert(schema.tweetInteractions).values({
-      tweet_id: str(i.tweet_id),
-      action: str(i.action),
-      created_at: str(i.created_at),
-    });
-  }
-
-  // garden
-  const gardenItems = ccDb.prepare('SELECT * FROM garden').all() as any[];
-  console.log(`  garden: ${gardenItems.length} rows`);
-  for (const g of gardenItems) {
-    await db.insert(schema.garden).values({
-      id: g.id,
-      content: str(g.content),
-      type: str(g.type) || 'tweet',
-      interest: str(g.interest) || 'information',
-      temporal: str(g.temporal) || 'ever',
-      tags: str(g.tags) || '[]',
-      note: str(g.note) || '',
-      original_source: strOrNull(g.original_source),
-      media_urls: str(g.media_urls) || '[]',
-      metadata: str(g.metadata) || '{}',
-      enriched: bool(g.enriched),
-      instance_type: str(g.instance_type) || 'instance',
-      snooze_until: strOrNull(g.snooze_until),
-      expires_at: strOrNull(g.expires_at),
-      group: strOrNull(g.group),
-      created_at: str(g.created_at),
-      saved_at: str(g.saved_at),
-    }).onConflictDoNothing();
-  }
-
-  // project_notes
-  const projectNotes = ccDb.prepare('SELECT * FROM project_notes').all() as any[];
-  console.log(`  project_notes: ${projectNotes.length} rows`);
-  for (const n of projectNotes) {
-    await db.insert(schema.projectNotes).values({
-      id: n.id,
-      project_id: str(n.project_id),
-      content: str(n.content),
-      pinned: bool(n.pinned),
-      created_at: str(n.created_at),
-    }).onConflictDoNothing();
-  }
-
-  // og_cache
-  const ogCacheItems = ccDb.prepare('SELECT * FROM og_cache').all() as any[];
-  console.log(`  og_cache: ${ogCacheItems.length} rows`);
-  for (const o of ogCacheItems) {
-    await db.insert(schema.ogCache).values({
-      url: o.url,
-      title: strOrNull(o.title),
-      description: strOrNull(o.description),
-      image: strOrNull(o.image),
-      fetched_at: str(o.fetched_at),
-    }).onConflictDoNothing();
-  }
-
-  // turns
-  const turns = ccDb.prepare('SELECT * FROM turns').all() as any[];
-  console.log(`  turns: ${turns.length} rows`);
-  for (const t of turns) {
-    await db.insert(schema.turns).values({
-      id: t.id,
-      task_id: str(t.task_id),
-      round_number: intOrNull(t.round_number) || 1,
-      type: str(t.type) || 'result',
-      author: str(t.author),
-      content: str(t.content) || '',
-      links: str(t.links) || '[]',
-      created_at: strOrNull(t.created_at) || new Date().toISOString(),
-      updated_at: strOrNull(t.updated_at) || new Date().toISOString(),
-    }).onConflictDoNothing();
-  }
-
-  // digests
-  const digests = ccDb.prepare('SELECT * FROM digests').all() as any[];
-  console.log(`  digests: ${digests.length} rows`);
-  for (const d of digests) {
-    await db.insert(schema.digests).values({
-      id: d.id,
-      label: str(d.label),
-      brief: str(d.brief) || '',
-      items: str(d.items) || '[]',
-      stats: strOrNull(d.stats),
-      stats_scraped: intOrNull(d.stats_scraped) || 0,
-      stats_kept: intOrNull(d.stats_kept) || 0,
-      stats_dropped: intOrNull(d.stats_dropped) || 0,
-      created_at: str(d.created_at),
-      discord_message_id: strOrNull(d.discord_message_id),
-      discord_thread_id: strOrNull(d.discord_thread_id),
-    }).onConflictDoNothing();
-  }
-
-  // plans
-  const plans = ccDb.prepare('SELECT * FROM plans').all() as any[];
-  console.log(`  plans: ${plans.length} rows`);
-  for (const p of plans) {
-    await db.insert(schema.plans).values({
-      id: p.id,
-      title: str(p.title),
-      content: str(p.content),
-      task_id: strOrNull(p.task_id),
-      project_id: strOrNull(p.project_id),
-      author: str(p.author),
-      status: str(p.status) || 'draft',
-      responses: str(p.responses) || '{}',
-      created_at: strOrNull(p.created_at) || new Date().toISOString(),
-      updated_at: strOrNull(p.updated_at) || new Date().toISOString(),
-    }).onConflictDoNothing();
-  }
-
-  ccDb.close();
-  console.log('✅ CC DB migration complete');
-}
-
-async function migrateApp(appDbPath: string) {
-  if (!existsSync(appDbPath)) {
-    console.log(`App DB not found at ${appDbPath}, skipping.`);
-    return;
-  }
-
-  console.log(`\n📦 Migrating App DB: ${appDbPath}`);
-  const appDb = new Database(appDbPath, { readonly: true });
-
-  const tables = (appDb.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all() as any[]).map(r => r.name);
-  console.log(`  Tables found: ${tables.join(', ')}`);
-
-  // users
-  if (tables.includes('users')) {
-    const users = appDb.prepare('SELECT * FROM users').all() as any[];
-    console.log(`  users: ${users.length} rows`);
-    for (const u of users) {
-      await db.insert(schema.users).values({
-        username: str(u.username),
-        display_name: str(u.display_name),
-        password_hash: str(u.password_hash),
-        role: str(u.role) || 'operator',
-        created_at: intOrNull(u.created_at) || Math.floor(Date.now() / 1000),
-        updated_at: intOrNull(u.updated_at) || Math.floor(Date.now() / 1000),
-        last_login_at: intOrNull(u.last_login_at),
-        provider: str(u.provider) || 'local',
-        provider_user_id: strOrNull(u.provider_user_id),
-        email: strOrNull(u.email),
-        avatar_url: strOrNull(u.avatar_url),
-        is_approved: bool(u.is_approved !== undefined ? u.is_approved : 1),
-        approved_by: strOrNull(u.approved_by),
-        approved_at: intOrNull(u.approved_at),
-        workspace_id: intOrNull(u.workspace_id) || 1,
-      }).onConflictDoNothing();
-    }
-  }
-
-  // agents
-  if (tables.includes('agents')) {
-    const agents = appDb.prepare('SELECT * FROM agents').all() as any[];
-    console.log(`  agents: ${agents.length} rows`);
-    for (const a of agents) {
-      await db.insert(schema.agents).values({
-        name: str(a.name),
-        role: str(a.role),
-        session_key: strOrNull(a.session_key),
-        soul_content: strOrNull(a.soul_content),
-        status: str(a.status) || 'offline',
-        last_seen: intOrNull(a.last_seen),
-        last_activity: strOrNull(a.last_activity),
-        created_at: intOrNull(a.created_at) || Math.floor(Date.now() / 1000),
-        updated_at: intOrNull(a.updated_at) || Math.floor(Date.now() / 1000),
-        config: strOrNull(a.config),
-      }).onConflictDoNothing();
-    }
-  }
-
-  // gateways
-  if (tables.includes('gateways')) {
-    const gateways = appDb.prepare('SELECT * FROM gateways').all() as any[];
-    console.log(`  gateways: ${gateways.length} rows`);
-    for (const g of gateways) {
-      await db.insert(schema.gateways).values({
-        name: str(g.name),
-        host: str(g.host) || '127.0.0.1',
-        port: intOrNull(g.port) || 18789,
-        token: str(g.token) || '',
-        is_primary: bool(g.is_primary),
-        status: str(g.status) || 'unknown',
-        last_seen: intOrNull(g.last_seen),
-        latency: intOrNull(g.latency),
-        sessions_count: intOrNull(g.sessions_count) || 0,
-        agents_count: intOrNull(g.agents_count) || 0,
-        created_at: intOrNull(g.created_at) || Math.floor(Date.now() / 1000),
-        updated_at: intOrNull(g.updated_at) || Math.floor(Date.now() / 1000),
-      }).onConflictDoNothing();
-    }
-  }
-
-  // settings
-  if (tables.includes('settings')) {
-    const settings = appDb.prepare('SELECT * FROM settings').all() as any[];
-    console.log(`  settings: ${settings.length} rows`);
-    for (const s of settings) {
-      await db.insert(schema.settings).values({
-        key: str(s.key),
-        value: str(s.value),
-        description: strOrNull(s.description),
-        category: str(s.category) || 'general',
-        updated_by: strOrNull(s.updated_by),
-        updated_at: intOrNull(s.updated_at) || Math.floor(Date.now() / 1000),
-      }).onConflictDoNothing();
-    }
-  }
-
-  // webhooks
-  if (tables.includes('webhooks')) {
-    const webhooks = appDb.prepare('SELECT * FROM webhooks').all() as any[];
-    console.log(`  webhooks: ${webhooks.length} rows`);
-    for (const w of webhooks) {
-      await db.insert(schema.webhooks).values({
-        name: str(w.name),
-        url: str(w.url),
-        secret: strOrNull(w.secret),
-        events: str(w.events) || '["*"]',
-        enabled: bool(w.enabled !== undefined ? w.enabled : 1),
-        last_fired_at: intOrNull(w.last_fired_at),
-        last_status: intOrNull(w.last_status),
-        created_by: str(w.created_by) || 'system',
-        created_at: intOrNull(w.created_at) || Math.floor(Date.now() / 1000),
-        updated_at: intOrNull(w.updated_at) || Math.floor(Date.now() / 1000),
-      }).onConflictDoNothing();
-    }
-  }
-
-  // audit_log
-  if (tables.includes('audit_log')) {
-    const auditLog = appDb.prepare('SELECT * FROM audit_log').all() as any[];
-    console.log(`  audit_log: ${auditLog.length} rows`);
-    for (const a of auditLog) {
-      await db.insert(schema.auditLog).values({
-        action: str(a.action),
-        actor: str(a.actor),
-        actor_id: intOrNull(a.actor_id),
-        target_type: strOrNull(a.target_type),
-        target_id: intOrNull(a.target_id),
-        detail: strOrNull(a.detail),
-        ip_address: strOrNull(a.ip_address),
-        user_agent: strOrNull(a.user_agent),
-        created_at: intOrNull(a.created_at) || Math.floor(Date.now() / 1000),
-      });
-    }
-  }
-
-  // standup_reports
-  if (tables.includes('standup_reports')) {
-    const standupReports = appDb.prepare('SELECT * FROM standup_reports').all() as any[];
-    console.log(`  standup_reports: ${standupReports.length} rows`);
-    for (const r of standupReports) {
-      await db.insert(schema.standupReports).values({
-        date: str(r.date),
-        report: str(r.report),
-        created_at: intOrNull(r.created_at) || Math.floor(Date.now() / 1000),
-      }).onConflictDoNothing();
-    }
-  }
-
-  // skills
-  if (tables.includes('skills')) {
-    const skills = appDb.prepare('SELECT * FROM skills').all() as any[];
-    console.log(`  skills: ${skills.length} rows`);
-    for (const s of skills) {
-      await db.insert(schema.skills).values({
-        name: str(s.name),
-        source: str(s.source),
-        path: str(s.path),
-        description: strOrNull(s.description),
-        content_hash: strOrNull(s.content_hash),
-        registry_slug: strOrNull(s.registry_slug),
-        registry_version: strOrNull(s.registry_version),
-        security_status: str(s.security_status) || 'unchecked',
-        installed_at: strOrNull(s.installed_at) || new Date().toISOString(),
-        updated_at: strOrNull(s.updated_at) || new Date().toISOString(),
-      }).onConflictDoNothing();
-    }
-  }
-
-  // api_keys
-  if (tables.includes('api_keys')) {
-    const apiKeys = appDb.prepare('SELECT * FROM api_keys').all() as any[];
-    console.log(`  api_keys: ${apiKeys.length} rows`);
-    for (const k of apiKeys) {
-      await db.insert(schema.apiKeys).values({
-        user_id: intOrNull(k.user_id) || 1,
-        label: str(k.label),
-        key_prefix: str(k.key_prefix),
-        key_hash: str(k.key_hash),
-        role: str(k.role) || 'viewer',
-        scopes: strOrNull(k.scopes),
-        expires_at: intOrNull(k.expires_at),
-        last_used_at: intOrNull(k.last_used_at),
-        last_used_ip: strOrNull(k.last_used_ip),
-        workspace_id: intOrNull(k.workspace_id) || 1,
-        tenant_id: intOrNull(k.tenant_id) || 1,
-        is_revoked: bool(k.is_revoked),
-        created_at: intOrNull(k.created_at) || Math.floor(Date.now() / 1000),
-        updated_at: intOrNull(k.updated_at) || Math.floor(Date.now() / 1000),
-      }).onConflictDoNothing();
-    }
-  }
-
-  // token_usage
-  if (tables.includes('token_usage')) {
-    const tokenUsage = appDb.prepare('SELECT * FROM token_usage').all() as any[];
-    console.log(`  token_usage: ${tokenUsage.length} rows`);
-    for (const t of tokenUsage) {
-      await db.insert(schema.tokenUsage).values({
-        model: str(t.model),
-        session_id: str(t.session_id),
-        input_tokens: intOrNull(t.input_tokens) || 0,
-        output_tokens: intOrNull(t.output_tokens) || 0,
-        workspace_id: intOrNull(t.workspace_id) || 1,
-        task_id: intOrNull(t.task_id),
-        cost_usd: t.cost_usd ? Number(t.cost_usd) : null,
-        agent_name: strOrNull(t.agent_name),
-        created_at: intOrNull(t.created_at) || Math.floor(Date.now() / 1000),
-      });
-    }
-  }
-
-  // messages
-  if (tables.includes('messages')) {
-    const messages = appDb.prepare('SELECT * FROM messages').all() as any[];
-    console.log(`  messages: ${messages.length} rows`);
-    for (const m of messages) {
-      await db.insert(schema.messages).values({
-        conversation_id: str(m.conversation_id),
-        from_agent: str(m.from_agent),
-        to_agent: strOrNull(m.to_agent),
-        content: str(m.content),
-        message_type: str(m.message_type) || 'text',
-        metadata: strOrNull(m.metadata),
-        read_at: intOrNull(m.read_at),
-        created_at: intOrNull(m.created_at) || Math.floor(Date.now() / 1000),
-      });
-    }
-  }
-
-  appDb.close();
-  console.log('✅ App DB migration complete');
-}
-
-// Main
-console.log('🚀 Starting SQLite → Neon Postgres migration...');
-console.log(`  CC DB: ${CC_DB_PATH}`);
-const appDbPath = findAppDb();
-console.log(`  App DB: ${appDbPath || 'not found'}`);
-
-await migrateCC(CC_DB_PATH);
-if (appDbPath) {
-  await migrateApp(appDbPath);
-} else {
-  console.log('\n⚠️  App DB not found. Only CC DB migrated.');
-}
-
-console.log('\n✅ Migration complete!');
+main().catch((err) => {
+  console.error('❌ Migration failed:', err)
+  process.exit(1)
+})
