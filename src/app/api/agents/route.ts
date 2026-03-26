@@ -72,6 +72,10 @@ export async function GET(request: NextRequest) {
 
     const agentsWithStats = agentsWithParsedData.map(agent => ({
       ...agent,
+      // Truncate soul_content in list view — full text available via GET /api/agents/[id]
+      soul_content: agent.soul_content && agent.soul_content.length > 200
+        ? agent.soul_content.slice(0, 200) + '…'
+        : agent.soul_content,
       taskStats: taskStatsMap.get(agent.name.toLowerCase()) ?? {
         total: 0, assigned: 0, in_progress: 0, completed: 0,
       },
