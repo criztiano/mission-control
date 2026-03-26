@@ -41,3 +41,5 @@ CLAUDE.md
 **/CLAUDE.md
 eden.db
 coverage/
+bun.lockb
+package-lock.json
