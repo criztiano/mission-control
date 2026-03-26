@@ -36,54 +36,43 @@ export async function GET(request: NextRequest) {
       .limit(limit)
       .offset(offset);
 
-    // Batch-fetch source details (3 queries max instead of N)
-    const taskIds = [...new Set(notifRows.filter(n => n.source_type === 'task' && n.source_id).map(n => n.source_id!))];
-    const commentIds = [...new Set(notifRows.filter(n => n.source_type === 'comment' && n.source_id).map(n => n.source_id!))];
-    const agentIds = [...new Set(notifRows.filter(n => n.source_type === 'agent' && n.source_id).map(n => n.source_id!))];
-
-    const [taskRows, commentRows, agentRows] = await Promise.all([
-      taskIds.length > 0
-        ? db.select({ id: tasks.id, title: tasks.title, status: tasks.status }).from(tasks).where(inArray(tasks.id, taskIds))
-        : Promise.resolve([]),
-      commentIds.length > 0
-        ? db.execute(sql`
-            SELECT c.id, c.content, c.task_id, t.title as task_title
-            FROM comments c LEFT JOIN tasks t ON c.task_id = t.id
-            WHERE c.id = ANY(${commentIds}::text[])
-          `).then(r => r.rows as any[])
-        : Promise.resolve([]),
-      agentIds.length > 0
-        ? db.select({ id: agents.id, name: agents.name, role: agents.role, status: agents.status }).from(agents).where(inArray(agents.id, agentIds))
-        : Promise.resolve([]),
-    ]);
-
-    const taskMap = new Map(taskRows.map(t => [t.id, t]));
-    const commentMap = new Map(commentRows.map((c: any) => [c.id, c]));
-    const agentMap = new Map(agentRows.map(a => [a.id, a]));
-
-    const enhancedNotifications = notifRows.map((notification) => {
+    // Enhance with source details
+    const enhancedNotifications = await Promise.all(notifRows.map(async (notification) => {
       let sourceDetails = null;
-      if (notification.source_type && notification.source_id) {
-        switch (notification.source_type) {
-          case 'task': {
-            const t = taskMap.get(notification.source_id);
-            if (t) sourceDetails = { type: 'task', ...t };
-            break;
-          }
-          case 'comment': {
-            const c = commentMap.get(notification.source_id);
-            if (c) sourceDetails = { type: 'comment', ...c, content_preview: c.content?.substring(0, 100) || '' };
-            break;
-          }
-          case 'agent': {
-            const a = agentMap.get(notification.source_id);
-            if (a) sourceDetails = { type: 'agent', ...a };
-            break;
+
+      try {
+        if (notification.source_type && notification.source_id) {
+          switch (notification.source_type) {
+            case 'task': {
+              const taskRows = await db.select({ id: tasks.id, title: tasks.title, status: tasks.status })
+                .from(tasks).where(eq(tasks.id, notification.source_id)).limit(1);
+              if (taskRows[0]) sourceDetails = { type: 'task', ...taskRows[0] };
+              break;
+            }
+            case 'comment': {
+              const rows = await db.execute(sql`
+                SELECT c.id, c.content, c.task_id, t.title as task_title
+                FROM comments c LEFT JOIN tasks t ON c.task_id = t.id
+                WHERE c.id = ${notification.source_id}
+              `);
+              const comment = rows.rows[0] as any;
+              if (comment) sourceDetails = { type: 'comment', ...comment, content_preview: comment.content?.substring(0, 100) || '' };
+              break;
+            }
+            case 'agent': {
+              const agentRows = await db.select({ id: agents.id, name: agents.name, role: agents.role, status: agents.status })
+                .from(agents).where(eq(agents.id, notification.source_id)).limit(1);
+              if (agentRows[0]) sourceDetails = { type: 'agent', ...agentRows[0] };
+              break;
+            }
           }
         }
+      } catch (error) {
+        console.warn(`Failed to fetch source details for notification ${notification.id}:`, error);
       }
+
       return { ...notification, source: sourceDetails };
-    });
+    }));
 
     const unreadCountRows = await db.select({ count: sql<number>`count(*)::int` })
       .from(notifications)
