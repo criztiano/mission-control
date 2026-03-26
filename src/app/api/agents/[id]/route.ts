@@ -99,7 +99,7 @@ export async function PUT(
         await writeAgentToConfig(writeBack)
 
         const ipAddress = request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip') || 'unknown'
-        logAuditEvent({
+        await logAuditEvent({
           action: 'agent_config_writeback',
           actor: auth.user.username,
           actor_id: auth.user.id,

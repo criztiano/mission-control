@@ -77,7 +77,7 @@ export async function POST(request: NextRequest) {
       review_note: note || null,
     }).where(eq(accessRequests.id, requestId))
 
-    logAuditEvent({
+    await logAuditEvent({
       action: 'access_request_rejected',
       actor: admin.username,
       actor_id: admin.id,

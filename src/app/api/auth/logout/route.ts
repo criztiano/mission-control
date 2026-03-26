@@ -15,7 +15,7 @@ export async function POST(request: Request) {
 
   if (user) {
     const ipAddress = request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip') || 'unknown'
-    logAuditEvent({ action: 'logout', actor: user.username, actor_id: user.id, ip_address: ipAddress })
+    await logAuditEvent({ action: 'logout', actor: user.username, actor_id: user.id, ip_address: ipAddress })
   }
 
   const response = NextResponse.json({ ok: true })

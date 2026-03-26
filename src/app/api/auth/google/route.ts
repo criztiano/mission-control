@@ -74,7 +74,7 @@ export async function POST(request: Request) {
         avatarUrl: avatar || undefined,
       })
 
-      logAuditEvent({
+      await logAuditEvent({
         action: 'google_login_pending_approval',
         actor: email,
         detail: { email, sub },
@@ -99,7 +99,7 @@ export async function POST(request: Request) {
 
     const { token, expiresAt } = await createSession(row.id, ipAddress, userAgent)
 
-    logAuditEvent({ action: 'login_google', actor: row.username, actor_id: row.id, ip_address: ipAddress, user_agent: userAgent })
+    await logAuditEvent({ action: 'login_google', actor: row.username, actor_id: row.id, ip_address: ipAddress, user_agent: userAgent })
 
     const response = NextResponse.json({
       user: {

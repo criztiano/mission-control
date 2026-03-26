@@ -183,7 +183,7 @@ export async function POST(request: NextRequest) {
         });
 
         const ipAddress = request.headers.get('x-forwarded-for') || 'unknown';
-        logAuditEvent({
+        await logAuditEvent({
           action: 'agent_gateway_create',
           actor: getUserFromRequest(request)?.username || 'system',
           target_type: 'agent',

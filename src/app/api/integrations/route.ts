@@ -285,7 +285,7 @@ export async function PUT(request: NextRequest) {
   await writeEnvFile(lines)
 
   const ipAddress = request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip') || 'unknown'
-  logAuditEvent({
+  await logAuditEvent({
     action: 'integrations_update',
     actor: auth.user.username,
     actor_id: auth.user.id,
@@ -341,7 +341,7 @@ export async function DELETE(request: NextRequest) {
   }
 
   const ipAddress = request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip') || 'unknown'
-  logAuditEvent({
+  await logAuditEvent({
     action: 'integrations_remove',
     actor: auth.user.username,
     actor_id: auth.user.id,
@@ -492,7 +492,7 @@ async function handleTest(
     }
 
     const ipAddress = request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip') || 'unknown'
-    logAuditEvent({
+    await logAuditEvent({
       action: 'integration_test',
       actor: user.username,
       actor_id: user.id,
@@ -571,7 +571,7 @@ async function handlePull(
     await writeEnvFile(lines)
 
     const ipAddress = request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip') || 'unknown'
-    logAuditEvent({
+    await logAuditEvent({
       action: 'integration_pull_1password',
       actor: user.username,
       actor_id: user.id,
@@ -674,7 +674,7 @@ async function handlePullAll(
   }
 
   const ipAddress = request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip') || 'unknown'
-  logAuditEvent({
+  await logAuditEvent({
     action: 'integration_pull_all_1password',
     actor: user.username,
     actor_id: user.id,

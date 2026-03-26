@@ -91,7 +91,7 @@ export async function PUT(request: NextRequest) {
     await writeFile(configPath, JSON.stringify(parsed, null, 2) + '\n')
 
     const ipAddress = request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip') || 'unknown'
-    logAuditEvent({
+    await logAuditEvent({
       action: 'gateway_config_update',
       actor: auth.user.username,
       actor_id: auth.user.id,

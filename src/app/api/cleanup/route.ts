@@ -130,7 +130,7 @@ export async function POST(request: NextRequest) {
 
   if (!dryRun && totalDeleted > 0) {
     const ipAddress = request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip') || 'unknown'
-    logAuditEvent({
+    await logAuditEvent({
       action: 'data_cleanup',
       actor: auth.user.username,
       actor_id: auth.user.id,
