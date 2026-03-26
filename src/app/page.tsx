@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { NavRail } from '@/components/layout/nav-rail'
 import { HeaderBar } from '@/components/layout/header-bar'
-import { LiveFeed } from '@/components/layout/live-feed'
+// LiveFeed removed — not needed for production deployment
 import { Dashboard } from '@/components/dashboard/dashboard'
 import { AgentSpawnPanel } from '@/components/panels/agent-spawn-panel'
 import { LogViewerPanel } from '@/components/panels/log-viewer-panel'
@@ -39,7 +39,7 @@ import { useMissionControl } from '@/store'
 
 export default function Home() {
   const { connect } = useWebSocket()
-  const { activeTab, setCurrentUser, liveFeedOpen, toggleLiveFeed, setAgents: setStoreAgents } = useMissionControl()
+  const { activeTab, setCurrentUser, setAgents: setStoreAgents } = useMissionControl()
 
   // Connect to SSE for real-time local DB events (tasks, agents, chat, etc.)
   useServerEvents()
@@ -105,19 +105,9 @@ export default function Home() {
         </main>
       </div>
 
-      {/* Right: Live feed (hidden on mobile) */}
-      {liveFeedOpen && (
-        <div className="hidden lg:flex h-full">
-          <LiveFeed />
-        </div>
-      )}
-
-      {/* Floating button to reopen LiveFeed when closed */}
-      {!liveFeedOpen && (
+      {/* Live feed removed — not needed for production */}
+      {false && (
         <button
-          onClick={toggleLiveFeed}
-          className="hidden lg:flex fixed right-0 top-1/2 -translate-y-1/2 z-30 w-6 h-12 items-center justify-center bg-card border border-r-0 border-border rounded-l-md text-muted-foreground hover:text-foreground hover:bg-secondary transition-all duration-200"
-          title="Show live feed"
         >
           <svg className="w-3.5 h-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
             <path d="M10 3l-5 5 5 5" strokeLinecap="round" strokeLinejoin="round" />

@@ -1,0 +1,9 @@
+commit	metric_value	secondary_metrics	status	description
+—	808	808	baseline	Night 1 baseline: 3 correlated subqueries + separate COUNT
+4540209	749	749	keep	Replace 3 correlated subqueries with 2 LATERAL JOINs (-7.3%)
+295365e	705	705	keep	Add indexes on turns(task_id,created_at) and issue_comments(issue_id,created_at) (-5.9%)
+302c36c	523	523	keep	Eliminate COUNT(*) round-trip with window function (-25.8%)
+c9d94c9	527	527	keep	Partial index on issues(archived, last_turn_at, updated_at)
+—	—	—	discard	CTE + DISTINCT ON for bulk turn/comment lookup: no gain
+—	532	532,537,511	baseline	Night 2 resume baseline (3-run median)
+7262370	402	389,411,402	keep	Exclude description from SELECT i.* — 80% payload reduction (-24.4%)
