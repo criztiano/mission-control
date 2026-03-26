@@ -37,7 +37,7 @@ export async function GET(
       // snooze_until handled by updateGardenItem or we set it here
     }
 
-    updateGardenItem(id, fields);
+    await updateGardenItem(id, fields);
     logger.info({ id, interest, temporal }, 'Garden item classified via Discord button');
 
     const label = interest ? `Interest → ${interest}` : `Temporal → ${temporal}`;

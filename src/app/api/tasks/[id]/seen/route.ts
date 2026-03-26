@@ -22,7 +22,7 @@ export async function PUT(
       return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     }
 
-    setTaskSeen(taskId);
+    await setTaskSeen(taskId);
 
     return NextResponse.json({ ok: true });
   } catch (error) {

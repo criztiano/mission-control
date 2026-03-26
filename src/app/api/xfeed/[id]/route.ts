@@ -26,15 +26,15 @@ export async function PUT(
       if (rating !== null && !['fire', 'meh', 'noise'].includes(rating)) {
         return NextResponse.json({ error: 'Invalid rating' }, { status: 400 });
       }
-      rateTweet(id, rating);
+      await rateTweet(id, rating);
     }
 
     if ('pinned' in body) {
-      pinTweet(id, !!body.pinned);
+      await pinTweet(id, !!body.pinned);
     }
 
     if ('triage_status' in body) {
-      triageUpdate(id, body.triage_status);
+      await triageUpdate(id, body.triage_status);
     }
 
     if ('summary' in body) {
@@ -42,7 +42,7 @@ export async function PUT(
       if (typeof summary !== 'string') {
         return NextResponse.json({ error: 'Summary must be a string' }, { status: 400 });
       }
-      updateTweetSummary(id, summary);
+      await updateTweetSummary(id, summary);
     }
 
     return NextResponse.json({ success: true });

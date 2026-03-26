@@ -50,7 +50,7 @@ export async function PUT(
       if (key in body) fields[key] = body[key];
     }
 
-    updateGardenItem(id, fields);
+    await updateGardenItem(id, fields);
 
     return NextResponse.json({ success: true });
   } catch (error) {
@@ -74,7 +74,7 @@ export async function DELETE(
 
   try {
     const { id } = await params;
-    deleteGardenItem(id);
+    await deleteGardenItem(id);
     return NextResponse.json({ success: true });
   } catch (error) {
     logger.error({ err: error }, 'DELETE /api/garden/[id] error');

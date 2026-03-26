@@ -10,7 +10,7 @@ export async function POST(request: Request) {
   const token = match ? decodeURIComponent(match[1]) : null
 
   if (token) {
-    destroySession(token)
+    await destroySession(token)
   }
 
   if (user) {

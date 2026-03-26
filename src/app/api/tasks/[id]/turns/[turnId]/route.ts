@@ -27,7 +27,7 @@ export async function PUT(
       return NextResponse.json({ error: 'Content is required' }, { status: 400 });
     }
 
-    updateTurn(turnId, content.trim());
+    await updateTurn(turnId, content.trim());
 
     return NextResponse.json({ ok: true });
   } catch (error) {
