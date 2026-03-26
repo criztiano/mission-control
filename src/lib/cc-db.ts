@@ -330,28 +330,28 @@ export async function getIssues(opts?: {
   // archived = false
   const baseCondition = eq(issues.archived, false);
 
-  let whereClause = sql`${issues.archived} = false`;
+  let whereClause = sql`i.archived = false`;
 
   if (opts?.status) {
-    whereClause = sql`${whereClause} AND ${issues.status} = ${opts.status}`;
+    whereClause = sql`${whereClause} AND i.status = ${opts.status}`;
   }
   if (opts?.assigned_to) {
-    whereClause = sql`${whereClause} AND LOWER(${issues.assignee}) = LOWER(${opts.assigned_to})`;
+    whereClause = sql`${whereClause} AND LOWER(i.assignee) = LOWER(${opts.assigned_to})`;
   }
   if (opts?.priority) {
     const ccPriority = PRIORITY_FROM_MC[opts.priority] || opts.priority;
-    whereClause = sql`${whereClause} AND ${issues.priority} = ${ccPriority}`;
+    whereClause = sql`${whereClause} AND i.priority = ${ccPriority}`;
   }
   if (opts?.column) {
     switch (opts.column) {
       case 'drafts':
-        whereClause = sql`${whereClause} AND ${issues.status} = 'draft'`;
+        whereClause = sql`${whereClause} AND i.status = 'draft'`;
         break;
       case 'open':
-        whereClause = sql`${whereClause} AND ${issues.status} = 'open'`;
+        whereClause = sql`${whereClause} AND i.status = 'open'`;
         break;
       case 'closed':
-        whereClause = sql`${whereClause} AND ${issues.status} = 'closed'`;
+        whereClause = sql`${whereClause} AND i.status = 'closed'`;
         break;
     }
   }
