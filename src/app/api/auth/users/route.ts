@@ -16,7 +16,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: 'Admin access required' }, { status: 403 })
   }
 
-  const users = getAllUsers()
+  const users = await getAllUsers()
   return NextResponse.json({ users })
 }
 

@@ -98,14 +98,25 @@ async function migrateTable(
     return
   }
 
-  // Insert in chunks of 100
-  const chunks = chunkArray(sourceRows, 100)
+  // Insert in chunks of 5 (Neon HTTP driver has parameter limit for wide tables)
+  const chunks = chunkArray(sourceRows, 5)
   let inserted = 0
+  let skipped = 0
   for (const chunk of chunks) {
-    await insertFn(chunk)
-    inserted += chunk.length
+    try {
+      await insertFn(chunk)
+      inserted += chunk.length
+    } catch (e: any) {
+      // FK violations, orphan rows — skip and continue
+      if (e?.cause?.code === '23503' || e?.message?.includes('foreign key')) {
+        skipped += chunk.length
+        console.log(`     ⚠️  skipped ${chunk.length} rows (FK violation: ${e?.cause?.detail || e.message})`)
+      } else {
+        throw e
+      }
+    }
   }
-  console.log(`     ✅ inserted ${inserted} rows`)
+  console.log(`     ✅ inserted ${inserted} rows${skipped ? ` (${skipped} skipped — FK orphans)` : ''}`)
 }
 
 // ─── Main ────────────────────────────────────────────────────────────────────

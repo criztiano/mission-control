@@ -21,7 +21,7 @@ export async function GET(request: NextRequest) {
     filters.limit = Math.min(parseInt(searchParams.get('limit') || '100'), 500);
     filters.offset = parseInt(searchParams.get('offset') || '0');
 
-    const result = getGardenItems(filters);
+    const result = await getGardenItems(filters);
 
     return NextResponse.json(result);
   } catch (error) {

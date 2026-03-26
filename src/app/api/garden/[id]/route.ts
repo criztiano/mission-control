@@ -16,7 +16,7 @@ export async function GET(
 
   try {
     const { id } = await params;
-    const item = getGardenItem(id);
+    const item = await getGardenItem(id);
     if (!item) {
       return NextResponse.json({ error: 'Not found' }, { status: 404 });
     }

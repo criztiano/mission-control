@@ -17,7 +17,7 @@ export async function PUT(
   try {
     const { id: taskId } = await params;
 
-    const issue = getIssue(taskId);
+    const issue = await getIssue(taskId);
     if (!issue) {
       return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     }

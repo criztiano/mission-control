@@ -23,7 +23,7 @@ export async function GET(request: NextRequest) {
     filters.limit = Math.min(parseInt(searchParams.get('limit') || '50'), 200);
     filters.offset = parseInt(searchParams.get('offset') || '0');
 
-    const result = getTweets(filters);
+    const result = await getTweets(filters);
 
     return NextResponse.json(result);
   } catch (error) {
