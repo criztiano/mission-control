@@ -42,30 +42,37 @@ export async function GET(request: NextRequest) {
       config: agent.config ? JSON.parse(agent.config) : {}
     }));
 
-    // Get task counts from issues table
-    const agentsWithStats = await Promise.all(
-      agentsWithParsedData.map(async (agent) => {
-        const taskStatRows = await db.execute(sql`
+    // Get task counts from issues table — single GROUP BY query instead of N queries
+    const agentNames = agentRows.map(a => a.name.toLowerCase());
+    const taskStatsRows = agentNames.length > 0
+      ? await db.execute(sql`
           SELECT
+            LOWER(assignee) as agent_name,
             COUNT(*) as total,
             SUM(CASE WHEN status = 'open' THEN 1 ELSE 0 END) as assigned,
             SUM(CASE WHEN status = 'open' THEN 1 ELSE 0 END) as in_progress,
             SUM(CASE WHEN status = 'closed' THEN 1 ELSE 0 END) as completed
           FROM issues
-          WHERE LOWER(assignee) = LOWER(${agent.name}) AND archived = false
-        `);
-        const taskStats = taskStatRows.rows[0] as any;
-        return {
-          ...agent,
-          taskStats: {
-            total: Number(taskStats?.total || 0),
-            assigned: Number(taskStats?.assigned || 0),
-            in_progress: Number(taskStats?.in_progress || 0),
-            completed: Number(taskStats?.completed || 0),
-          },
-        };
-      })
-    );
+          WHERE LOWER(assignee) = ANY(${agentNames}::text[]) AND archived = false
+          GROUP BY LOWER(assignee)
+        `)
+      : { rows: [] };
+    const taskStatsMap = new Map<string, { total: number; assigned: number; in_progress: number; completed: number }>();
+    for (const row of taskStatsRows.rows as any[]) {
+      taskStatsMap.set(row.agent_name, {
+        total: Number(row.total || 0),
+        assigned: Number(row.assigned || 0),
+        in_progress: Number(row.in_progress || 0),
+        completed: Number(row.completed || 0),
+      });
+    }
+
+    const agentsWithStats = agentsWithParsedData.map(agent => ({
+      ...agent,
+      taskStats: taskStatsMap.get(agent.name.toLowerCase()) ?? {
+        total: 0, assigned: 0, in_progress: 0, completed: 0,
+      },
+    }));
 
     // Total count
     const countRows = await db.select({ total: sql<number>`count(*)::int` }).from(agents)
