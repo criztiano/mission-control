@@ -15,3 +15,10 @@
 ## Overnight fixes (cron loop)
 
 <!-- Piem will append fixes below this line -->
+
+## Fix 1: Batch notification source lookups (N+1 → 3 queries)
+- **File:** `src/app/api/notifications/route.ts`
+- **Issue:** GET /api/notifications ran one DB query per notification to enrich task/comment/agent source details — O(N) queries with N = up to 500 rows
+- **Fix:** Collect all source IDs by type, batch-fetch with 3 parallel queries (`inArray` + `ANY`), then map via in-memory Maps — no async in the final `.map()`
+- **Verify:** Build passes (`pnpm build` ✓), endpoint now returns source details with 3 queries regardless of result count
+- **Commit:** 6df8c55 (develop)
