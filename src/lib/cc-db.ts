@@ -403,6 +403,16 @@ export async function getProject(id: string): Promise<CCProject | undefined> {
   return { ...rows[0], archived: Boolean(rows[0].archived) } as CCProject;
 }
 
+export async function getProjectsByIds(ids: string[]): Promise<Map<string, CCProject>> {
+  if (ids.length === 0) return new Map();
+  const rows = await db.select().from(projects).where(inArray(projects.id, ids));
+  const map = new Map<string, CCProject>();
+  for (const row of rows) {
+    map.set(row.id, { ...row, archived: Boolean(row.archived) } as CCProject);
+  }
+  return map;
+}
+
 export async function getIssueComments(issueId: string): Promise<CCComment[]> {
   const rows = await db
     .select()

@@ -7,6 +7,7 @@ import { logger } from '@/lib/logger';
 import {
   getIssues,
   getProject,
+  getProjectsByIds,
   mapIssueToTask,
   PRIORITY_FROM_MC,
   parseBlockedBy,
@@ -42,10 +43,10 @@ export async function GET(request: NextRequest) {
     const { issues: issueList, total } = await getIssues({ status, assigned_to, priority, column, limit, offset });
 
     const projectIds = [...new Set(issueList.map(i => i.project_id).filter(Boolean))] as string[];
+    const projectRows = await getProjectsByIds(projectIds);
     const projectMap = new Map<string, string>();
-    for (const pid of projectIds) {
-      const p = await getProject(pid);
-      if (p) projectMap.set(pid, p.title);
+    for (const [id, p] of projectRows) {
+      projectMap.set(id, p.title);
     }
 
     const tasks = issueList.map(issue =>
