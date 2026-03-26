@@ -16,6 +16,13 @@
 
 <!-- Piem will append fixes below this line -->
 
+## Fix 2: GET /api/agents 500 — Drizzle array-in-sql template bug
+- **File:** `src/app/api/agents/route.ts`
+- **Issue:** Drizzle ORM expands a JS array inside `sql\`\`` as a PostgreSQL record/tuple `($1,$2,...,$N)`, not a `text[]`. The query `WHERE LOWER(assignee) = ANY(${agentNames}::text[])` generated `ANY(($1,$2,...,$7)::text[])`, which Postgres rejects with: `cannot cast type record to text[]`.
+- **Fix:** Replaced `ANY(${agentNames}::text[])` with `IN (${sql.join(agentNames.map(n => sql\`${n}\`), sql\`, \`)})` — each name becomes an individual bound parameter, no array cast needed.
+- **Verify:** Drizzle `db.execute` returns 4 rows against Neon ✓, `pnpm build` passes ✓
+- **Commit:** ea9e130 (develop)
+
 ## Fix 1: Batch notification source lookups (N+1 → 3 queries)
 - **File:** `src/app/api/notifications/route.ts`
 - **Issue:** GET /api/notifications ran one DB query per notification to enrich task/comment/agent source details — O(N) queries with N = up to 500 rows
