@@ -2,7 +2,7 @@
   "framework": "nextjs",
   "buildCommand": "npx next build",
   "outputDirectory": ".next",
-  "installCommand": "npm ci",
+  "installCommand": "pnpm install --frozen-lockfile",
   "regions": ["iad1"],
   "env": {
     "NODE_ENV": "production"
