@@ -120,3 +120,10 @@
 - **Fix:** Wrapped all 10 queries (added webhooks inside too, removing the inner `try/catch` block) in a single `Promise.all([...])`. Tables that may not exist in all envs (pipeline_runs, webhooks) use `.catch(() => ({ rows: [] }))` to preserve the existing resilience. Serial 9-query path → parallel 1-round-trip batch.
 - **Verify:** `pnpm build` passes ✓, `/api/status?action=dashboard` returns same shape with 10× fewer DB round-trips
 - **Commit:** 5007e41 (develop)
+
+## Fix 17: Parallelize notifications data + count queries (3 serial → 1 parallel batch)
+- **File:** `src/app/api/notifications/route.ts`
+- **Issue:** GET /api/notifications fetched `notifRows` first, then ran `unreadCountRows` and `countRows` sequentially — 3 serial DB round-trips on every request. Both count queries are independent of the data fetch and of each other; there was no reason to serialize them.
+- **Fix:** Wrapped all 3 queries in a single `Promise.all([...])` so they fire simultaneously. `unreadCount` and `total` are destructured from the parallel results; the source-detail batch queries run afterward (they depend on `notifRows`). Net result: 2 serial round-trips saved per request.
+- **Verify:** `pnpm build` passes ✓, `/api/notifications?recipient=cri` still returns correct shape with `notifications`, `total`, `unreadCount`
+- **Commit:** 50e5134 (develop)
