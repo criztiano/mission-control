@@ -58,7 +58,7 @@ export async function POST(request: NextRequest) {
 
     const result = await db.insert(gateways).values({
       name, host, port, token: token || '', is_primary: is_primary ? true : false
-    }).returning({ id: gateways.id })
+    }).returning()
 
     try {
       await db.insert(auditLog).values({
@@ -68,8 +68,7 @@ export async function POST(request: NextRequest) {
       })
     } catch { /* audit might not exist */ }
 
-    const gw = await db.select().from(gateways).where(eq(gateways.id, result[0].id)).limit(1)
-    return NextResponse.json({ gateway: redactToken(gw[0]) }, { status: 201 })
+    return NextResponse.json({ gateway: redactToken(result[0]) }, { status: 201 })
   } catch (err: any) {
     if (err.message?.includes('unique') || err.message?.includes('UNIQUE')) {
       return NextResponse.json({ error: 'A gateway with that name already exists' }, { status: 409 })
@@ -108,9 +107,7 @@ export async function PUT(request: NextRequest) {
 
   if (Object.keys(updateData).length === 1) return NextResponse.json({ error: 'No valid fields to update' }, { status: 400 })
 
-  await db.update(gateways).set(updateData).where(eq(gateways.id, id))
-
-  const updated = await db.select().from(gateways).where(eq(gateways.id, id)).limit(1)
+  const updated = await db.update(gateways).set(updateData).where(eq(gateways.id, id)).returning()
   return NextResponse.json({ gateway: redactToken(updated[0]) })
 }
 

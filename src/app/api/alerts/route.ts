@@ -60,7 +60,7 @@ export async function POST(request: NextRequest) {
       action_config: JSON.stringify(action_config || {}),
       cooldown_minutes: cooldown_minutes || 60,
       created_by: auth.user?.username || 'system',
-    }).returning({ id: alertRules.id })
+    }).returning()
 
     // Audit log
     try {
@@ -71,8 +71,7 @@ export async function POST(request: NextRequest) {
       })
     } catch { /* audit table might not exist */ }
 
-    const ruleRows = await db.select().from(alertRules).where(eq(alertRules.id, result[0].id)).limit(1)
-    return NextResponse.json({ rule: ruleRows[0] }, { status: 201 })
+    return NextResponse.json({ rule: result[0] }, { status: 201 })
   } catch (err: any) {
     return NextResponse.json({ error: err.message || 'Failed to create rule' }, { status: 500 })
   }
@@ -107,9 +106,7 @@ export async function PUT(request: NextRequest) {
 
   if (Object.keys(updateData).length === 1) return NextResponse.json({ error: 'No valid fields to update' }, { status: 400 })
 
-  await db.update(alertRules).set(updateData).where(eq(alertRules.id, id))
-
-  const updatedRows = await db.select().from(alertRules).where(eq(alertRules.id, id)).limit(1)
+  const updatedRows = await db.update(alertRules).set(updateData).where(eq(alertRules.id, id)).returning()
   return NextResponse.json({ rule: updatedRows[0] })
 }
 

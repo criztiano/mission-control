@@ -58,13 +58,12 @@ export async function PATCH(
       return NextResponse.json({ error: 'Message not found' }, { status: 404 })
     }
 
+    let updated = message
     if (body.read) {
       const now = Math.floor(Date.now() / 1000)
-      await db.update(messages).set({ read_at: now }).where(eq(messages.id, msgId))
+      const updatedRows = await db.update(messages).set({ read_at: now }).where(eq(messages.id, msgId)).returning()
+      updated = updatedRows[0]
     }
-
-    const updatedRows = await db.select().from(messages).where(eq(messages.id, msgId)).limit(1)
-    const updated = updatedRows[0]
 
     return NextResponse.json({
       message: {
