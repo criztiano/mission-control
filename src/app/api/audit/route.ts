@@ -18,7 +18,7 @@ export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url)
   const action = searchParams.get('action')
   const actor = searchParams.get('actor')
-  const limit = Math.min(parseInt(searchParams.get('limit') || '1000'), 10000)
+  const limit = Math.min(parseInt(searchParams.get('limit') || '50'), 500)
   const offset = parseInt(searchParams.get('offset') || '0')
   const since = searchParams.get('since')
   const until = searchParams.get('until')
