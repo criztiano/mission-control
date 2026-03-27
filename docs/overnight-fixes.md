@@ -16,6 +16,13 @@
 
 <!-- Piem will append fixes below this line -->
 
+## Fix 3: Drizzle array-in-sql bug in notifications + pipelines routes
+- **Files:** `src/app/api/notifications/route.ts`, `src/app/api/pipelines/route.ts`
+- **Issue:** Both routes used `ANY(${jsArray}::text[])` inside a Drizzle `sql\`\`` template. Drizzle expands a JS array as a PostgreSQL record/tuple `($1,$2,...,$N)`, so `ANY(($1,$2,...)::text[])` fails with `cannot cast type record to text[]`. notifications was triggered when comment-type notifications exist; pipelines when creating a pipeline with multiple steps.
+- **Fix:** Replaced `ANY(${array}::type[])` with `IN (${sql.join(array.map(id => sql\`${id}\`), sql\`, \`)})` — individual bound params, same pattern used in the agents fix.
+- **Verify:** `pnpm build` passes ✓, no remaining `ANY(\${` patterns in src/app/api/
+- **Commit:** 0ebb887 (develop)
+
 ## Fix 2: GET /api/agents 500 — Drizzle array-in-sql template bug
 - **File:** `src/app/api/agents/route.ts`
 - **Issue:** Drizzle ORM expands a JS array inside `sql\`\`` as a PostgreSQL record/tuple `($1,$2,...,$N)`, not a `text[]`. The query `WHERE LOWER(assignee) = ANY(${agentNames}::text[])` generated `ANY(($1,$2,...,$7)::text[])`, which Postgres rejects with: `cannot cast type record to text[]`.
