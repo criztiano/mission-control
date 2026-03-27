@@ -201,3 +201,14 @@
 - **Fix:** Wrapped all 3 queries in a single `Promise.all([...])` so they fire simultaneously. `stats` is destructured from the parallel results as before. Net result: 2 serial round-trips eliminated per GET request.
 - **Verify:** `pnpm build` passes ✓, GET /api/notifications/deliver returns same shape with `statistics`, `agents_with_pending`, `recent_deliveries`
 - **Commit:** 2cc5ecd (develop)
+
+## Fix 27: Parallelize getIssue + getCurrentRound in createTurn — 3 serial reads → 1 parallel batch
+- **File:** `src/lib/cc-db.ts`
+- **Issue:** `createTurn` made 3 serial DB reads before writing:
+  1. `getIssue(taskId)` — to infer author
+  2. `getCurrentRound(taskId)` — to get current max round number
+  3. `getIssue(taskId)` again — to check if task is closed before reassigning
+  All three ran sequentially despite reads 1+2 being fully independent. This is the hottest write path in the app — every turn creation (agent handoffs, plan approvals, review cycles) paid 3 serial DB round-trips before the insert.
+- **Fix:** Replaced the 3 serial reads with a single `Promise.all([getIssue(taskId), getCurrentRound(taskId)])` at the top of the function. The `issue` result is reused for both author inference and status check — eliminating the duplicate `getIssue` call entirely. Net: 2 serial round-trips eliminated per turn creation.
+- **Verify:** `pnpm build` passes ✓, `createTurn` returns same Turn shape; issue+round fetched in one parallel batch
+- **Commit:** fef5e6c (develop)
