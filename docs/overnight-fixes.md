@@ -85,3 +85,10 @@
 - **Fix:** Changed query from `SELECT *` to explicit column list excluding `content`. Updated return type annotation to `Omit<CCPlan, 'content'>[]`. Full content is still available via GET /api/plans/[id].
 - **Verify:** `pnpm build` passes ✓, `/api/plans` response no longer includes `content` field per plan
 - **Commit:** 7d58797 (develop)
+
+## Fix 11: Missing await on logAuditEvent in export route
+- **File:** `src/app/api/export/route.ts`
+- **Issue:** `logAuditEvent({...})` called without `await` on line 80 — the async audit write was fire-and-forget. Any DB errors during export audit logging were silently swallowed, and the audit record was not guaranteed to be written before the response was returned.
+- **Fix:** Added `await` before `logAuditEvent({...})` so errors surface properly and the audit record is committed before the export response is sent.
+- **Verify:** `pnpm build` passes ✓, no remaining un-awaited `logAuditEvent` calls in src/app/api/
+- **Commit:** 0d317cb (develop)
