@@ -30,11 +30,23 @@ export async function GET(request: NextRequest) {
     if (unread_only) conditions.push(isNull(notifications.read_at));
     if (type) conditions.push(eq(notifications.type, type));
 
-    const notifRows = await db.select().from(notifications)
-      .where(and(...conditions))
-      .orderBy(desc(notifications.created_at))
-      .limit(limit)
-      .offset(offset);
+    // Fire main data fetch + both count queries in parallel — all independent of each other
+    const [notifRows, unreadCountRows, countRows] = await Promise.all([
+      db.select().from(notifications)
+        .where(and(...conditions))
+        .orderBy(desc(notifications.created_at))
+        .limit(limit)
+        .offset(offset),
+      db.select({ count: sql<number>`count(*)::int` })
+        .from(notifications)
+        .where(and(eq(notifications.recipient, recipient), isNull(notifications.read_at))),
+      db.select({ total: sql<number>`count(*)::int` })
+        .from(notifications)
+        .where(and(...conditions)),
+    ]);
+
+    const unreadCount = unreadCountRows[0]?.count ?? 0;
+    const total = countRows[0]?.total ?? 0;
 
     // Batch-fetch source details (3 queries max instead of N)
     const taskIds = [...new Set(notifRows.filter(n => n.source_type === 'task' && n.source_id).map(n => n.source_id!))];
@@ -84,16 +96,6 @@ export async function GET(request: NextRequest) {
       }
       return { ...notification, source: sourceDetails };
     });
-
-    const unreadCountRows = await db.select({ count: sql<number>`count(*)::int` })
-      .from(notifications)
-      .where(and(eq(notifications.recipient, recipient), isNull(notifications.read_at)));
-    const unreadCount = unreadCountRows[0]?.count ?? 0;
-
-    const countRows = await db.select({ total: sql<number>`count(*)::int` })
-      .from(notifications)
-      .where(and(...conditions));
-    const total = countRows[0]?.total ?? 0;
 
     return NextResponse.json({
       notifications: enhancedNotifications,

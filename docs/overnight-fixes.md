@@ -113,3 +113,10 @@
 - **Fix:** Wrapped all 7 queries in a single `Promise.all([...])` so they fire simultaneously. Inactive query slots (when `typeFilter` is set) resolve immediately via `Promise.resolve({rows:[]})`. Also cached `lowerQuery` to avoid repeated `.toLowerCase()` calls per result row.
 - **Verify:** `pnpm build` passes ✓, search with query returns same result shape; parallel execution confirmed by structure
 - **Commit:** c52174a (develop)
+
+## Fix 16: Parallelize 9 sequential DB queries in GET /api/status (getDbStats)
+- **File:** `src/app/api/status/route.ts`
+- **Issue:** `getDbStats()` ran 9 independent `await db.execute(...)` calls sequentially — task stats, agent stats, 3 audit counts, activities count, notifications count, 2 pipeline counts, and webhook count — each blocking the next. Every call to `/api/status?action=dashboard` or `/api/status?action=health` paid 9 serial DB round-trips.
+- **Fix:** Wrapped all 10 queries (added webhooks inside too, removing the inner `try/catch` block) in a single `Promise.all([...])`. Tables that may not exist in all envs (pipeline_runs, webhooks) use `.catch(() => ({ rows: [] }))` to preserve the existing resilience. Serial 9-query path → parallel 1-round-trip batch.
+- **Verify:** `pnpm build` passes ✓, `/api/status?action=dashboard` returns same shape with 10× fewer DB round-trips
+- **Commit:** 5007e41 (develop)
