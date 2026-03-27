@@ -244,3 +244,10 @@
 - **Fix:** Replaced the post-write `getIssue` with `db.update(...).returning()` — the updated row is returned directly by PostgreSQL with no extra round-trip. Cast the result to `CCIssue` to satisfy TypeScript. Also wrapped `logActivity` and `getProject` in a single `Promise.all` — they're fully independent of each other. Net: 2 serial DB round-trips eliminated per task update.
 - **Verify:** `pnpm build` passes ✓, `PUT /api/tasks/[id]` returns same task shape
 - **Commit:** bd72a2c (develop)
+
+## Fix 34: Parallelize agentRows + countRows in GET /api/agents
+- **File:** `src/app/api/agents/route.ts`
+- **Issue:** `GET /api/agents` fetched `agentRows` (paginated data) first, then ran `countRows` (total count) sequentially after all data processing — a completely independent query that had no data dependency on `agentRows`. Every agents list load paid 2 serial DB round-trips despite both queries hitting the same table with the same filter conditions.
+- **Fix:** Combined `agentRows` and `countRows` into a single `Promise.all([...])` at the top of the handler. `total` is now derived from the parallel count result. The now-redundant sequential `countRows` query at the bottom was removed. Net: 1 serial round-trip eliminated per GET /api/agents request.
+- **Verify:** `pnpm build` passes ✓, GET /api/agents returns same shape with `agents`, `total`, pagination
+- **Commit:** bdf0a3e (develop)
