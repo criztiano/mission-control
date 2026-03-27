@@ -16,6 +16,13 @@
 
 <!-- Piem will append fixes below this line -->
 
+## Fix 8: N+1 → batch query in GET /api/chat/conversations
+- **File:** `src/app/api/chat/conversations/route.ts`
+- **Issue:** Fetching last message per conversation used `Promise.all(conversations.map(async conv => db.select().from(messages).where(...).limit(1)))` — one DB roundtrip per conversation. With 50 conversations that's 51 total queries (1 list + 50 last-message lookups).
+- **Fix:** Replaced the N per-row queries with a single `DISTINCT ON (conversation_id)` PostgreSQL query scoped to the current page's conversation IDs. Results mapped via in-memory Map — O(1) lookup per conversation. Also cleaned up unused `messages`, `eq`, and `desc` imports.
+- **Verify:** `pnpm build` passes ✓, response still includes `last_message` object per conversation
+- **Commit:** c08db2c (develop)
+
 ## Fix 3: Drizzle array-in-sql bug in notifications + pipelines routes
 - **Files:** `src/app/api/notifications/route.ts`, `src/app/api/pipelines/route.ts`
 - **Issue:** Both routes used `ANY(${jsArray}::text[])` inside a Drizzle `sql\`\`` template. Drizzle expands a JS array as a PostgreSQL record/tuple `($1,$2,...,$N)`, so `ANY(($1,$2,...)::text[])` fails with `cannot cast type record to text[]`. notifications was triggered when comment-type notifications exist; pipelines when creating a pipeline with multiple steps.
