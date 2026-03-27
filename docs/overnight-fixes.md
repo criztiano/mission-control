@@ -36,3 +36,10 @@
 - **Fix:** Collect all source IDs by type, batch-fetch with 3 parallel queries (`inArray` + `ANY`), then map via in-memory Maps — no async in the final `.map()`
 - **Verify:** Build passes (`pnpm build` ✓), endpoint now returns source details with 3 queries regardless of result count
 - **Commit:** 6df8c55 (develop)
+
+## Fix 4: Merge develop→main to ship all fixes to production
+- **File:** `src/app/api/agents/route.ts` (+ notifications, pipelines, tasks — all from develop)
+- **Issue:** Production (eden-iota-one.vercel.app) still pointed to main branch which was never updated. All overnight fixes on develop were not in production — `/api/agents` returned 500 because main still had `ANY(${agentNames}::text[])` Drizzle array bug.
+- **Fix:** `git merge develop` on main, pushed to origin main. Vercel auto-deployed production from main.
+- **Verify:** `pnpm build` ✓, `/api/agents` now returns 14 agents (was 500 before)
+- **Commit:** 18d2d1a (main)
