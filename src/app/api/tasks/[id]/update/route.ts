@@ -49,14 +49,13 @@ export async function POST(
       }
     }
 
-    // Update title/description if provided
-    if (title || description) {
-      const now = new Date().toISOString();
-      const updateFields: Record<string, any> = { updated_at: now };
-      if (title) updateFields.title = title;
-      if (description) updateFields.description = description;
-      await db.update(issues).set(updateFields).where(eq(issues.id, taskId));
-    }
+    // Single update: always reset picked state; conditionally include title/description.
+    // Merges two sequential db.update(issues) calls into one round-trip.
+    const now = new Date().toISOString();
+    const updateFields: Record<string, any> = { picked: false, picked_at: null, picked_by: '', updated_at: now };
+    if (title) updateFields.title = title;
+    if (description) updateFields.description = description;
+    await db.update(issues).set(updateFields).where(eq(issues.id, taskId));
 
     // Create the result turn
     const turn = await createTurn(taskId, {
@@ -65,9 +64,6 @@ export async function POST(
       links: links || [],
       author: agent,
     });
-
-    // Reset picked state
-    await db.update(issues).set({ picked: false, picked_at: null, picked_by: '' }).where(eq(issues.id, taskId));
 
     return NextResponse.json({
       ok: true,

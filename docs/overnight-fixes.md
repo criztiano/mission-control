@@ -265,3 +265,10 @@
 - **Fix:** Replaced `const updatedIssue = await getIssue(taskId); const newAssignee = updatedIssue?.assignee || ''` with `const newAssignee = assigned_to` — `assigned_to` is authoritative since createTurn just persisted it. Net: 1 DB round-trip eliminated per turn creation.
 - **Verify:** `pnpm build` passes ✓, dispatch logic unchanged — `newAssignee` still the same value
 - **Commit:** 00f8094 (develop)
+
+## Fix 37: Parallelize setTaskPicked+getTurns in tasks/pick and tasks/[id]/pick
+- **Files:** `src/app/api/tasks/pick/route.ts`, `src/app/api/tasks/[id]/pick/route.ts`
+- **Issue:** Both pick routes called `await setTaskPicked(taskId, agent)` then `await getTurns(taskId)` sequentially. `getTurns` fetches from the `turns` table — completely independent of the `picked`/`picked_at`/`picked_by` update that `setTaskPicked` applies to `issues`. These are the two routes every agent hits on every task pickup cycle, making this a hot path.
+- **Fix:** Combined both into `Promise.all([setTaskPicked(taskId, agent), getTurns(taskId)])` in both routes. The `turns` result is destructured from index 1. Net: 1 serial round-trip eliminated per task pick in both endpoints.
+- **Verify:** `pnpm build` passes ✓, pick routes return same response shape
+- **Commit:** d016a10 (develop)
