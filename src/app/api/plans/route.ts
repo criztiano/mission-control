@@ -29,10 +29,12 @@ export async function GET(request: NextRequest) {
     if (author) whereClause = sql`${whereClause} AND ${plans.author} = ${author}`
 
     const planRows = await db.execute(sql`
-      SELECT * FROM plans WHERE ${whereClause} ORDER BY created_at DESC
+      SELECT id, title, task_id, project_id, author, status, responses, created_at, updated_at
+      FROM plans WHERE ${whereClause} ORDER BY created_at DESC
     `)
 
-    return NextResponse.json({ plans: planRows.rows as unknown as CCPlan[] })
+    // content is omitted in list view — fetch via GET /api/plans/[id] for full content
+    return NextResponse.json({ plans: planRows.rows as unknown as Omit<CCPlan, 'content'>[] })
   } catch (err) {
     logger.error({ err }, 'GET /api/plans failed')
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })

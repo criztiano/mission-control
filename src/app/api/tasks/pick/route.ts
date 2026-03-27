@@ -3,7 +3,6 @@ import { requireRole } from '@/lib/auth';
 import { logger } from '@/lib/logger';
 import { setTaskPicked, getTurns, parseBlockedBy, getOpenBlockerIds } from '@/lib/cc-db';
 import { db } from '@/db/client';
-import { issues } from '@/db/schema';
 import { sql } from 'drizzle-orm';
 
 /**
@@ -26,12 +25,13 @@ export async function POST(request: NextRequest) {
       assignees.push('cody');
     }
 
-    const assigneesStr = assignees.map(a => `'${a.replace(/'/g, "''")}'`).join(',');
+    // Use individual bound parameters instead of sql.raw() to avoid injection risk
+    const assigneeParams = sql.join(assignees.map(a => sql`${a}`), sql`, `);
 
     const candidateRows = await db.execute(sql`
       SELECT * FROM issues
       WHERE status = 'open'
-        AND LOWER(assignee) IN (${sql.raw(assigneesStr)})
+        AND LOWER(assignee) IN (${assigneeParams})
         AND (picked = false OR picked IS NULL)
         AND archived = false
       ORDER BY

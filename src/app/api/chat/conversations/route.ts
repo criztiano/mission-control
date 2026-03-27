@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/db/client'
-import { messages } from '@/db/schema'
-import { eq, sql, desc } from 'drizzle-orm'
+import { sql } from 'drizzle-orm'
 import { requireRole } from '@/lib/auth'
 
 /**
@@ -63,24 +62,30 @@ export async function GET(request: NextRequest) {
       total = Number((countResult.rows[0] as any)?.total ?? 0)
     }
 
-    // Fetch last message per conversation
-    const withLastMessage = await Promise.all(
-      conversations.map(async (conv) => {
-        const lastMsgResult = await db
-          .select()
-          .from(messages)
-          .where(eq(messages.conversation_id, conv.conversation_id))
-          .orderBy(desc(messages.created_at))
-          .limit(1)
-        const lastMsg = lastMsgResult[0]
-        return {
-          ...conv,
-          last_message: lastMsg
-            ? { ...lastMsg, metadata: lastMsg.metadata ? JSON.parse(lastMsg.metadata) : null }
-            : null,
-        }
-      })
-    )
+    // Batch-fetch last message per conversation — single DISTINCT ON query instead of N queries
+    let lastMessageMap = new Map<string, any>()
+    if (conversations.length > 0) {
+      const convIds = conversations.map(c => c.conversation_id)
+      const lastMsgsResult = await db.execute(sql`
+        SELECT DISTINCT ON (conversation_id) *
+        FROM messages
+        WHERE conversation_id IN (${sql.join(convIds.map(id => sql`${id}`), sql`, `)})
+        ORDER BY conversation_id, created_at DESC
+      `)
+      for (const row of lastMsgsResult.rows as any[]) {
+        lastMessageMap.set(row.conversation_id, row)
+      }
+    }
+
+    const withLastMessage = conversations.map((conv) => {
+      const lastMsg = lastMessageMap.get(conv.conversation_id) ?? null
+      return {
+        ...conv,
+        last_message: lastMsg
+          ? { ...lastMsg, metadata: lastMsg.metadata ? JSON.parse(lastMsg.metadata) : null }
+          : null,
+      }
+    })
 
     return NextResponse.json({ conversations: withLastMessage, total, page: Math.floor(offset / limit) + 1, limit })
   } catch (error) {

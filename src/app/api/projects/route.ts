@@ -1,10 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireRole } from '@/lib/auth';
 import { logger } from '@/lib/logger';
-import { getProjects, createProject, getProjectTaskCount, getProjectLastActivity } from '@/lib/cc-db';
+import { getProjects, createProject } from '@/lib/cc-db';
+import { db } from '@/db/client';
+import { issues } from '@/db/schema';
+import { and, eq, sql } from 'drizzle-orm';
 
 /**
  * GET /api/projects - List all projects from control-center.db with task counts and last activity
+ *
+ * Batch strategy: 2 queries total regardless of project count
+ *   Q1 — COUNT(*) GROUP BY project_id (task counts)
+ *   Q2 — MAX(updated_at) GROUP BY project_id (last activity)
  */
 export async function GET(request: NextRequest) {
   const auth = await requireRole(request, 'viewer');
@@ -12,18 +19,57 @@ export async function GET(request: NextRequest) {
 
   try {
     const projectList = await getProjects();
-    const projectsWithStats = await Promise.all(
-      projectList.map(async p => ({
-        id: p.id,
-        title: p.title,
-        description: p.description,
-        emoji: p.emoji,
-        repo_url: p.repo_url,
-        local_path: p.local_path,
-        taskCount: await getProjectTaskCount(p.id),
-        lastActivity: await getProjectLastActivity(p.id),
-      }))
+
+    if (projectList.length === 0) {
+      return NextResponse.json({ projects: [] });
+    }
+
+    // Batch Q1: task counts per project
+    const taskCountRows = await db
+      .select({
+        project_id: issues.project_id,
+        count: sql<number>`COUNT(*)::int`,
+      })
+      .from(issues)
+      .where(and(eq(issues.archived, false)))
+      .groupBy(issues.project_id);
+
+    const taskCountMap = new Map<string, number>(
+      taskCountRows
+        .filter(r => r.project_id != null)
+        .map(r => [r.project_id as string, r.count])
     );
+
+    // Batch Q2: last activity per project (MAX updated_at)
+    const lastActivityRows = await db
+      .select({
+        project_id: issues.project_id,
+        last_updated: sql<string>`MAX(${issues.updated_at})`,
+      })
+      .from(issues)
+      .where(and(eq(issues.archived, false)))
+      .groupBy(issues.project_id);
+
+    const lastActivityMap = new Map<string, number>(
+      lastActivityRows
+        .filter(r => r.project_id != null && r.last_updated != null)
+        .map(r => {
+          const ts = r.last_updated ? Math.floor(new Date(r.last_updated).getTime() / 1000) : 0;
+          return [r.project_id as string, isNaN(ts) ? 0 : ts];
+        })
+    );
+
+    const projectsWithStats = projectList.map(p => ({
+      id: p.id,
+      title: p.title,
+      description: p.description,
+      emoji: p.emoji,
+      repo_url: p.repo_url,
+      local_path: p.local_path,
+      taskCount: taskCountMap.get(p.id) ?? 0,
+      lastActivity: lastActivityMap.get(p.id) ?? 0,
+    }));
+
     return NextResponse.json({ projects: projectsWithStats });
   } catch (error) {
     logger.error({ err: error }, 'GET /api/projects error');

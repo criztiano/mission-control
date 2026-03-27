@@ -52,7 +52,7 @@ export async function POST(
       )
     }
 
-    db_helpers.logActivity(
+    await db_helpers.logActivity(
       'session_control',
       'session',
       0,
