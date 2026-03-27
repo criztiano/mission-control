@@ -43,3 +43,10 @@
 - **Fix:** `git merge develop` on main, pushed to origin main. Vercel auto-deployed production from main.
 - **Verify:** `pnpm build` ✓, `/api/agents` now returns 14 agents (was 500 before)
 - **Commit:** 18d2d1a (main)
+
+## Fix 5: Missing await on logActivity in sessions/[id]/control
+- **File:** `src/app/api/sessions/[id]/control/route.ts`
+- **Issue:** `db_helpers.logActivity(...)` called without `await` — the async write was fire-and-forget, meaning if the DB call failed it would be silently swallowed and activity wouldn't be logged when pausing/monitoring/terminating sessions
+- **Fix:** Added `await` before `db_helpers.logActivity(...)` so errors surface properly and the activity record is guaranteed to be written before returning the response
+- **Verify:** `pnpm build` passes ✓, no remaining un-awaited `db_helpers.logActivity` calls in src/app/api/
+- **Commit:** a5563f5 (develop)
