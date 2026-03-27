@@ -50,3 +50,10 @@
 - **Fix:** Added `await` before `db_helpers.logActivity(...)` so errors surface properly and the activity record is guaranteed to be written before returning the response
 - **Verify:** `pnpm build` passes ✓, no remaining un-awaited `db_helpers.logActivity` calls in src/app/api/
 - **Commit:** a5563f5 (develop)
+
+## Fix 6: sql.raw() injection risk in tasks/pick — replace with bound params
+- **File:** `src/app/api/tasks/pick/route.ts`
+- **Issue:** `sql.raw(assigneesStr)` was used to build an `IN (...)` clause with manually-escaped string values — a `sql.raw()` pattern that bypasses Drizzle's parameterization. Same class of bug as the agents fix (Fix 2/3), just using manual escaping instead of array cast.
+- **Fix:** Replaced `sql.raw(assigneesStr)` with `sql.join(assignees.map(a => sql\`${a}\`), sql\`, \`)` — each value is a proper bound parameter. Also removed unused `issues` schema import.
+- **Verify:** `pnpm build` passes ✓, no remaining `sql.raw()` calls in src/app/api/
+- **Commit:** c5e93dd (develop)
