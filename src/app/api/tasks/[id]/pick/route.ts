@@ -34,9 +34,10 @@ export async function POST(
       return NextResponse.json({ error: 'Task is closed' }, { status: 400 });
     }
 
-    await setTaskPicked(taskId, agent);
-
-    const turns = await getTurns(taskId);
+    const [, turns] = await Promise.all([
+      setTaskPicked(taskId, agent),
+      getTurns(taskId),
+    ]);
 
     const hasDescription = issue.description && issue.description.trim().length > 0;
     const needsRefinement = turns.length === 0 && !hasDescription;
