@@ -29,13 +29,19 @@ export async function GET(request: NextRequest) {
     if (status) conditions.push(eq(agents.status, status));
     if (role) conditions.push(eq(agents.role, role));
 
-    const agentRows = await db
-      .select()
-      .from(agents)
-      .where(conditions.length ? and(...conditions) : undefined)
-      .orderBy(desc(agents.created_at))
-      .limit(limit)
-      .offset(offset);
+    // Fetch agent data + total count in parallel — independent queries
+    const [agentRows, countRows] = await Promise.all([
+      db
+        .select()
+        .from(agents)
+        .where(conditions.length ? and(...conditions) : undefined)
+        .orderBy(desc(agents.created_at))
+        .limit(limit)
+        .offset(offset),
+      db.select({ total: sql<number>`count(*)::int` }).from(agents)
+        .where(conditions.length ? and(...conditions) : undefined),
+    ]);
+    const total = countRows[0]?.total ?? 0;
 
     const agentsWithParsedData = agentRows.map(agent => ({
       ...agent,
@@ -80,11 +86,6 @@ export async function GET(request: NextRequest) {
         total: 0, assigned: 0, in_progress: 0, completed: 0,
       },
     }));
-
-    // Total count
-    const countRows = await db.select({ total: sql<number>`count(*)::int` }).from(agents)
-      .where(conditions.length ? and(...conditions) : undefined);
-    const total = countRows[0]?.total ?? 0;
 
     return NextResponse.json({
       agents: agentsWithStats,
