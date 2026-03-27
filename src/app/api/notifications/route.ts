@@ -49,7 +49,7 @@ export async function GET(request: NextRequest) {
         ? db.execute(sql`
             SELECT c.id, c.content, c.task_id, t.title as task_title
             FROM comments c LEFT JOIN tasks t ON c.task_id = t.id
-            WHERE c.id = ANY(${commentIds}::text[])
+            WHERE c.id IN (${sql.join(commentIds.map(id => sql`${id}`), sql`, `)})
           `).then(r => r.rows as any[])
         : Promise.resolve([]),
       agentIds.length > 0
