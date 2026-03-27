@@ -84,13 +84,11 @@ export async function POST(request: NextRequest) {
       description: description || null,
       steps: JSON.stringify(cleanSteps),
       created_by: auth.user?.username || 'system',
-    }).returning({ id: workflowPipelines.id })
+    }).returning()
 
-    const pipelineId = insertResult[0].id
-    await db_helpers.logActivity('pipeline_created', 'pipeline', pipelineId, auth.user?.username || 'system', `Created pipeline: ${name}`)
+    const p = insertResult[0]
+    await db_helpers.logActivity('pipeline_created', 'pipeline', p.id, auth.user?.username || 'system', `Created pipeline: ${name}`)
 
-    const pipeline = await db.select().from(workflowPipelines).where(eq(workflowPipelines.id, pipelineId)).limit(1)
-    const p = pipeline[0]
     return NextResponse.json({ pipeline: { ...p, steps: JSON.parse(p.steps) } }, { status: 201 })
   } catch (error) {
     console.error('POST /api/pipelines error:', error)
@@ -126,9 +124,8 @@ export async function PUT(request: NextRequest) {
       updateData.last_used_at = Math.floor(Date.now() / 1000)
     }
 
-    await db.update(workflowPipelines).set(updateData).where(eq(workflowPipelines.id, id))
+    const updated = await db.update(workflowPipelines).set(updateData).where(eq(workflowPipelines.id, id)).returning()
 
-    const updated = await db.select().from(workflowPipelines).where(eq(workflowPipelines.id, id)).limit(1)
     const p = updated[0]
     return NextResponse.json({ pipeline: { ...p, steps: JSON.parse(p.steps) } })
   } catch (error) {

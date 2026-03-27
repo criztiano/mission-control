@@ -190,11 +190,9 @@ export async function POST(request: NextRequest) {
 
     if (action === 'mark-delivered') {
       const now = Math.floor(Date.now() / 1000);
-      await db.update(notifications).set({ delivered_at: now })
-        .where(and(eq(notifications.recipient, agent), isNull(notifications.delivered_at)));
-
-      const deliveredNotifs = await db.select().from(notifications)
-        .where(and(eq(notifications.recipient, agent), eq(notifications.delivered_at, now)));
+      const deliveredNotifs = await db.update(notifications).set({ delivered_at: now })
+        .where(and(eq(notifications.recipient, agent), isNull(notifications.delivered_at)))
+        .returning();
 
       return NextResponse.json({ success: true, delivered: deliveredNotifs.length, notifications: deliveredNotifs });
     } else {
