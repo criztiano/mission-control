@@ -192,14 +192,16 @@ export async function createTurn(
   const now = new Date().toISOString();
   const linksJson = JSON.stringify(turn.links || []);
 
-  // Infer author from current issue assignee if not provided
-  const issue = await getIssue(taskId);
+  // Fetch issue + current round in parallel — single batch, no serial reads
+  const [issue, currentMax] = await Promise.all([
+    getIssue(taskId),
+    getCurrentRound(taskId),
+  ]);
+
   const turnAuthor = turn.author || issue?.assignee || 'system';
 
   // Note handling — kept for backward compat
   if (turn.type === 'note') {
-    const currentMax = await getCurrentRound(taskId);
-
     await db.update(issues).set({ last_turn_at: now, updated_at: now }).where(eq(issues.id, taskId));
 
     await db.insert(turnsTable).values({
@@ -228,12 +230,10 @@ export async function createTurn(
   }
 
   // Unified logic: every turn reassigns, resets picked, reopens if closed/done
-  const currentMax = await getCurrentRound(taskId);
   const roundNumber = (currentMax ?? 0) + 1;
 
-  // Update issue: reassign, reset picked, reopen if closed
-  const issueRow = await getIssue(taskId);
-  const newStatus = issueRow && issueRow.status === 'closed' ? 'open' : (issueRow?.status ?? 'open');
+  // Reuse already-fetched issue row — no extra getIssue call needed
+  const newStatus = issue && issue.status === 'closed' ? 'open' : (issue?.status ?? 'open');
 
   await db.update(issues).set({
     assignee: turn.assigned_to,
