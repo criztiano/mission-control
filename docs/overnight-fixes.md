@@ -237,3 +237,10 @@
 - **Fix:** Combined into `Promise.all([getIssue(taskId), getTurns(taskId)])` — both queries fire simultaneously. The null check for `issue` still runs before using the result. Net: 1 serial DB round-trip eliminated per turn delivery.
 - **Verify:** `pnpm build` passes ✓, POST /api/tasks/[id]/update returns same shape
 - **Commit:** 8ccd9bf (develop)
+
+## Fix 33: Use .returning() in PUT /api/tasks/[id] — eliminate post-write SELECT + parallelize logActivity+getProject
+- **File:** `src/app/api/tasks/[id]/route.ts`
+- **Issue:** `PUT /api/tasks/[id]` did `db.update(issues).set(updateFields)` then immediately `await getIssue(issueId)` to get the updated row back — a completely unnecessary post-write SELECT since the updated values are already known. Then `getProject(updatedIssue.project_id)` ran serially after that. This is one of the most frequently called mutation endpoints (every agent task update, every UI field edit).
+- **Fix:** Replaced the post-write `getIssue` with `db.update(...).returning()` — the updated row is returned directly by PostgreSQL with no extra round-trip. Cast the result to `CCIssue` to satisfy TypeScript. Also wrapped `logActivity` and `getProject` in a single `Promise.all` — they're fully independent of each other. Net: 2 serial DB round-trips eliminated per task update.
+- **Verify:** `pnpm build` passes ✓, `PUT /api/tasks/[id]` returns same task shape
+- **Commit:** bd72a2c (develop)
