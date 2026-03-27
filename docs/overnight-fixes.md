@@ -78,3 +78,10 @@
 - **Fix:** Replaced per-project queries with 2 batch queries using `GROUP BY project_id` — one for COUNT(*) task counts, one for MAX(updated_at) last activity. Results mapped via in-memory Maps — O(1) lookup per project. Also removed unused `getProjectTaskCount` and `getProjectLastActivity` imports.
 - **Verify:** `pnpm build` passes ✓, `/api/projects` returns `taskCount` and `lastActivity` per project with 3 total queries (1 list + 2 batch stats)
 - **Commit:** e4cf506 (develop)
+
+## Fix 10: Omit `content` from GET /api/plans list view
+- **File:** `src/app/api/plans/route.ts`
+- **Issue:** `SELECT *` in GET /api/plans returned the full `content` field (up to 2.4KB of markdown per plan) in list responses. Full content is only needed when viewing an individual plan — consumers of the list endpoint don't need it.
+- **Fix:** Changed query from `SELECT *` to explicit column list excluding `content`. Updated return type annotation to `Omit<CCPlan, 'content'>[]`. Full content is still available via GET /api/plans/[id].
+- **Verify:** `pnpm build` passes ✓, `/api/plans` response no longer includes `content` field per plan
+- **Commit:** 7d58797 (develop)
