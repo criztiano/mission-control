@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/db/client';
 import { activities, tasks, agents, comments } from '@/db/schema';
-import { eq, and, desc, sql, SQL } from 'drizzle-orm';
+import { eq, and, desc, inArray, sql, SQL } from 'drizzle-orm';
 import { requireRole } from '@/lib/auth'
 
 /**
@@ -42,51 +42,75 @@ async function handleActivitiesRequest(request: NextRequest) {
     if (entity_type) conditions.push(eq(activities.entity_type, entity_type));
     if (since) conditions.push(sql`${activities.created_at} > ${parseInt(since)}`);
 
-    const activityRows = await db
-      .select()
-      .from(activities)
-      .where(conditions.length ? and(...conditions) : undefined)
-      .orderBy(desc(activities.created_at))
-      .limit(limit)
-      .offset(offset);
+    const whereClause = conditions.length ? and(...conditions) : undefined;
 
-    // Enhance with entity details
-    const enhancedActivities = await Promise.all(activityRows.map(async (activity) => {
+    // Fetch activities + count in parallel
+    const [activityRows, countRows] = await Promise.all([
+      db
+        .select()
+        .from(activities)
+        .where(whereClause)
+        .orderBy(desc(activities.created_at))
+        .limit(limit)
+        .offset(offset),
+      db.select({ total: sql<number>`count(*)::int` })
+        .from(activities)
+        .where(whereClause),
+    ]);
+
+    const total = countRows[0]?.total ?? 0;
+
+    // --- Batch entity lookups (N+1 → 3 queries max) ---
+    // entity_id is integer in the activities schema (app-tables serial IDs)
+    const taskIds = activityRows.filter(a => a.entity_type === 'task' && a.entity_id).map(a => a.entity_id);
+    const agentIds = activityRows.filter(a => a.entity_type === 'agent' && a.entity_id).map(a => a.entity_id);
+    const commentIds = activityRows.filter(a => a.entity_type === 'comment' && a.entity_id).map(a => a.entity_id);
+
+    const [taskRows, agentRows, commentRows] = await Promise.all([
+      taskIds.length > 0
+        ? db.select({ id: tasks.id, title: tasks.title, status: tasks.status }).from(tasks).where(inArray(tasks.id, taskIds))
+        : Promise.resolve([]),
+      agentIds.length > 0
+        ? db.select({ id: agents.id, name: agents.name, role: agents.role, status: agents.status }).from(agents).where(inArray(agents.id, agentIds))
+        : Promise.resolve([]),
+      commentIds.length > 0
+        ? db.select({ id: comments.id, content: comments.content, task_id: comments.task_id }).from(comments).where(inArray(comments.id, commentIds))
+        : Promise.resolve([]),
+    ]);
+
+    const taskMap = new Map(taskRows.map(t => [t.id, t]));
+    const agentMap = new Map(agentRows.map(a => [a.id, a]));
+    const commentMap = new Map(commentRows.map(c => [c.id, c]));
+
+    const enhancedActivities = activityRows.map((activity) => {
       let entityDetails = null;
 
       try {
         switch (activity.entity_type) {
           case 'task': {
-            const taskRows = await db.select({ id: tasks.id, title: tasks.title, status: tasks.status })
-              .from(tasks).where(eq(tasks.id, activity.entity_id)).limit(1);
-            if (taskRows[0]) entityDetails = { type: 'task', ...taskRows[0] };
+            const t = activity.entity_id ? taskMap.get(activity.entity_id) : undefined;
+            if (t) entityDetails = { type: 'task', ...t };
             break;
           }
           case 'agent': {
-            const agentRows = await db.select({ id: agents.id, name: agents.name, role: agents.role, status: agents.status })
-              .from(agents).where(eq(agents.id, activity.entity_id)).limit(1);
-            if (agentRows[0]) entityDetails = { type: 'agent', ...agentRows[0] };
+            const a = activity.entity_id ? agentMap.get(activity.entity_id) : undefined;
+            if (a) entityDetails = { type: 'agent', ...a };
             break;
           }
           case 'comment': {
-            const commentRows = await db.execute(sql`
-              SELECT c.id, c.content, c.task_id, t.title as task_title
-              FROM comments c LEFT JOIN tasks t ON c.task_id = t.id
-              WHERE c.id = ${activity.entity_id}
-            `);
-            const comment = commentRows.rows[0] as any;
-            if (comment) {
+            const c = activity.entity_id ? commentMap.get(activity.entity_id) : undefined;
+            if (c) {
               entityDetails = {
                 type: 'comment',
-                ...comment,
-                content_preview: comment.content?.substring(0, 100) || ''
+                ...c,
+                content_preview: c.content?.substring(0, 100) || ''
               };
             }
             break;
           }
         }
       } catch (error) {
-        console.warn(`Failed to fetch entity details for activity ${activity.id}:`, error);
+        console.warn(`Failed to map entity details for activity ${activity.id}:`, error);
       }
 
       return {
@@ -94,13 +118,7 @@ async function handleActivitiesRequest(request: NextRequest) {
         data: activity.data ? JSON.parse(activity.data) : null,
         entity: entityDetails
       };
-    }));
-
-    // Count
-    const countRows = await db.select({ total: sql<number>`count(*)::int` })
-      .from(activities)
-      .where(conditions.length ? and(...conditions) : undefined);
-    const total = countRows[0]?.total ?? 0;
+    });
 
     return NextResponse.json({
       activities: enhancedActivities,
