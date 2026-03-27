@@ -21,17 +21,19 @@ export async function GET(request: NextRequest) {
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   try {
-    const pipelines = await db.select().from(workflowPipelines).orderBy(sql`use_count DESC, updated_at DESC`)
-    const templates = await db.select({ id: workflowTemplates.id, name: workflowTemplates.name }).from(workflowTemplates)
+    // Fetch all 3 independent queries in parallel
+    const [pipelines, templates, runCounts] = await Promise.all([
+      db.select().from(workflowPipelines).orderBy(sql`use_count DESC, updated_at DESC`),
+      db.select({ id: workflowTemplates.id, name: workflowTemplates.name }).from(workflowTemplates),
+      db.execute(sql`
+        SELECT pipeline_id, COUNT(*) as total,
+          SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed,
+          SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,
+          SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) as running
+        FROM pipeline_runs GROUP BY pipeline_id
+      `),
+    ])
     const nameMap = new Map(templates.map(t => [t.id, t.name]))
-
-    const runCounts = await db.execute(sql`
-      SELECT pipeline_id, COUNT(*) as total,
-        SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed,
-        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,
-        SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) as running
-      FROM pipeline_runs GROUP BY pipeline_id
-    `)
     const runMap = new Map((runCounts.rows as any[]).map(r => [r.pipeline_id, r]))
 
     const parsed = pipelines.map(p => {
