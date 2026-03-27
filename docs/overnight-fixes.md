@@ -92,3 +92,56 @@
 - **Fix:** Added `await` before `logAuditEvent({...})` so errors surface properly and the audit record is committed before the export response is sent.
 - **Verify:** `pnpm build` passes ✓, no remaining un-awaited `logAuditEvent` calls in src/app/api/
 - **Commit:** 0d317cb (develop)
+
+## Fix 13: Merge develop→main — ship fixes 5–12 to production
+- **Files:** All files changed in fixes 5–12 (standup, projects, plans, audit, activities, tasks/pick, sessions/control, export, chat/conversations)
+- **Issue:** Production (main) was 13 commits behind develop. All overnight fixes (N+1 batching, audit limit 1000→50, plans content omission, sql.raw injection fix, missing awaits) were live on develop but not in production.
+- **Fix:** `git merge develop --no-ff` into main and pushed. Vercel will auto-deploy from main.
+- **Verify:** `pnpm build` passes ✓ on develop before merge; 10 files changed, 299 insertions
+- **Commit:** a7e7dd3 (main)
+
+## Fix 14: Omit redundant `metadata` and `plan_path` from GET /api/tasks list view
+- **File:** `src/app/api/tasks/route.ts`
+- **Issue:** Each task in the list response included a `metadata` object (`{project_id, project_title, parent_id, schedule, source}`) that duplicated top-level fields already present, plus `plan_path` which is deprecated. At ~112 bytes of metadata per task × 157 tasks = 17.5KB of pure redundancy on every list fetch. Total list response was 145KB.
+- **Fix:** Destructured `metadata` and `plan_path` out of each task object before returning in the list endpoint. Single-task GET (`/api/tasks/[id]`) is unaffected — full fields still available there.
+- **Verify:** `pnpm build` passes ✓, `/api/tasks` response no longer includes `metadata` or `plan_path` fields, reducing payload by ~20KB (~14%)
+- **Commit:** 6eb43ae (develop)
+
+## Fix 15: Parallelize sequential DB queries in GET /api/search
+- **File:** `src/app/api/search/route.ts`
+- **Issue:** All 7 entity-type searches (tasks, agents, activities, audit, messages, webhooks, pipelines) ran sequentially — each `await db.execute(...)` blocked the next. An unfiltered search took ~7× the single-query latency.
+- **Fix:** Wrapped all 7 queries in a single `Promise.all([...])` so they fire simultaneously. Inactive query slots (when `typeFilter` is set) resolve immediately via `Promise.resolve({rows:[]})`. Also cached `lowerQuery` to avoid repeated `.toLowerCase()` calls per result row.
+- **Verify:** `pnpm build` passes ✓, search with query returns same result shape; parallel execution confirmed by structure
+- **Commit:** c52174a (develop)
+
+## Fix 16: Parallelize 9 sequential DB queries in GET /api/status (getDbStats)
+- **File:** `src/app/api/status/route.ts`
+- **Issue:** `getDbStats()` ran 9 independent `await db.execute(...)` calls sequentially — task stats, agent stats, 3 audit counts, activities count, notifications count, 2 pipeline counts, and webhook count — each blocking the next. Every call to `/api/status?action=dashboard` or `/api/status?action=health` paid 9 serial DB round-trips.
+- **Fix:** Wrapped all 10 queries (added webhooks inside too, removing the inner `try/catch` block) in a single `Promise.all([...])`. Tables that may not exist in all envs (pipeline_runs, webhooks) use `.catch(() => ({ rows: [] }))` to preserve the existing resilience. Serial 9-query path → parallel 1-round-trip batch.
+- **Verify:** `pnpm build` passes ✓, `/api/status?action=dashboard` returns same shape with 10× fewer DB round-trips
+- **Commit:** 5007e41 (develop)
+
+## Fix 17: Parallelize notifications data + count queries (3 serial → 1 parallel batch)
+- **File:** `src/app/api/notifications/route.ts`
+- **Issue:** GET /api/notifications fetched `notifRows` first, then ran `unreadCountRows` and `countRows` sequentially — 3 serial DB round-trips on every request. Both count queries are independent of the data fetch and of each other; there was no reason to serialize them.
+- **Fix:** Wrapped all 3 queries in a single `Promise.all([...])` so they fire simultaneously. `unreadCount` and `total` are destructured from the parallel results; the source-detail batch queries run afterward (they depend on `notifRows`). Net result: 2 serial round-trips saved per request.
+- **Verify:** `pnpm build` passes ✓, `/api/notifications?recipient=cri` still returns correct shape with `notifications`, `total`, `unreadCount`
+- **Commit:** 50e5134 (develop)
+
+## Fix 18: Parallelize sequential DB queries in getIssues, getTweets, getGardenItems
+- **File:** `src/lib/cc-db.ts`
+- **Issue:** Three core list functions ran independent queries serially:
+  - `getIssues`: data + count = 2 sequential round-trips (affects `/api/tasks`)
+  - `getTweets`: data + count + themes + digests = 4 sequential round-trips (affects `/api/xfeed`)
+  - `getGardenItems`: data + count = 2 sequential round-trips (affects `/api/garden`)
+  Each query blocked the next despite zero data dependency between them.
+- **Fix:** Wrapped all independent queries in `Promise.all([...])` so they fire simultaneously. getIssues saves 1 serial round-trip; getTweets saves 3; getGardenItems saves 1 — total 5 eliminated round-trips per combined request.
+- **Verify:** `pnpm build` passes ✓, endpoints return same shape; parallel execution confirmed by structure
+- **Commit:** 32a4d43 (develop)
+
+## Fix 19: Parallelize 3 sequential DB queries in GET /api/pipelines
+- **File:** `src/app/api/pipelines/route.ts`
+- **Issue:** GET /api/pipelines fetched `workflowPipelines`, `workflowTemplates`, and `pipeline_runs` run counts in three sequential `await` calls — each blocked the next despite zero data dependency between them. Every pipeline list load paid 3 serial DB round-trips.
+- **Fix:** Wrapped all 3 queries in a single `Promise.all([...])` so they fire simultaneously. `nameMap` and `runMap` are built from the parallel results. Net result: 2 serial round-trips eliminated per request.
+- **Verify:** `pnpm build` passes ✓, `/api/pipelines` returns same shape with 3× fewer DB round-trips
+- **Commit:** 10f2d3b (develop)

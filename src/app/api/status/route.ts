@@ -61,8 +61,32 @@ async function getDbStats() {
     const day = now - 86400
     const week = now - 7 * 86400
 
+    // Fire all independent DB queries in parallel — was 9 sequential round-trips
+    const [
+      taskStatsRows,
+      agentStatsRows,
+      auditDayRows,
+      auditWeekRows,
+      loginFailRows,
+      activityDayRows,
+      unreadNotifsRows,
+      pipelineActiveRows,
+      pipelineRecentRows,
+      webhookRows,
+    ] = await Promise.all([
+      db.execute(sql`SELECT status, COUNT(*) as count FROM tasks GROUP BY status`),
+      db.execute(sql`SELECT status, COUNT(*) as count FROM agents GROUP BY status`),
+      db.execute(sql`SELECT COUNT(*) as c FROM audit_log WHERE created_at > ${day}`),
+      db.execute(sql`SELECT COUNT(*) as c FROM audit_log WHERE created_at > ${week}`),
+      db.execute(sql`SELECT COUNT(*) as c FROM audit_log WHERE action = 'login_failed' AND created_at > ${day}`),
+      db.execute(sql`SELECT COUNT(*) as c FROM activities WHERE created_at > ${day}`),
+      db.execute(sql`SELECT COUNT(*) as c FROM notifications WHERE read_at IS NULL`),
+      db.execute(sql`SELECT COUNT(*) as c FROM pipeline_runs WHERE status = 'running'`).catch(() => ({ rows: [] })),
+      db.execute(sql`SELECT COUNT(*) as c FROM pipeline_runs WHERE created_at > ${day}`).catch(() => ({ rows: [] })),
+      db.execute(sql`SELECT COUNT(*) as c FROM webhooks`).catch(() => ({ rows: [] })),
+    ])
+
     // Task breakdown
-    const taskStatsRows = await db.execute(sql`SELECT status, COUNT(*) as count FROM tasks GROUP BY status`)
     const tasksByStatus: Record<string, number> = {}
     let totalTasks = 0
     for (const row of taskStatsRows.rows as any[]) {
@@ -71,7 +95,6 @@ async function getDbStats() {
     }
 
     // Agent breakdown
-    const agentStatsRows = await db.execute(sql`SELECT status, COUNT(*) as count FROM agents GROUP BY status`)
     const agentsByStatus: Record<string, number> = {}
     let totalAgents = 0
     for (const row of agentStatsRows.rows as any[]) {
@@ -79,28 +102,12 @@ async function getDbStats() {
       totalAgents += Number(row.count)
     }
 
-    // Audit events
-    const auditDayRows = await db.execute(sql`SELECT COUNT(*) as c FROM audit_log WHERE created_at > ${day}`)
-    const auditWeekRows = await db.execute(sql`SELECT COUNT(*) as c FROM audit_log WHERE created_at > ${week}`)
-    const loginFailRows = await db.execute(sql`SELECT COUNT(*) as c FROM audit_log WHERE action = 'login_failed' AND created_at > ${day}`)
+    // Pipeline counts (tables may not exist in all envs — caught above)
+    const pipelineActive = Number((pipelineActiveRows.rows[0] as any)?.c || 0)
+    const pipelineRecent = Number((pipelineRecentRows.rows[0] as any)?.c || 0)
+    const webhookCount = Number((webhookRows.rows[0] as any)?.c || 0)
 
-    // Activities (24h)
-    const activityDayRows = await db.execute(sql`SELECT COUNT(*) as c FROM activities WHERE created_at > ${day}`)
-
-    // Notifications (unread)
-    const unreadNotifsRows = await db.execute(sql`SELECT COUNT(*) as c FROM notifications WHERE read_at IS NULL`)
-
-    // Pipeline runs
-    let pipelineActive = 0
-    let pipelineRecent = 0
-    try {
-      const paRows = await db.execute(sql`SELECT COUNT(*) as c FROM pipeline_runs WHERE status = 'running'`)
-      const prRows = await db.execute(sql`SELECT COUNT(*) as c FROM pipeline_runs WHERE created_at > ${day}`)
-      pipelineActive = Number((paRows.rows[0] as any)?.c || 0)
-      pipelineRecent = Number((prRows.rows[0] as any)?.c || 0)
-    } catch {}
-
-    // Latest backup
+    // Latest backup (filesystem — keep synchronous)
     let latestBackup: { name: string; size: number; age_hours: number } | null = null
     try {
       const { readdirSync } = require('fs')
@@ -120,12 +127,6 @@ async function getDbStats() {
 
     let dbSizeBytes = 0
     try { dbSizeBytes = statSync(config.dbPath).size } catch {}
-
-    let webhookCount = 0
-    try {
-      const wRows = await db.execute(sql`SELECT COUNT(*) as c FROM webhooks`)
-      webhookCount = Number((wRows.rows[0] as any)?.c || 0)
-    } catch {}
 
     return {
       tasks: { total: totalTasks, byStatus: tasksByStatus },

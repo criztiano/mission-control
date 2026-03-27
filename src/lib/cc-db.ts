@@ -357,20 +357,22 @@ export async function getIssues(opts?: {
   }
 
   // Use raw SQL for the complex query with subqueries
-  const rows = await db.execute(sql`
-    SELECT i.*,
-      (SELECT MAX(c.created_at) FROM issue_comments c WHERE c.issue_id = i.id) AS last_comment_at,
-      (SELECT t.type FROM turns t WHERE t.task_id = i.id ORDER BY t.created_at DESC LIMIT 1) AS last_turn_type,
-      (SELECT t.author FROM turns t WHERE t.task_id = i.id ORDER BY t.created_at DESC LIMIT 1) AS last_turn_by
-    FROM issues i
-    WHERE ${whereClause}
-    ORDER BY COALESCE(i.last_turn_at, i.updated_at) DESC
-    LIMIT ${limit} OFFSET ${offset}
-  `);
-
-  const countRows = await db.execute(sql`
-    SELECT COUNT(*) as total FROM issues i WHERE ${whereClause}
-  `);
+  // Both queries are independent — run them in parallel
+  const [rows, countRows] = await Promise.all([
+    db.execute(sql`
+      SELECT i.*,
+        (SELECT MAX(c.created_at) FROM issue_comments c WHERE c.issue_id = i.id) AS last_comment_at,
+        (SELECT t.type FROM turns t WHERE t.task_id = i.id ORDER BY t.created_at DESC LIMIT 1) AS last_turn_type,
+        (SELECT t.author FROM turns t WHERE t.task_id = i.id ORDER BY t.created_at DESC LIMIT 1) AS last_turn_by
+      FROM issues i
+      WHERE ${whereClause}
+      ORDER BY COALESCE(i.last_turn_at, i.updated_at) DESC
+      LIMIT ${limit} OFFSET ${offset}
+    `),
+    db.execute(sql`
+      SELECT COUNT(*) as total FROM issues i WHERE ${whereClause}
+    `),
+  ]);
 
   const total = Number((countRows.rows[0] as any)?.total ?? 0);
   const issueRows = (rows.rows as any[]).map(r => ({
@@ -593,27 +595,27 @@ export async function getTweets(filters?: TweetFilters): Promise<{ tweets: CCTwe
     }
   }
 
-  const tweetRows = await db.execute(sql`
-    SELECT t.*, r.rating FROM tweets t
-    LEFT JOIN tweet_ratings r ON t.id = r.tweet_id
-    WHERE ${whereClause}
-    ORDER BY t.pinned DESC, t.scraped_at DESC
-    LIMIT ${limit} OFFSET ${offset}
-  `);
-
-  const countRows = await db.execute(sql`
-    SELECT COUNT(*) as total FROM tweets t
-    LEFT JOIN tweet_ratings r ON t.id = r.tweet_id
-    WHERE ${whereClause}
-  `);
-
-  const themeRows = await db.execute(sql`
-    SELECT DISTINCT theme FROM tweets WHERE theme IS NOT NULL AND theme != '' ORDER BY theme
-  `);
-
-  const digestRows = await db.execute(sql`
-    SELECT DISTINCT digest FROM tweets WHERE digest IS NOT NULL AND digest != '' ORDER BY digest DESC
-  `);
+  // All 4 queries are independent — run them in parallel
+  const [tweetRows, countRows, themeRows, digestRows] = await Promise.all([
+    db.execute(sql`
+      SELECT t.*, r.rating FROM tweets t
+      LEFT JOIN tweet_ratings r ON t.id = r.tweet_id
+      WHERE ${whereClause}
+      ORDER BY t.pinned DESC, t.scraped_at DESC
+      LIMIT ${limit} OFFSET ${offset}
+    `),
+    db.execute(sql`
+      SELECT COUNT(*) as total FROM tweets t
+      LEFT JOIN tweet_ratings r ON t.id = r.tweet_id
+      WHERE ${whereClause}
+    `),
+    db.execute(sql`
+      SELECT DISTINCT theme FROM tweets WHERE theme IS NOT NULL AND theme != '' ORDER BY theme
+    `),
+    db.execute(sql`
+      SELECT DISTINCT digest FROM tweets WHERE digest IS NOT NULL AND digest != '' ORDER BY digest DESC
+    `),
+  ]);
 
   const total = Number((countRows.rows[0] as any)?.total ?? 0);
   const tweetList = (tweetRows.rows as any[]).map(r => ({
@@ -834,12 +836,15 @@ export async function getGardenItems(filters?: GardenFilters): Promise<{ items: 
     whereClause = sql`${whereClause} AND (${garden.content} ILIKE ${term} OR ${garden.note} ILIKE ${term} OR ${garden.tags} ILIKE ${term})`;
   }
 
-  const rows = await db.execute(sql`
-    SELECT * FROM garden WHERE ${whereClause} ORDER BY saved_at DESC LIMIT ${limit} OFFSET ${offset}
-  `);
-  const countRows = await db.execute(sql`
-    SELECT COUNT(*) as total FROM garden WHERE ${whereClause}
-  `);
+  // Both queries are independent — run them in parallel
+  const [rows, countRows] = await Promise.all([
+    db.execute(sql`
+      SELECT * FROM garden WHERE ${whereClause} ORDER BY saved_at DESC LIMIT ${limit} OFFSET ${offset}
+    `),
+    db.execute(sql`
+      SELECT COUNT(*) as total FROM garden WHERE ${whereClause}
+    `),
+  ]);
 
   const total = Number((countRows.rows[0] as any)?.total ?? 0);
   const items = (rows.rows as any[]).map(r => ({
