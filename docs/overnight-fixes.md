@@ -159,3 +159,10 @@
 - **Fix:** Changed `db.insert(...).values(...)` → `.returning()` and `db.update(...).set(...)` → `.returning()` in both routes. The extra `db.select` queries were removed. Same response shape, one fewer DB round-trip per operation.
 - **Verify:** `pnpm build` passes ✓, POST /api/plans and PUT /api/plans/:id return the same plan object shape
 - **Commit:** 22c6ee2 (develop)
+
+## Fix 22: Merge getOpenBlockerIds+getBlockerDetails into single DB query in GET /api/tasks/[id]
+- **Files:** `src/lib/cc-db.ts`, `src/app/api/tasks/[id]/route.ts`
+- **Issue:** `GET /api/tasks/[id]` called `getOpenBlockerIds(blockerIds)` then `getBlockerDetails(blockerIds)` sequentially — two separate DB round-trips hitting the exact same `issues` table with the same `inArray(issues.id, blockerIds)` filter. One query's result was not needed by the other; they were purely serial with no dependency.
+- **Fix:** Added `getBlockerInfo(blockerIds)` to `cc-db.ts` — one query that returns both `details` (full rows) and `openIds` (Set of non-closed IDs), replacing the two standalone functions in the hot path. Also parallelized the `getProject` call using `Promise.all` alongside `getBlockerInfo` — saves another serial round-trip when `project_id` is set. Net: 2 serial round-trips → 1 parallel batch per task view.
+- **Verify:** `pnpm build` passes ✓, `GET /api/tasks/[id]` returns same shape with `is_blocked` and `blocker_details`
+- **Commit:** 37a1142 (develop)
