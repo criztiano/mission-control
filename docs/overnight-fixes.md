@@ -187,3 +187,10 @@
 - **Fix:** Changed `db.insert(...).returning({ id })` → `.returning()` (full row) and `await db.update(...)` → `await db.update(...).returning()` in all four files. Removed 7 post-write `db.select()` calls. Same response shape, one fewer DB round-trip per mutation.
 - **Verify:** `pnpm build` passes ✓, mutations return same row shape
 - **Commit:** 9225672 (develop)
+
+## Fix 25: Use .returning() in POST /api/agents — eliminate post-write SELECT round-trip
+- **File:** `src/app/api/agents/route.ts`
+- **Issue:** `POST /api/agents` called `db.insert(...).returning({ id })` to get just the ID, then immediately did `db.select().from(agents).where(eq(agents.id, agentId)).limit(1)` to get the full row — 2 round-trips for one create. The full row was needed for the event broadcast and response.
+- **Fix:** Changed `.returning({ id })` → `.returning()` (full row), removed the subsequent `db.select()` call. `createdAgent` is now taken directly from the insert result. `agentId` is derived from `createdAgent.id`. Net: 1 fewer DB round-trip per agent creation.
+- **Verify:** `pnpm build` passes ✓, POST /api/agents returns same agent shape
+- **Commit:** 87e9c0c (develop)
