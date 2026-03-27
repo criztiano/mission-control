@@ -258,3 +258,10 @@
 - **Fix:** `git merge develop --no-ff` into main and pushed. Vercel auto-deploys from main. 18 files changed, 285 insertions, 185 deletions.
 - **Verify:** `pnpm build` passes ✓ on develop before merge; all 24 commits now in production
 - **Commit:** fb0032a (main)
+
+## Fix 36: Eliminate redundant getIssue call after createTurn in POST /api/tasks/[id]/turns
+- **File:** `src/app/api/tasks/[id]/turns/route.ts`
+- **Issue:** After calling `createTurn(taskId, { assigned_to, ... })`, the route immediately called `await getIssue(taskId)` to retrieve `updatedIssue.assignee` for dispatch logic. But `createTurn` sets `issue.assignee = turn.assigned_to` — so the re-fetched value was always identical to the `assigned_to` already in scope. This is an unnecessary DB round-trip on the hottest path in the app (every agent handoff goes through POST /api/tasks/[id]/turns).
+- **Fix:** Replaced `const updatedIssue = await getIssue(taskId); const newAssignee = updatedIssue?.assignee || ''` with `const newAssignee = assigned_to` — `assigned_to` is authoritative since createTurn just persisted it. Net: 1 DB round-trip eliminated per turn creation.
+- **Verify:** `pnpm build` passes ✓, dispatch logic unchanged — `newAssignee` still the same value
+- **Commit:** 00f8094 (develop)
