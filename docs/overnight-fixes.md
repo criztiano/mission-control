@@ -57,3 +57,10 @@
 - **Fix:** Replaced `sql.raw(assigneesStr)` with `sql.join(assignees.map(a => sql\`${a}\`), sql\`, \`)` — each value is a proper bound parameter. Also removed unused `issues` schema import.
 - **Verify:** `pnpm build` passes ✓, no remaining `sql.raw()` calls in src/app/api/
 - **Commit:** c5e93dd (develop)
+
+## Fix 7: Audit log default limit 1000→50, max 10000→500
+- **File:** `src/app/api/audit/route.ts`
+- **Issue:** GET /api/audit defaulted to returning 1000 rows with no reasonable cap (max 10000). Production response was ~197KB for an unfiltered request — way too heavy for a default list endpoint.
+- **Fix:** Changed default `limit` from `1000` to `50`, max cap from `10000` to `500`. Full history can still be paginated via `?limit=500&offset=N`.
+- **Verify:** `pnpm build` passes ✓, `/api/audit` now returns 50 rows (~10KB) by default
+- **Commit:** c1dd353 (develop)
