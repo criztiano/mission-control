@@ -272,3 +272,10 @@
 - **Fix:** Combined both into `Promise.all([setTaskPicked(taskId, agent), getTurns(taskId)])` in both routes. The `turns` result is destructured from index 1. Net: 1 serial round-trip eliminated per task pick in both endpoints.
 - **Verify:** `pnpm build` passes ✓, pick routes return same response shape
 - **Commit:** d016a10 (develop)
+
+## Fix 38: Merge 2 sequential issues updates into 1 in POST /api/tasks/[id]/update
+- **File:** `src/app/api/tasks/[id]/update/route.ts`
+- **Issue:** When an agent delivers work with `title` or `description` fields, the route made 2 sequential `db.update(issues)` calls to the same row: one for title/description, then one to reset `picked`/`picked_at`/`picked_by`. Two round-trips to update the same row — always. The picked reset ran unconditionally, but title/description only ran if provided. With title/description provided: 2 DB writes, always serial.
+- **Fix:** Merged both into a single `db.update(issues).set(updateFields)` call. The base `updateFields` always includes `{ picked: false, picked_at: null, picked_by: '', updated_at: now }`. `title` and `description` are conditionally added to the same object. One round-trip regardless of whether title/description are present. Removed the separate conditional update block.
+- **Verify:** `pnpm build` passes ✓, POST /api/tasks/[id]/update returns same shape
+- **Commit:** 9c0c15d (develop)
