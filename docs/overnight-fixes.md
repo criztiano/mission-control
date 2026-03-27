@@ -251,3 +251,10 @@
 - **Fix:** Combined `agentRows` and `countRows` into a single `Promise.all([...])` at the top of the handler. `total` is now derived from the parallel count result. The now-redundant sequential `countRows` query at the bottom was removed. Net: 1 serial round-trip eliminated per GET /api/agents request.
 - **Verify:** `pnpm build` passes ✓, GET /api/agents returns same shape with `agents`, `total`, pagination
 - **Commit:** bdf0a3e (develop)
+
+## Fix 35: Merge develop→main — ship fixes 21-34 to production
+- **Files:** 18 files changed (activities, agents, alerts, chat/messages/[id], gateways, inbox, notifications, notifications/deliver, pipelines, plans, plans/[id], tasks/[id], tasks/[id]/turns, tasks/[id]/update, tasks/[id]/comments, workflows, cc-db.ts)
+- **Issue:** Production (main) was 24 commits behind develop. Fixes 21-34 — `.returning()` eliminations (plans insert/update, agents POST, pipelines POST/PUT, notifications mark-delivered, workflows, alerts, gateways, chat/messages PATCH), parallelization (notifications/deliver 3→1, createTurn 3→2 parallel, getTweetStats/getGardenStats/getInboxCounts, activities/stats, inbox, tasks/[id]/turns & comments GET, tasks/[id]/update POST, agents list count, PUT tasks/[id]) — were live on develop but not in production.
+- **Fix:** `git merge develop --no-ff` into main and pushed. Vercel auto-deploys from main. 18 files changed, 285 insertions, 185 deletions.
+- **Verify:** `pnpm build` passes ✓ on develop before merge; all 24 commits now in production
+- **Commit:** fb0032a (main)
