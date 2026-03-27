@@ -212,3 +212,14 @@
 - **Fix:** Replaced the 3 serial reads with a single `Promise.all([getIssue(taskId), getCurrentRound(taskId)])` at the top of the function. The `issue` result is reused for both author inference and status check — eliminating the duplicate `getIssue` call entirely. Net: 2 serial round-trips eliminated per turn creation.
 - **Verify:** `pnpm build` passes ✓, `createTurn` returns same Turn shape; issue+round fetched in one parallel batch
 - **Commit:** fef5e6c (develop)
+
+## Fix 29: Parallelize serial DB queries in getTweetStats, getGardenStats, getInboxCounts
+- **File:** `src/lib/cc-db.ts`
+- **Issue:** Three stats functions ran independent aggregate queries sequentially:
+  - `getTweetStats`: 4 serial queries (total, by_theme, by_rating, by_digest) — affects `/api/xfeed/stats`
+  - `getGardenStats`: 3 serial queries (total, byInterest, byType) — affects `/api/garden/stats`
+  - `getInboxCounts`: 3 serial queries (tasks, garden, xfeed) — affects `/api/inbox` counts
+  All queries within each function are fully independent aggregations with no data dependency between them.
+- **Fix:** Wrapped all queries in each function into a single `Promise.all([...])` so they fire simultaneously. Results destructured and mapped the same way — no logic change, just parallelism.
+- **Verify:** `pnpm build` passes ✓, all three functions return same shape with 3 fewer serial round-trips each
+- **Commit:** 906e5e1 (develop)
