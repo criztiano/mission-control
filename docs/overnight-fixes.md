@@ -99,3 +99,17 @@
 - **Fix:** `git merge develop --no-ff` into main and pushed. Vercel will auto-deploy from main.
 - **Verify:** `pnpm build` passes ✓ on develop before merge; 10 files changed, 299 insertions
 - **Commit:** a7e7dd3 (main)
+
+## Fix 14: Omit redundant `metadata` and `plan_path` from GET /api/tasks list view
+- **File:** `src/app/api/tasks/route.ts`
+- **Issue:** Each task in the list response included a `metadata` object (`{project_id, project_title, parent_id, schedule, source}`) that duplicated top-level fields already present, plus `plan_path` which is deprecated. At ~112 bytes of metadata per task × 157 tasks = 17.5KB of pure redundancy on every list fetch. Total list response was 145KB.
+- **Fix:** Destructured `metadata` and `plan_path` out of each task object before returning in the list endpoint. Single-task GET (`/api/tasks/[id]`) is unaffected — full fields still available there.
+- **Verify:** `pnpm build` passes ✓, `/api/tasks` response no longer includes `metadata` or `plan_path` fields, reducing payload by ~20KB (~14%)
+- **Commit:** 6eb43ae (develop)
+
+## Fix 15: Parallelize sequential DB queries in GET /api/search
+- **File:** `src/app/api/search/route.ts`
+- **Issue:** All 7 entity-type searches (tasks, agents, activities, audit, messages, webhooks, pipelines) ran sequentially — each `await db.execute(...)` blocked the next. An unfiltered search took ~7× the single-query latency.
+- **Fix:** Wrapped all 7 queries in a single `Promise.all([...])` so they fire simultaneously. Inactive query slots (when `typeFilter` is set) resolve immediately via `Promise.resolve({rows:[]})`. Also cached `lowerQuery` to avoid repeated `.toLowerCase()` calls per result row.
+- **Verify:** `pnpm build` passes ✓, search with query returns same result shape; parallel execution confirmed by structure
+- **Commit:** c52174a (develop)
