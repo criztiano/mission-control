@@ -44,6 +44,9 @@ export async function GET(request: NextRequest) {
 
     // Get task counts from issues table — single GROUP BY query instead of N queries
     const agentNames = agentRows.map(a => a.name.toLowerCase());
+    // NOTE: Drizzle expands JS arrays in sql`` as ($1,$2,...) — a record/tuple, NOT a text[].
+    // ANY(($1,$2,...)::text[]) fails with "cannot cast type record to text[]".
+    // Use IN with individual sql`` params instead.
     const taskStatsRows = agentNames.length > 0
       ? await db.execute(sql`
           SELECT
@@ -53,7 +56,7 @@ export async function GET(request: NextRequest) {
             SUM(CASE WHEN status = 'open' THEN 1 ELSE 0 END) as in_progress,
             SUM(CASE WHEN status = 'closed' THEN 1 ELSE 0 END) as completed
           FROM issues
-          WHERE LOWER(assignee) = ANY(${agentNames}::text[]) AND archived = false
+          WHERE LOWER(assignee) IN (${sql.join(agentNames.map(n => sql`${n}`), sql`, `)}) AND archived = false
           GROUP BY LOWER(assignee)
         `)
       : { rows: [] };
@@ -69,6 +72,10 @@ export async function GET(request: NextRequest) {
 
     const agentsWithStats = agentsWithParsedData.map(agent => ({
       ...agent,
+      // Truncate soul_content in list view — full text available via GET /api/agents/[id]
+      soul_content: agent.soul_content && agent.soul_content.length > 200
+        ? agent.soul_content.slice(0, 200) + '…'
+        : agent.soul_content,
       taskStats: taskStatsMap.get(agent.name.toLowerCase()) ?? {
         total: 0, assigned: 0, in_progress: 0, completed: 0,
       },

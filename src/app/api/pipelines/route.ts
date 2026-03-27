@@ -67,7 +67,7 @@ export async function POST(request: NextRequest) {
 
     // Validate template IDs
     const templateIds = steps.map((s: PipelineStep) => s.template_id)
-    const existingTemplates = await db.execute(sql`SELECT id FROM workflow_templates WHERE id = ANY(${templateIds})`)
+    const existingTemplates = await db.execute(sql`SELECT id FROM workflow_templates WHERE id IN (${sql.join(templateIds.map((id: number) => sql`${id}`), sql`, `)})`)
     if (existingTemplates.rows.length !== new Set(templateIds).size) {
       return NextResponse.json({ error: 'One or more template IDs not found' }, { status: 400 })
     }

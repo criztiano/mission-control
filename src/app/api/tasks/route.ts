@@ -53,6 +53,13 @@ export async function GET(request: NextRequest) {
       mapIssueToTask(issue, issue.project_id ? projectMap.get(issue.project_id) : undefined)
     );
 
+    // Truncate description in list view — full text is available via GET /api/tasks/[id]
+    for (const task of tasks) {
+      if (task.description && task.description.length > 200) {
+        task.description = task.description.slice(0, 200) + '…';
+      }
+    }
+
     const allBlockerIds = [...new Set(tasks.flatMap(t => t.blocked_by || []))];
     const openBlockers = await getOpenBlockerIds(allBlockerIds);
     for (const task of tasks) {
