@@ -137,21 +137,21 @@ async function handleStatsRequest(request: NextRequest) {
     const hours = parseInt(searchParams.get('hours') || '24');
     const since = Math.floor(Date.now() / 1000) - (hours * 3600);
 
-    const activityStatsRows = await db.execute(sql`
-      SELECT type, COUNT(*) as count FROM activities WHERE created_at > ${since}
-      GROUP BY type ORDER BY count DESC
-    `);
-
-    const activeActorsRows = await db.execute(sql`
-      SELECT actor, COUNT(*) as activity_count FROM activities WHERE created_at > ${since}
-      GROUP BY actor ORDER BY activity_count DESC LIMIT 10
-    `);
-
-    const timelineRows = await db.execute(sql`
-      SELECT (created_at / 3600) * 3600 as hour_bucket, COUNT(*) as count
-      FROM activities WHERE created_at > ${since}
-      GROUP BY hour_bucket ORDER BY hour_bucket ASC
-    `);
+    const [activityStatsRows, activeActorsRows, timelineRows] = await Promise.all([
+      db.execute(sql`
+        SELECT type, COUNT(*) as count FROM activities WHERE created_at > ${since}
+        GROUP BY type ORDER BY count DESC
+      `),
+      db.execute(sql`
+        SELECT actor, COUNT(*) as activity_count FROM activities WHERE created_at > ${since}
+        GROUP BY actor ORDER BY activity_count DESC LIMIT 10
+      `),
+      db.execute(sql`
+        SELECT (created_at / 3600) * 3600 as hour_bucket, COUNT(*) as count
+        FROM activities WHERE created_at > ${since}
+        GROUP BY hour_bucket ORDER BY hour_bucket ASC
+      `),
+    ]);
 
     return NextResponse.json({
       timeframe: `${hours} hours`,
