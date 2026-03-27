@@ -13,7 +13,7 @@ const nextConfig = {
 
     const csp = [
       `default-src 'self'`,
-      `script-src 'self' 'unsafe-inline'${googleEnabled ? ' https://accounts.google.com' : ''}`,
+      `script-src 'self' 'unsafe-inline' https://vercel.live${googleEnabled ? ' https://accounts.google.com' : ''}`,
       `style-src 'self' 'unsafe-inline'`,
       `connect-src *`,
       `img-src 'self' data: blob: https://pbs.twimg.com${googleEnabled ? ' https://*.googleusercontent.com https://lh3.googleusercontent.com' : ''}`,

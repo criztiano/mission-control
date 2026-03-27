@@ -4,7 +4,7 @@ import next from 'next'
 import { WebSocketServer, WebSocket } from 'ws'
 
 const dev = process.env.NODE_ENV !== 'production'
-const hostname = '0.0.0.0'
+const hostname = '127.0.0.1'
 const port = parseInt(process.env.PORT || '3333', 10)
 
 const gatewayHost = process.env.OPENCLAW_GATEWAY_HOST || '127.0.0.1'
