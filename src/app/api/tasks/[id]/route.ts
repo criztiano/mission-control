@@ -127,7 +127,12 @@ export async function PUT(
       return NextResponse.json({ error: 'No fields to update' }, { status: 400 });
     }
 
-    await db.update(issues).set(updateFields).where(eq(issues.id, issueId));
+    // Use .returning() to get the updated row directly — no post-write SELECT needed
+    const [updatedRow] = await db.update(issues).set(updateFields).where(eq(issues.id, issueId)).returning();
+    if (!updatedRow) {
+      return NextResponse.json({ error: 'Task not found after update' }, { status: 500 });
+    }
+    const updatedIssue = { ...updatedRow, archived: Boolean(updatedRow.archived), picked: Boolean(updatedRow.picked) } as import('@/lib/cc-db').CCIssue;
 
     // Track changes for activity log
     const changes: string[] = [];
@@ -140,23 +145,21 @@ export async function PUT(
       if (ccNewPriority !== ccOldPriority) changes.push(`priority: ${ccOldPriority} -> ${ccNewPriority}`);
     }
 
-    if (changes.length > 0) {
-      await db_helpers.logActivity(
-        'task_updated',
-        'task',
-        0,
-        getUserFromRequest(request)?.username || 'system',
-        `Task updated: ${changes.join(', ')}`,
-        { changes }
-      );
-    }
+    // Fire activity log + project lookup in parallel — both independent of each other
+    const [, projectRow] = await Promise.all([
+      changes.length > 0
+        ? db_helpers.logActivity(
+            'task_updated',
+            'task',
+            0,
+            getUserFromRequest(request)?.username || 'system',
+            `Task updated: ${changes.join(', ')}`,
+            { changes }
+          )
+        : Promise.resolve(),
+      updatedIssue.project_id ? getProject(updatedIssue.project_id) : Promise.resolve(undefined),
+    ]);
 
-    const updatedIssue = await getIssue(issueId);
-    if (!updatedIssue) {
-      return NextResponse.json({ error: 'Task not found after update' }, { status: 500 });
-    }
-
-    const projectRow = updatedIssue.project_id ? await getProject(updatedIssue.project_id) : undefined;
     const task = mapIssueToTask(updatedIssue, projectRow?.title);
 
     eventBus.broadcast('task.updated', task);

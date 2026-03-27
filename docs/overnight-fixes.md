@@ -230,3 +230,10 @@
 - **Fix:** Combined both into `Promise.all([getIssue(id), getTurns(id)])` and `Promise.all([getIssue(id), getIssueComments(id)])` respectively. The existence check still runs (if `issue` is null, 404 is returned) but now fires concurrently with the data fetch. Net: 1 serial round-trip eliminated per request on both endpoints.
 - **Verify:** `pnpm build` passes ✓, both endpoints return same shape
 - **Commit:** 25705b3 (develop)
+
+## Fix 32: Parallelize getIssue+getTurns in POST /api/tasks/[id]/update
+- **File:** `src/app/api/tasks/[id]/update/route.ts`
+- **Issue:** `getIssue(taskId)` then `getTurns(taskId)` ran sequentially — fully independent reads with no data dependency. This is the primary agent turn-delivery endpoint (used by every agent completing work), so the serial read added latency on every agent handoff cycle.
+- **Fix:** Combined into `Promise.all([getIssue(taskId), getTurns(taskId)])` — both queries fire simultaneously. The null check for `issue` still runs before using the result. Net: 1 serial DB round-trip eliminated per turn delivery.
+- **Verify:** `pnpm build` passes ✓, POST /api/tasks/[id]/update returns same shape
+- **Commit:** 8ccd9bf (develop)
