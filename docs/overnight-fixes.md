@@ -92,3 +92,10 @@
 - **Fix:** Added `await` before `logAuditEvent({...})` so errors surface properly and the audit record is committed before the export response is sent.
 - **Verify:** `pnpm build` passes ✓, no remaining un-awaited `logAuditEvent` calls in src/app/api/
 - **Commit:** 0d317cb (develop)
+
+## Fix 13: Merge develop→main — ship fixes 5–12 to production
+- **Files:** All files changed in fixes 5–12 (standup, projects, plans, audit, activities, tasks/pick, sessions/control, export, chat/conversations)
+- **Issue:** Production (main) was 13 commits behind develop. All overnight fixes (N+1 batching, audit limit 1000→50, plans content omission, sql.raw injection fix, missing awaits) were live on develop but not in production.
+- **Fix:** `git merge develop --no-ff` into main and pushed. Vercel will auto-deploy from main.
+- **Verify:** `pnpm build` passes ✓ on develop before merge; 10 files changed, 299 insertions
+- **Commit:** a7e7dd3 (main)
