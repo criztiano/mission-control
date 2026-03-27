@@ -223,3 +223,10 @@
 - **Fix:** Wrapped all queries in each function into a single `Promise.all([...])` so they fire simultaneously. Results destructured and mapped the same way — no logic change, just parallelism.
 - **Verify:** `pnpm build` passes ✓, all three functions return same shape with 3 fewer serial round-trips each
 - **Commit:** 906e5e1 (develop)
+
+## Fix 31: Parallelize getIssue+getTurns and getIssue+getIssueComments in task sub-routes
+- **Files:** `src/app/api/tasks/[id]/turns/route.ts`, `src/app/api/tasks/[id]/comments/route.ts`
+- **Issue:** Both GET handlers did a sequential `await getIssue(id)` then `await getTurns(id)` / `await getIssueComments(id)` — the existence check and the data fetch are fully independent queries hitting different tables, but each blocked the other. Every `/api/tasks/:id/turns` and `/api/tasks/:id/comments` GET paid 2 serial DB round-trips.
+- **Fix:** Combined both into `Promise.all([getIssue(id), getTurns(id)])` and `Promise.all([getIssue(id), getIssueComments(id)])` respectively. The existence check still runs (if `issue` is null, 404 is returned) but now fires concurrently with the data fetch. Net: 1 serial round-trip eliminated per request on both endpoints.
+- **Verify:** `pnpm build` passes ✓, both endpoints return same shape
+- **Commit:** 25705b3 (develop)
