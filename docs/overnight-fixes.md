@@ -194,3 +194,10 @@
 - **Fix:** Changed `.returning({ id })` → `.returning()` (full row), removed the subsequent `db.select()` call. `createdAgent` is now taken directly from the insert result. `agentId` is derived from `createdAgent.id`. Net: 1 fewer DB round-trip per agent creation.
 - **Verify:** `pnpm build` passes ✓, POST /api/agents returns same agent shape
 - **Commit:** 87e9c0c (develop)
+
+## Fix 26: Parallelize 3 sequential DB queries in GET /api/notifications/deliver
+- **File:** `src/app/api/notifications/deliver/route.ts`
+- **Issue:** GET /api/notifications/deliver fetched `statsRows`, then `recentRows`, then `pendingRows` in three sequential `await db.execute(...)` calls — each blocked the next despite zero data dependency between them. Every delivery status check paid 3 serial DB round-trips.
+- **Fix:** Wrapped all 3 queries in a single `Promise.all([...])` so they fire simultaneously. `stats` is destructured from the parallel results as before. Net result: 2 serial round-trips eliminated per GET request.
+- **Verify:** `pnpm build` passes ✓, GET /api/notifications/deliver returns same shape with `statistics`, `agents_with_pending`, `recent_deliveries`
+- **Commit:** 2cc5ecd (develop)
