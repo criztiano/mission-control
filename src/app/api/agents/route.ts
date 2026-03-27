@@ -159,9 +159,10 @@ export async function POST(request: NextRequest) {
       created_at: now,
       updated_at: now,
       config: JSON.stringify(finalConfig)
-    }).returning({ id: agents.id });
+    }).returning();
 
-    const agentId = result[0].id;
+    const createdAgent = result[0];
+    const agentId = createdAgent.id;
 
     await db_helpers.logActivity(
       'agent_created',
@@ -171,9 +172,6 @@ export async function POST(request: NextRequest) {
       `Created agent: ${name} (${finalRole})${template ? ` from template: ${template}` : ''}`,
       { name, role: finalRole, status, session_key, template: template || null }
     );
-
-    const createdRows = await db.select().from(agents).where(eq(agents.id, agentId)).limit(1);
-    const createdAgent = createdRows[0];
     const parsedAgent = {
       ...createdAgent,
       config: JSON.parse(createdAgent.config || '{}'),
