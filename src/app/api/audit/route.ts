@@ -31,13 +31,15 @@ export async function GET(request: NextRequest) {
 
   const whereClause = conditions.length > 0 ? and(...conditions) : undefined
 
-  const countRows = await db.select({ count: sql<number>`count(*)::int` }).from(auditLog).where(whereClause)
+  // Parallelize count + rows (independent queries)
+  const [countRows, rows] = await Promise.all([
+    db.select({ count: sql<number>`count(*)::int` }).from(auditLog).where(whereClause),
+    db.select().from(auditLog).where(whereClause)
+      .orderBy(sql`${auditLog.created_at} DESC`)
+      .limit(limit)
+      .offset(offset),
+  ])
   const total = countRows[0]?.count ?? 0
-
-  const rows = await db.select().from(auditLog).where(whereClause)
-    .orderBy(sql`${auditLog.created_at} DESC`)
-    .limit(limit)
-    .offset(offset)
 
   return NextResponse.json({
     events: rows.map((row) => ({
