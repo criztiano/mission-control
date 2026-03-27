@@ -50,13 +50,10 @@ export async function POST(request: NextRequest) {
       agent_role: agent_role || null,
       tags: JSON.stringify(tags),
       created_by: user?.username || 'system',
-    }).returning({ id: workflowTemplates.id })
+    }).returning()
 
-    const templateId = insertResult[0].id
-    await db_helpers.logActivity('workflow_created', 'workflow', templateId, user?.username || 'system', `Created workflow template: ${name}`)
-
-    const templateRows = await db.select().from(workflowTemplates).where(eq(workflowTemplates.id, templateId)).limit(1)
-    const template = templateRows[0]
+    const template = insertResult[0]
+    await db_helpers.logActivity('workflow_created', 'workflow', template.id, user?.username || 'system', `Created workflow template: ${name}`)
 
     return NextResponse.json({ template: { ...template, tags: template.tags ? JSON.parse(template.tags) : [] } }, { status: 201 })
   } catch (error) {
@@ -97,9 +94,7 @@ export async function PUT(request: NextRequest) {
       updateData.last_used_at = now
     }
 
-    await db.update(workflowTemplates).set(updateData).where(eq(workflowTemplates.id, id))
-
-    const updatedRows = await db.select().from(workflowTemplates).where(eq(workflowTemplates.id, id)).limit(1)
+    const updatedRows = await db.update(workflowTemplates).set(updateData).where(eq(workflowTemplates.id, id)).returning()
     const updated = updatedRows[0]
     return NextResponse.json({ template: { ...updated, tags: updated.tags ? JSON.parse(updated.tags) : [] } })
   } catch (error) {

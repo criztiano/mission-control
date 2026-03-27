@@ -145,3 +145,109 @@
 - **Fix:** Wrapped all 3 queries in a single `Promise.all([...])` so they fire simultaneously. `nameMap` and `runMap` are built from the parallel results. Net result: 2 serial round-trips eliminated per request.
 - **Verify:** `pnpm build` passes ✓, `/api/pipelines` returns same shape with 3× fewer DB round-trips
 - **Commit:** 10f2d3b (develop)
+
+## Fix 20: Merge develop→main — ship fixes 14–19 to production
+- **Files:** `src/app/api/tasks/route.ts`, `src/app/api/search/route.ts`, `src/app/api/status/route.ts`, `src/app/api/notifications/route.ts`, `src/app/api/pipelines/route.ts`, `src/lib/cc-db.ts`, `docs/overnight-fixes.md`
+- **Issue:** Production (main) was 9 commits behind develop. Fixes 14–19 — payload reduction (tasks metadata/plan_path removal, plans content omission), parallelization (search 7× faster, status 9 queries→1 round-trip, notifications 3→1 parallel batch, cc-db getIssues/getTweets/getGardenItems, pipelines) — were live on develop but not in production.
+- **Fix:** `git merge develop --no-ff` into main and pushed. Vercel auto-deploys from main. 7 files changed, 295 insertions.
+- **Verify:** `pnpm build` passes ✓ on develop before merge; all 9 commits now in production
+- **Commit:** bd63d2a (main)
+
+## Fix 21: Use .returning() in plans routes — eliminate post-write SELECT round-trips
+- **Files:** `src/app/api/plans/route.ts`, `src/app/api/plans/[id]/route.ts`
+- **Issue:** `POST /api/plans` did `db.insert(...)` then a separate `db.select().where(eq(plans.id, id)).limit(1)` to return the created plan — 2 round-trips for one create. `PUT /api/plans/[id]` did the same after `db.update(...)`. PostgreSQL supports `RETURNING` natively; Drizzle exposes it via `.returning()`.
+- **Fix:** Changed `db.insert(...).values(...)` → `.returning()` and `db.update(...).set(...)` → `.returning()` in both routes. The extra `db.select` queries were removed. Same response shape, one fewer DB round-trip per operation.
+- **Verify:** `pnpm build` passes ✓, POST /api/plans and PUT /api/plans/:id return the same plan object shape
+- **Commit:** 22c6ee2 (develop)
+
+## Fix 22: Merge getOpenBlockerIds+getBlockerDetails into single DB query in GET /api/tasks/[id]
+- **Files:** `src/lib/cc-db.ts`, `src/app/api/tasks/[id]/route.ts`
+- **Issue:** `GET /api/tasks/[id]` called `getOpenBlockerIds(blockerIds)` then `getBlockerDetails(blockerIds)` sequentially — two separate DB round-trips hitting the exact same `issues` table with the same `inArray(issues.id, blockerIds)` filter. One query's result was not needed by the other; they were purely serial with no dependency.
+- **Fix:** Added `getBlockerInfo(blockerIds)` to `cc-db.ts` — one query that returns both `details` (full rows) and `openIds` (Set of non-closed IDs), replacing the two standalone functions in the hot path. Also parallelized the `getProject` call using `Promise.all` alongside `getBlockerInfo` — saves another serial round-trip when `project_id` is set. Net: 2 serial round-trips → 1 parallel batch per task view.
+- **Verify:** `pnpm build` passes ✓, `GET /api/tasks/[id]` returns same shape with `is_blocked` and `blocker_details`
+- **Commit:** 37a1142 (develop)
+
+## Fix 24: Use .returning() in pipelines POST/PUT and notifications mark-delivered — eliminate post-write SELECT round-trips
+- **Files:** `src/app/api/pipelines/route.ts`, `src/app/api/notifications/route.ts`
+- **Issue:** Three mutations still had post-write SELECT round-trips:
+  - `POST /api/pipelines`: `db.insert(...).returning({id})` then `db.select().where(id)` to get the full row — 2 queries for 1 create
+  - `PUT /api/pipelines`: `db.update(...)` then `db.select().where(id)` to get the updated row — 2 queries for 1 update
+  - `POST /api/notifications` (mark-delivered action): `db.update(...).where(isNull(delivered_at))` then `db.select().where(delivered_at === now)` to get affected rows — 2 queries for 1 batch update
+- **Fix:** Changed all three to use `.returning()` — the full updated/inserted row(s) are returned directly from the write query. Removed 3 post-write `db.select()` calls. Same response shape, one fewer DB round-trip per operation.
+- **Verify:** `pnpm build` passes ✓, mutations return same row shape
+- **Commit:** 887d1c7 (develop)
+
+## Fix 23: Use .returning() in workflows/alerts/gateways/messages — eliminate post-write SELECT round-trips
+- **Files:** `src/app/api/workflows/route.ts`, `src/app/api/alerts/route.ts`, `src/app/api/gateways/route.ts`, `src/app/api/chat/messages/[id]/route.ts`
+- **Issue:** All four routes did a post-write `db.select()` after `db.insert()` or `db.update()` to get the written row back — 2 round-trips for one mutation. PostgreSQL supports `RETURNING` natively; Drizzle exposes it via `.returning()`.
+  - `workflows`: POST (insert → select) + PUT (update → select) = 2 extra queries
+  - `alerts`: POST (insert → select) + PUT (update → select) = 2 extra queries
+  - `gateways`: POST (insert → select) + PUT (update → select) = 2 extra queries
+  - `chat/messages/[id]`: PATCH (update → select) = 1 extra query
+- **Fix:** Changed `db.insert(...).returning({ id })` → `.returning()` (full row) and `await db.update(...)` → `await db.update(...).returning()` in all four files. Removed 7 post-write `db.select()` calls. Same response shape, one fewer DB round-trip per mutation.
+- **Verify:** `pnpm build` passes ✓, mutations return same row shape
+- **Commit:** 9225672 (develop)
+
+## Fix 25: Use .returning() in POST /api/agents — eliminate post-write SELECT round-trip
+- **File:** `src/app/api/agents/route.ts`
+- **Issue:** `POST /api/agents` called `db.insert(...).returning({ id })` to get just the ID, then immediately did `db.select().from(agents).where(eq(agents.id, agentId)).limit(1)` to get the full row — 2 round-trips for one create. The full row was needed for the event broadcast and response.
+- **Fix:** Changed `.returning({ id })` → `.returning()` (full row), removed the subsequent `db.select()` call. `createdAgent` is now taken directly from the insert result. `agentId` is derived from `createdAgent.id`. Net: 1 fewer DB round-trip per agent creation.
+- **Verify:** `pnpm build` passes ✓, POST /api/agents returns same agent shape
+- **Commit:** 87e9c0c (develop)
+
+## Fix 26: Parallelize 3 sequential DB queries in GET /api/notifications/deliver
+- **File:** `src/app/api/notifications/deliver/route.ts`
+- **Issue:** GET /api/notifications/deliver fetched `statsRows`, then `recentRows`, then `pendingRows` in three sequential `await db.execute(...)` calls — each blocked the next despite zero data dependency between them. Every delivery status check paid 3 serial DB round-trips.
+- **Fix:** Wrapped all 3 queries in a single `Promise.all([...])` so they fire simultaneously. `stats` is destructured from the parallel results as before. Net result: 2 serial round-trips eliminated per GET request.
+- **Verify:** `pnpm build` passes ✓, GET /api/notifications/deliver returns same shape with `statistics`, `agents_with_pending`, `recent_deliveries`
+- **Commit:** 2cc5ecd (develop)
+
+## Fix 27: Parallelize getIssue + getCurrentRound in createTurn — 3 serial reads → 1 parallel batch
+- **File:** `src/lib/cc-db.ts`
+- **Issue:** `createTurn` made 3 serial DB reads before writing:
+  1. `getIssue(taskId)` — to infer author
+  2. `getCurrentRound(taskId)` — to get current max round number
+  3. `getIssue(taskId)` again — to check if task is closed before reassigning
+  All three ran sequentially despite reads 1+2 being fully independent. This is the hottest write path in the app — every turn creation (agent handoffs, plan approvals, review cycles) paid 3 serial DB round-trips before the insert.
+- **Fix:** Replaced the 3 serial reads with a single `Promise.all([getIssue(taskId), getCurrentRound(taskId)])` at the top of the function. The `issue` result is reused for both author inference and status check — eliminating the duplicate `getIssue` call entirely. Net: 2 serial round-trips eliminated per turn creation.
+- **Verify:** `pnpm build` passes ✓, `createTurn` returns same Turn shape; issue+round fetched in one parallel batch
+- **Commit:** fef5e6c (develop)
+
+## Fix 29: Parallelize serial DB queries in getTweetStats, getGardenStats, getInboxCounts
+- **File:** `src/lib/cc-db.ts`
+- **Issue:** Three stats functions ran independent aggregate queries sequentially:
+  - `getTweetStats`: 4 serial queries (total, by_theme, by_rating, by_digest) — affects `/api/xfeed/stats`
+  - `getGardenStats`: 3 serial queries (total, byInterest, byType) — affects `/api/garden/stats`
+  - `getInboxCounts`: 3 serial queries (tasks, garden, xfeed) — affects `/api/inbox` counts
+  All queries within each function are fully independent aggregations with no data dependency between them.
+- **Fix:** Wrapped all queries in each function into a single `Promise.all([...])` so they fire simultaneously. Results destructured and mapped the same way — no logic change, just parallelism.
+- **Verify:** `pnpm build` passes ✓, all three functions return same shape with 3 fewer serial round-trips each
+- **Commit:** 906e5e1 (develop)
+
+## Fix 31: Parallelize getIssue+getTurns and getIssue+getIssueComments in task sub-routes
+- **Files:** `src/app/api/tasks/[id]/turns/route.ts`, `src/app/api/tasks/[id]/comments/route.ts`
+- **Issue:** Both GET handlers did a sequential `await getIssue(id)` then `await getTurns(id)` / `await getIssueComments(id)` — the existence check and the data fetch are fully independent queries hitting different tables, but each blocked the other. Every `/api/tasks/:id/turns` and `/api/tasks/:id/comments` GET paid 2 serial DB round-trips.
+- **Fix:** Combined both into `Promise.all([getIssue(id), getTurns(id)])` and `Promise.all([getIssue(id), getIssueComments(id)])` respectively. The existence check still runs (if `issue` is null, 404 is returned) but now fires concurrently with the data fetch. Net: 1 serial round-trip eliminated per request on both endpoints.
+- **Verify:** `pnpm build` passes ✓, both endpoints return same shape
+- **Commit:** 25705b3 (develop)
+
+## Fix 32: Parallelize getIssue+getTurns in POST /api/tasks/[id]/update
+- **File:** `src/app/api/tasks/[id]/update/route.ts`
+- **Issue:** `getIssue(taskId)` then `getTurns(taskId)` ran sequentially — fully independent reads with no data dependency. This is the primary agent turn-delivery endpoint (used by every agent completing work), so the serial read added latency on every agent handoff cycle.
+- **Fix:** Combined into `Promise.all([getIssue(taskId), getTurns(taskId)])` — both queries fire simultaneously. The null check for `issue` still runs before using the result. Net: 1 serial DB round-trip eliminated per turn delivery.
+- **Verify:** `pnpm build` passes ✓, POST /api/tasks/[id]/update returns same shape
+- **Commit:** 8ccd9bf (develop)
+
+## Fix 33: Use .returning() in PUT /api/tasks/[id] — eliminate post-write SELECT + parallelize logActivity+getProject
+- **File:** `src/app/api/tasks/[id]/route.ts`
+- **Issue:** `PUT /api/tasks/[id]` did `db.update(issues).set(updateFields)` then immediately `await getIssue(issueId)` to get the updated row back — a completely unnecessary post-write SELECT since the updated values are already known. Then `getProject(updatedIssue.project_id)` ran serially after that. This is one of the most frequently called mutation endpoints (every agent task update, every UI field edit).
+- **Fix:** Replaced the post-write `getIssue` with `db.update(...).returning()` — the updated row is returned directly by PostgreSQL with no extra round-trip. Cast the result to `CCIssue` to satisfy TypeScript. Also wrapped `logActivity` and `getProject` in a single `Promise.all` — they're fully independent of each other. Net: 2 serial DB round-trips eliminated per task update.
+- **Verify:** `pnpm build` passes ✓, `PUT /api/tasks/[id]` returns same task shape
+- **Commit:** bd72a2c (develop)
+
+## Fix 34: Parallelize agentRows + countRows in GET /api/agents
+- **File:** `src/app/api/agents/route.ts`
+- **Issue:** `GET /api/agents` fetched `agentRows` (paginated data) first, then ran `countRows` (total count) sequentially after all data processing — a completely independent query that had no data dependency on `agentRows`. Every agents list load paid 2 serial DB round-trips despite both queries hitting the same table with the same filter conditions.
+- **Fix:** Combined `agentRows` and `countRows` into a single `Promise.all([...])` at the top of the handler. `total` is now derived from the parallel count result. The now-redundant sequential `countRows` query at the bottom was removed. Net: 1 serial round-trip eliminated per GET /api/agents request.
+- **Verify:** `pnpm build` passes ✓, GET /api/agents returns same shape with `agents`, `total`, pagination
+- **Commit:** bdf0a3e (develop)

@@ -137,31 +137,31 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
     const agent = searchParams.get('agent');
 
-    const statsRows = await db.execute(sql`
-      SELECT
-        COUNT(*) as total,
-        SUM(CASE WHEN delivered_at IS NULL THEN 1 ELSE 0 END) as undelivered,
-        SUM(CASE WHEN delivered_at IS NOT NULL THEN 1 ELSE 0 END) as delivered
-      FROM notifications
-      ${agent ? sql`WHERE recipient = ${agent}` : sql``}
-    `)
+    const [statsRows, recentRows, pendingRows] = await Promise.all([
+      db.execute(sql`
+        SELECT
+          COUNT(*) as total,
+          SUM(CASE WHEN delivered_at IS NULL THEN 1 ELSE 0 END) as undelivered,
+          SUM(CASE WHEN delivered_at IS NOT NULL THEN 1 ELSE 0 END) as delivered
+        FROM notifications
+        ${agent ? sql`WHERE recipient = ${agent}` : sql``}
+      `),
+      db.execute(sql`
+        SELECT recipient, type, title, delivered_at, created_at
+        FROM notifications WHERE delivered_at IS NOT NULL
+        ${agent ? sql`AND recipient = ${agent}` : sql``}
+        ORDER BY delivered_at DESC LIMIT 10
+      `),
+      db.execute(sql`
+        SELECT n.recipient, a.session_key, COUNT(*) as pending_count
+        FROM notifications n
+        LEFT JOIN agents a ON n.recipient = a.name
+        WHERE n.delivered_at IS NULL
+        GROUP BY n.recipient, a.session_key
+        ORDER BY pending_count DESC
+      `),
+    ])
     const stats = statsRows.rows[0] as any
-
-    const recentRows = await db.execute(sql`
-      SELECT recipient, type, title, delivered_at, created_at
-      FROM notifications WHERE delivered_at IS NOT NULL
-      ${agent ? sql`AND recipient = ${agent}` : sql``}
-      ORDER BY delivered_at DESC LIMIT 10
-    `)
-
-    const pendingRows = await db.execute(sql`
-      SELECT n.recipient, a.session_key, COUNT(*) as pending_count
-      FROM notifications n
-      LEFT JOIN agents a ON n.recipient = a.name
-      WHERE n.delivered_at IS NULL
-      GROUP BY n.recipient, a.session_key
-      ORDER BY pending_count DESC
-    `)
 
     const total = Number(stats?.total || 0)
     const delivered = Number(stats?.delivered || 0)

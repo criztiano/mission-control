@@ -25,12 +25,10 @@ export async function GET(
   try {
     const { id: taskId } = await params;
 
-    const issue = await getIssue(taskId);
+    const [issue, turns] = await Promise.all([getIssue(taskId), getTurns(taskId)]);
     if (!issue) {
       return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     }
-
-    const turns = await getTurns(taskId);
 
     return NextResponse.json({ turns, total: turns.length });
   } catch (error) {

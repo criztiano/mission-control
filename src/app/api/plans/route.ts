@@ -59,7 +59,7 @@ export async function POST(request: NextRequest) {
     const id = randomUUID()
     const now = new Date().toISOString()
 
-    await db.insert(plans).values({
+    const inserted = await db.insert(plans).values({
       id,
       title: title.trim(),
       content: content.trim(),
@@ -70,14 +70,13 @@ export async function POST(request: NextRequest) {
       responses: '{}',
       created_at: now,
       updated_at: now,
-    })
+    }).returning()
 
     if (task_id) {
       await db.update(issues).set({ plan_id: id, updated_at: now }).where(eq(issues.id, task_id))
     }
 
-    const planRows = await db.select().from(plans).where(eq(plans.id, id)).limit(1)
-    const plan = planRows[0] as CCPlan
+    const plan = inserted[0] as CCPlan
 
     logger.info({ planId: id, title, author }, 'Created plan')
     return NextResponse.json({ plan }, { status: 201 })

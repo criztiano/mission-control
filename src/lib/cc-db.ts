@@ -192,14 +192,16 @@ export async function createTurn(
   const now = new Date().toISOString();
   const linksJson = JSON.stringify(turn.links || []);
 
-  // Infer author from current issue assignee if not provided
-  const issue = await getIssue(taskId);
+  // Fetch issue + current round in parallel — single batch, no serial reads
+  const [issue, currentMax] = await Promise.all([
+    getIssue(taskId),
+    getCurrentRound(taskId),
+  ]);
+
   const turnAuthor = turn.author || issue?.assignee || 'system';
 
   // Note handling — kept for backward compat
   if (turn.type === 'note') {
-    const currentMax = await getCurrentRound(taskId);
-
     await db.update(issues).set({ last_turn_at: now, updated_at: now }).where(eq(issues.id, taskId));
 
     await db.insert(turnsTable).values({
@@ -228,12 +230,10 @@ export async function createTurn(
   }
 
   // Unified logic: every turn reassigns, resets picked, reopens if closed/done
-  const currentMax = await getCurrentRound(taskId);
   const roundNumber = (currentMax ?? 0) + 1;
 
-  // Update issue: reassign, reset picked, reopen if closed
-  const issueRow = await getIssue(taskId);
-  const newStatus = issueRow && issueRow.status === 'closed' ? 'open' : (issueRow?.status ?? 'open');
+  // Reuse already-fetched issue row — no extra getIssue call needed
+  const newStatus = issue && issue.status === 'closed' ? 'open' : (issue?.status ?? 'open');
 
   await db.update(issues).set({
     assignee: turn.assigned_to,
@@ -519,6 +519,25 @@ export async function getBlockerDetails(blockerIds: string[]): Promise<Array<{ i
   return rows as Array<{ id: string; title: string; status: string }>;
 }
 
+/**
+ * Single-query replacement for getOpenBlockerIds + getBlockerDetails.
+ * Returns both blocker details and the set of open (non-closed) blocker IDs
+ * with one DB round-trip instead of two.
+ */
+export async function getBlockerInfo(blockerIds: string[]): Promise<{
+  details: Array<{ id: string; title: string; status: string }>;
+  openIds: Set<string>;
+}> {
+  if (blockerIds.length === 0) return { details: [], openIds: new Set() };
+  const rows = await db
+    .select({ id: issues.id, title: issues.title, status: issues.status })
+    .from(issues)
+    .where(inArray(issues.id, blockerIds));
+  const details = rows as Array<{ id: string; title: string; status: string }>;
+  const openIds = new Set(details.filter(r => r.status !== 'closed').map(r => r.id));
+  return { details, openIds };
+}
+
 // --- Tweet types ---
 
 export type TweetRating = 'fire' | 'meh' | 'noise';
@@ -651,24 +670,21 @@ export async function triageUpdate(id: string, triageStatus: string): Promise<vo
 }
 
 export async function getTweetStats(): Promise<{ by_theme: Record<string, number>; by_rating: Record<string, number>; by_digest: Record<string, number>; total: number }> {
-  const totalRows = await db.execute(sql`SELECT COUNT(*) as c FROM tweets`);
+  const [totalRows, themeRows, ratingRows, digestRows] = await Promise.all([
+    db.execute(sql`SELECT COUNT(*) as c FROM tweets`),
+    db.execute(sql`SELECT theme, COUNT(*) as c FROM tweets WHERE theme IS NOT NULL AND theme != '' GROUP BY theme`),
+    db.execute(sql`SELECT r.rating, COUNT(*) as c FROM tweet_ratings r GROUP BY r.rating`),
+    db.execute(sql`SELECT digest, COUNT(*) as c FROM tweets WHERE digest IS NOT NULL AND digest != '' GROUP BY digest ORDER BY digest DESC LIMIT 20`),
+  ]);
+
   const total = Number((totalRows.rows[0] as any)?.c ?? 0);
 
-  const themeRows = await db.execute(sql`
-    SELECT theme, COUNT(*) as c FROM tweets WHERE theme IS NOT NULL AND theme != '' GROUP BY theme
-  `);
   const by_theme: Record<string, number> = {};
   for (const r of themeRows.rows as any[]) by_theme[r.theme] = Number(r.c);
 
-  const ratingRows = await db.execute(sql`
-    SELECT r.rating, COUNT(*) as c FROM tweet_ratings r GROUP BY r.rating
-  `);
   const by_rating: Record<string, number> = {};
   for (const r of ratingRows.rows as any[]) by_rating[r.rating] = Number(r.c);
 
-  const digestRows = await db.execute(sql`
-    SELECT digest, COUNT(*) as c FROM tweets WHERE digest IS NOT NULL AND digest != '' GROUP BY digest ORDER BY digest DESC LIMIT 20
-  `);
   const by_digest: Record<string, number> = {};
   for (const r of digestRows.rows as any[]) by_digest[r.digest] = Number(r.c);
 
@@ -871,18 +887,17 @@ export async function deleteGardenItem(id: string): Promise<void> {
 }
 
 export async function getGardenStats(): Promise<GardenStatsResult> {
-  const totalRows = await db.execute(sql`SELECT COUNT(*) as c FROM garden`);
+  const [totalRows, interestRows, typeRows] = await Promise.all([
+    db.execute(sql`SELECT COUNT(*) as c FROM garden`),
+    db.execute(sql`SELECT interest, COUNT(*) as c FROM garden WHERE interest IS NOT NULL AND interest != '' GROUP BY interest`),
+    db.execute(sql`SELECT type, COUNT(*) as c FROM garden WHERE type IS NOT NULL AND type != '' GROUP BY type`),
+  ]);
+
   const total = Number((totalRows.rows[0] as any)?.c ?? 0);
 
-  const interestRows = await db.execute(sql`
-    SELECT interest, COUNT(*) as c FROM garden WHERE interest IS NOT NULL AND interest != '' GROUP BY interest
-  `);
   const byInterest: Record<string, number> = {};
   for (const r of interestRows.rows as any[]) byInterest[r.interest] = Number(r.c);
 
-  const typeRows = await db.execute(sql`
-    SELECT type, COUNT(*) as c FROM garden WHERE type IS NOT NULL AND type != '' GROUP BY type
-  `);
   const byType: Record<string, number> = {};
   for (const r of typeRows.rows as any[]) byType[r.type] = Number(r.c);
 
@@ -914,24 +929,22 @@ export interface InboxCounts {
 }
 
 export async function getInboxCounts(): Promise<InboxCounts> {
-  const taskRows = await db.execute(sql`
-    SELECT COUNT(*) as c FROM issues WHERE status = 'draft' AND archived = false
-  `);
-  const taskCount = Number((taskRows.rows[0] as any)?.c ?? 0);
+  const [taskRows, gardenRows, xfeedRows] = await Promise.all([
+    db.execute(sql`SELECT COUNT(*) as c FROM issues WHERE status = 'draft' AND archived = false`),
+    db.execute(sql`SELECT COUNT(*) as c FROM garden WHERE temporal = 'now'`),
+    db.execute(sql`
+      SELECT COUNT(*) as c FROM tweets t
+      LEFT JOIN tweet_ratings r ON t.id = r.tweet_id
+      WHERE r.tweet_id IS NULL AND t.triage_status = 'pending'
+    `),
+  ]);
 
-  const gardenRows = await db.execute(sql`
-    SELECT COUNT(*) as c FROM garden WHERE temporal = 'now'
-  `);
-  const gardenCount = Number((gardenRows.rows[0] as any)?.c ?? 0);
-
-  const xfeedRows = await db.execute(sql`
-    SELECT COUNT(*) as c FROM tweets t
-    LEFT JOIN tweet_ratings r ON t.id = r.tweet_id
-    WHERE r.tweet_id IS NULL AND t.triage_status = 'pending'
-  `);
-  const xfeedCount = Number((xfeedRows.rows[0] as any)?.c ?? 0);
-
-  return { task: taskCount, garden: gardenCount, xfeed: xfeedCount, notification: 0 };
+  return {
+    task: Number((taskRows.rows[0] as any)?.c ?? 0),
+    garden: Number((gardenRows.rows[0] as any)?.c ?? 0),
+    xfeed: Number((xfeedRows.rows[0] as any)?.c ?? 0),
+    notification: 0,
+  };
 }
 
 export async function getInboxItems(source?: InboxSourceType, limit = 50): Promise<InboxItem[]> {

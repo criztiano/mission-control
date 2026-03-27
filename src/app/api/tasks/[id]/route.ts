@@ -9,8 +9,7 @@ import {
   getProject,
   mapIssueToTask,
   PRIORITY_FROM_MC,
-  getOpenBlockerIds,
-  getBlockerDetails,
+  getBlockerInfo,
   type IssueStatus,
 } from '@/lib/cc-db';
 import { db } from '@/db/client';
@@ -38,13 +37,19 @@ export async function GET(
       return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     }
 
-    const projectRow = issue.project_id ? await getProject(issue.project_id) : undefined;
+    const [projectRow, blockerInfoResult] = await Promise.all([
+      issue.project_id ? getProject(issue.project_id) : Promise.resolve(undefined),
+      // blockerIds must come from the mapped task — compute them after mapIssueToTask
+      // We parse blocked_by early so both queries can fire in parallel
+      (() => {
+        let ids: string[] = [];
+        try { ids = JSON.parse(issue.blocked_by || '[]'); } catch { /* ignore */ }
+        return ids.length > 0 ? getBlockerInfo(ids) : Promise.resolve({ details: [], openIds: new Set<string>() });
+      })(),
+    ]);
     const task = mapIssueToTask(issue, projectRow?.title);
-
-    const blockerIds = task.blocked_by || [];
-    const openBlockers = await getOpenBlockerIds(blockerIds);
-    (task as any).is_blocked = blockerIds.some((id: string) => openBlockers.has(id));
-    (task as any).blocker_details = await getBlockerDetails(blockerIds);
+    (task as any).is_blocked = (task.blocked_by || []).some((id: string) => blockerInfoResult.openIds.has(id));
+    (task as any).blocker_details = blockerInfoResult.details;
 
     return NextResponse.json({ task });
   } catch (error) {
@@ -122,7 +127,12 @@ export async function PUT(
       return NextResponse.json({ error: 'No fields to update' }, { status: 400 });
     }
 
-    await db.update(issues).set(updateFields).where(eq(issues.id, issueId));
+    // Use .returning() to get the updated row directly — no post-write SELECT needed
+    const [updatedRow] = await db.update(issues).set(updateFields).where(eq(issues.id, issueId)).returning();
+    if (!updatedRow) {
+      return NextResponse.json({ error: 'Task not found after update' }, { status: 500 });
+    }
+    const updatedIssue = { ...updatedRow, archived: Boolean(updatedRow.archived), picked: Boolean(updatedRow.picked) } as import('@/lib/cc-db').CCIssue;
 
     // Track changes for activity log
     const changes: string[] = [];
@@ -135,23 +145,21 @@ export async function PUT(
       if (ccNewPriority !== ccOldPriority) changes.push(`priority: ${ccOldPriority} -> ${ccNewPriority}`);
     }
 
-    if (changes.length > 0) {
-      await db_helpers.logActivity(
-        'task_updated',
-        'task',
-        0,
-        getUserFromRequest(request)?.username || 'system',
-        `Task updated: ${changes.join(', ')}`,
-        { changes }
-      );
-    }
+    // Fire activity log + project lookup in parallel — both independent of each other
+    const [, projectRow] = await Promise.all([
+      changes.length > 0
+        ? db_helpers.logActivity(
+            'task_updated',
+            'task',
+            0,
+            getUserFromRequest(request)?.username || 'system',
+            `Task updated: ${changes.join(', ')}`,
+            { changes }
+          )
+        : Promise.resolve(),
+      updatedIssue.project_id ? getProject(updatedIssue.project_id) : Promise.resolve(undefined),
+    ]);
 
-    const updatedIssue = await getIssue(issueId);
-    if (!updatedIssue) {
-      return NextResponse.json({ error: 'Task not found after update' }, { status: 500 });
-    }
-
-    const projectRow = updatedIssue.project_id ? await getProject(updatedIssue.project_id) : undefined;
     const task = mapIssueToTask(updatedIssue, projectRow?.title);
 
     eventBus.broadcast('task.updated', task);

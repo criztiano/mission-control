@@ -34,12 +34,10 @@ export async function POST(
       return NextResponse.json({ error: 'report is required — describe what you did' }, { status: 400 });
     }
 
-    const issue = await getIssue(taskId);
+    const [issue, existingTurns] = await Promise.all([getIssue(taskId), getTurns(taskId)]);
     if (!issue) {
       return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     }
-
-    const existingTurns = await getTurns(taskId);
     const hasDescription = issue.description && issue.description.trim().length > 0;
 
     if (existingTurns.length === 0 && !hasDescription) {

@@ -26,12 +26,11 @@ export async function GET(
   try {
     const { id: issueId } = await params;
 
-    const issue = await getIssue(issueId);
+    const [issue, rawComments] = await Promise.all([getIssue(issueId), getIssueComments(issueId)]);
     if (!issue) {
       return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     }
 
-    const rawComments = await getIssueComments(issueId);
     const comments = rawComments.map(mapCCComment);
 
     return NextResponse.json({ comments, total: comments.length });

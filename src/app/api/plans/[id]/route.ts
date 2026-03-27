@@ -64,7 +64,7 @@ export async function PUT(
     const now = new Date().toISOString()
     updateFields.updated_at = now
 
-    await db.update(plans).set(updateFields).where(eq(plans.id, id))
+    const updatedRows = await db.update(plans).set(updateFields).where(eq(plans.id, id)).returning()
 
     // If task_id changed, update issues
     if (task_id !== undefined) {
@@ -76,7 +76,6 @@ export async function PUT(
       }
     }
 
-    const updatedRows = await db.select().from(plans).where(eq(plans.id, id)).limit(1)
     const updated = updatedRows[0] as CCPlan
     let responses: Record<string, unknown> = {}
     try { responses = JSON.parse(updated.responses || '{}') } catch {}
