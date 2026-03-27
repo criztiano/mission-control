@@ -62,11 +62,16 @@ export async function GET(request: NextRequest) {
 
     const allBlockerIds = [...new Set(tasks.flatMap(t => t.blocked_by || []))];
     const openBlockers = await getOpenBlockerIds(allBlockerIds);
-    for (const task of tasks) {
-      (task as any).is_blocked = (task.blocked_by || []).some((id: string) => openBlockers.has(id));
-    }
 
-    return NextResponse.json({ tasks, total, page: Math.floor(offset / limit) + 1, limit });
+    // Strip redundant fields from list view — metadata duplicates top-level fields already present
+    // (project_id, project_title, parent_id), plan_path is deprecated. Both save ~20KB per response.
+    const listTasks = tasks.map((task) => {
+      const { metadata: _metadata, plan_path: _planPath, ...rest } = task as any;
+      rest.is_blocked = (task.blocked_by || []).some((id: string) => openBlockers.has(id));
+      return rest;
+    });
+
+    return NextResponse.json({ tasks: listTasks, total, page: Math.floor(offset / limit) + 1, limit });
   } catch (error) {
     logger.error({ err: error }, 'GET /api/tasks error');
     return NextResponse.json({ error: 'Failed to fetch tasks' }, { status: 500 });
