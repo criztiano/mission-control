@@ -145,3 +145,10 @@
 - **Fix:** Wrapped all 3 queries in a single `Promise.all([...])` so they fire simultaneously. `nameMap` and `runMap` are built from the parallel results. Net result: 2 serial round-trips eliminated per request.
 - **Verify:** `pnpm build` passes ✓, `/api/pipelines` returns same shape with 3× fewer DB round-trips
 - **Commit:** 10f2d3b (develop)
+
+## Fix 20: Merge develop→main — ship fixes 14–19 to production
+- **Files:** `src/app/api/tasks/route.ts`, `src/app/api/search/route.ts`, `src/app/api/status/route.ts`, `src/app/api/notifications/route.ts`, `src/app/api/pipelines/route.ts`, `src/lib/cc-db.ts`, `docs/overnight-fixes.md`
+- **Issue:** Production (main) was 9 commits behind develop. Fixes 14–19 — payload reduction (tasks metadata/plan_path removal, plans content omission), parallelization (search 7× faster, status 9 queries→1 round-trip, notifications 3→1 parallel batch, cc-db getIssues/getTweets/getGardenItems, pipelines) — were live on develop but not in production.
+- **Fix:** `git merge develop --no-ff` into main and pushed. Vercel auto-deploys from main. 7 files changed, 295 insertions.
+- **Verify:** `pnpm build` passes ✓ on develop before merge; all 9 commits now in production
+- **Commit:** bd63d2a (main)
