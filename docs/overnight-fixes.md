@@ -166,3 +166,24 @@
 - **Fix:** Added `getBlockerInfo(blockerIds)` to `cc-db.ts` — one query that returns both `details` (full rows) and `openIds` (Set of non-closed IDs), replacing the two standalone functions in the hot path. Also parallelized the `getProject` call using `Promise.all` alongside `getBlockerInfo` — saves another serial round-trip when `project_id` is set. Net: 2 serial round-trips → 1 parallel batch per task view.
 - **Verify:** `pnpm build` passes ✓, `GET /api/tasks/[id]` returns same shape with `is_blocked` and `blocker_details`
 - **Commit:** 37a1142 (develop)
+
+## Fix 24: Use .returning() in pipelines POST/PUT and notifications mark-delivered — eliminate post-write SELECT round-trips
+- **Files:** `src/app/api/pipelines/route.ts`, `src/app/api/notifications/route.ts`
+- **Issue:** Three mutations still had post-write SELECT round-trips:
+  - `POST /api/pipelines`: `db.insert(...).returning({id})` then `db.select().where(id)` to get the full row — 2 queries for 1 create
+  - `PUT /api/pipelines`: `db.update(...)` then `db.select().where(id)` to get the updated row — 2 queries for 1 update
+  - `POST /api/notifications` (mark-delivered action): `db.update(...).where(isNull(delivered_at))` then `db.select().where(delivered_at === now)` to get affected rows — 2 queries for 1 batch update
+- **Fix:** Changed all three to use `.returning()` — the full updated/inserted row(s) are returned directly from the write query. Removed 3 post-write `db.select()` calls. Same response shape, one fewer DB round-trip per operation.
+- **Verify:** `pnpm build` passes ✓, mutations return same row shape
+- **Commit:** 887d1c7 (develop)
+
+## Fix 23: Use .returning() in workflows/alerts/gateways/messages — eliminate post-write SELECT round-trips
+- **Files:** `src/app/api/workflows/route.ts`, `src/app/api/alerts/route.ts`, `src/app/api/gateways/route.ts`, `src/app/api/chat/messages/[id]/route.ts`
+- **Issue:** All four routes did a post-write `db.select()` after `db.insert()` or `db.update()` to get the written row back — 2 round-trips for one mutation. PostgreSQL supports `RETURNING` natively; Drizzle exposes it via `.returning()`.
+  - `workflows`: POST (insert → select) + PUT (update → select) = 2 extra queries
+  - `alerts`: POST (insert → select) + PUT (update → select) = 2 extra queries
+  - `gateways`: POST (insert → select) + PUT (update → select) = 2 extra queries
+  - `chat/messages/[id]`: PATCH (update → select) = 1 extra query
+- **Fix:** Changed `db.insert(...).returning({ id })` → `.returning()` (full row) and `await db.update(...)` → `await db.update(...).returning()` in all four files. Removed 7 post-write `db.select()` calls. Same response shape, one fewer DB round-trip per mutation.
+- **Verify:** `pnpm build` passes ✓, mutations return same row shape
+- **Commit:** 9225672 (develop)
