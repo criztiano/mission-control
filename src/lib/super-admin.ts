@@ -336,19 +336,21 @@ export async function listProvisionJobs(filters: { tenant_id?: number; status?: 
 }
 
 export async function getProvisionJob(jobId: number) {
-  const rows = await db.execute(sql`
-    SELECT pj.*, t.slug as tenant_slug, t.display_name as tenant_display_name, t.linux_user, t.openclaw_home, t.workspace_root
-    FROM provision_jobs pj
-    JOIN tenants t ON t.id = pj.tenant_id
-    WHERE pj.id = ${jobId}
-  `)
+  // Parallelize job + events (independent queries)
+  const [rows, events] = await Promise.all([
+    db.execute(sql`
+      SELECT pj.*, t.slug as tenant_slug, t.display_name as tenant_display_name, t.linux_user, t.openclaw_home, t.workspace_root
+      FROM provision_jobs pj
+      JOIN tenants t ON t.id = pj.tenant_id
+      WHERE pj.id = ${jobId}
+    `),
+    db.select().from(provisionEvents)
+      .where(eq(provisionEvents.job_id, jobId))
+      .orderBy(provisionEvents.created_at, provisionEvents.id),
+  ])
 
   const row = (rows.rows as any[])[0]
   if (!row) return null
-
-  const events = await db.select().from(provisionEvents)
-    .where(eq(provisionEvents.job_id, jobId))
-    .orderBy(provisionEvents.created_at, provisionEvents.id)
 
   return {
     ...row,
