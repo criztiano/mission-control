@@ -127,3 +127,21 @@
 - **Fix:** Wrapped all 3 queries in a single `Promise.all([...])` so they fire simultaneously. `unreadCount` and `total` are destructured from the parallel results; the source-detail batch queries run afterward (they depend on `notifRows`). Net result: 2 serial round-trips saved per request.
 - **Verify:** `pnpm build` passes ✓, `/api/notifications?recipient=cri` still returns correct shape with `notifications`, `total`, `unreadCount`
 - **Commit:** 50e5134 (develop)
+
+## Fix 18: Parallelize sequential DB queries in getIssues, getTweets, getGardenItems
+- **File:** `src/lib/cc-db.ts`
+- **Issue:** Three core list functions ran independent queries serially:
+  - `getIssues`: data + count = 2 sequential round-trips (affects `/api/tasks`)
+  - `getTweets`: data + count + themes + digests = 4 sequential round-trips (affects `/api/xfeed`)
+  - `getGardenItems`: data + count = 2 sequential round-trips (affects `/api/garden`)
+  Each query blocked the next despite zero data dependency between them.
+- **Fix:** Wrapped all independent queries in `Promise.all([...])` so they fire simultaneously. getIssues saves 1 serial round-trip; getTweets saves 3; getGardenItems saves 1 — total 5 eliminated round-trips per combined request.
+- **Verify:** `pnpm build` passes ✓, endpoints return same shape; parallel execution confirmed by structure
+- **Commit:** 32a4d43 (develop)
+
+## Fix 19: Parallelize 3 sequential DB queries in GET /api/pipelines
+- **File:** `src/app/api/pipelines/route.ts`
+- **Issue:** GET /api/pipelines fetched `workflowPipelines`, `workflowTemplates`, and `pipeline_runs` run counts in three sequential `await` calls — each blocked the next despite zero data dependency between them. Every pipeline list load paid 3 serial DB round-trips.
+- **Fix:** Wrapped all 3 queries in a single `Promise.all([...])` so they fire simultaneously. `nameMap` and `runMap` are built from the parallel results. Net result: 2 serial round-trips eliminated per request.
+- **Verify:** `pnpm build` passes ✓, `/api/pipelines` returns same shape with 3× fewer DB round-trips
+- **Commit:** 10f2d3b (develop)
