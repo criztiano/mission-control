@@ -77,7 +77,7 @@ export async function GET(request: NextRequest) {
   }
 
   const ipAddress = request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip') || 'unknown'
-  logAuditEvent({
+  await logAuditEvent({
     action: 'data_export',
     actor: auth.user.username,
     actor_id: auth.user.id,
