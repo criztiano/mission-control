@@ -152,3 +152,10 @@
 - **Fix:** `git merge develop --no-ff` into main and pushed. Vercel auto-deploys from main. 7 files changed, 295 insertions.
 - **Verify:** `pnpm build` passes ✓ on develop before merge; all 9 commits now in production
 - **Commit:** bd63d2a (main)
+
+## Fix 21: Use .returning() in plans routes — eliminate post-write SELECT round-trips
+- **Files:** `src/app/api/plans/route.ts`, `src/app/api/plans/[id]/route.ts`
+- **Issue:** `POST /api/plans` did `db.insert(...)` then a separate `db.select().where(eq(plans.id, id)).limit(1)` to return the created plan — 2 round-trips for one create. `PUT /api/plans/[id]` did the same after `db.update(...)`. PostgreSQL supports `RETURNING` natively; Drizzle exposes it via `.returning()`.
+- **Fix:** Changed `db.insert(...).values(...)` → `.returning()` and `db.update(...).set(...)` → `.returning()` in both routes. The extra `db.select` queries were removed. Same response shape, one fewer DB round-trip per operation.
+- **Verify:** `pnpm build` passes ✓, POST /api/plans and PUT /api/plans/:id return the same plan object shape
+- **Commit:** 22c6ee2 (develop)

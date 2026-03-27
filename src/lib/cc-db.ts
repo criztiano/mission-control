@@ -519,6 +519,25 @@ export async function getBlockerDetails(blockerIds: string[]): Promise<Array<{ i
   return rows as Array<{ id: string; title: string; status: string }>;
 }
 
+/**
+ * Single-query replacement for getOpenBlockerIds + getBlockerDetails.
+ * Returns both blocker details and the set of open (non-closed) blocker IDs
+ * with one DB round-trip instead of two.
+ */
+export async function getBlockerInfo(blockerIds: string[]): Promise<{
+  details: Array<{ id: string; title: string; status: string }>;
+  openIds: Set<string>;
+}> {
+  if (blockerIds.length === 0) return { details: [], openIds: new Set() };
+  const rows = await db
+    .select({ id: issues.id, title: issues.title, status: issues.status })
+    .from(issues)
+    .where(inArray(issues.id, blockerIds));
+  const details = rows as Array<{ id: string; title: string; status: string }>;
+  const openIds = new Set(details.filter(r => r.status !== 'closed').map(r => r.id));
+  return { details, openIds };
+}
+
 // --- Tweet types ---
 
 export type TweetRating = 'fire' | 'meh' | 'noise';
