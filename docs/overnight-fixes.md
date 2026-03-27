@@ -71,3 +71,10 @@
 - **Fix:** Changed default `limit` from `1000` to `50`, max cap from `10000` to `500`. Full history can still be paginated via `?limit=500&offset=N`.
 - **Verify:** `pnpm build` passes ✓, `/api/audit` now returns 50 rows (~10KB) by default
 - **Commit:** c1dd353 (develop)
+
+## Fix 9: N+1 → batch queries in GET /api/projects
+- **File:** `src/app/api/projects/route.ts`
+- **Issue:** For N projects, the route called `getProjectTaskCount(p.id)` + `getProjectLastActivity(p.id)` per project inside `Promise.all` — each is a separate DB query. With 10 projects = 21 total queries (1 list + 10 count + 10 lastActivity).
+- **Fix:** Replaced per-project queries with 2 batch queries using `GROUP BY project_id` — one for COUNT(*) task counts, one for MAX(updated_at) last activity. Results mapped via in-memory Maps — O(1) lookup per project. Also removed unused `getProjectTaskCount` and `getProjectLastActivity` imports.
+- **Verify:** `pnpm build` passes ✓, `/api/projects` returns `taskCount` and `lastActivity` per project with 3 total queries (1 list + 2 batch stats)
+- **Commit:** e4cf506 (develop)
