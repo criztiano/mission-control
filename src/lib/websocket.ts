@@ -33,7 +33,7 @@ export function useWebSocket() {
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | undefined>(undefined)
   const pingIntervalRef = useRef<NodeJS.Timeout | undefined>(undefined)
-  const maxReconnectAttempts = 10
+  const maxReconnectAttempts = 3
   const reconnectUrl = useRef<string>('')
   const authTokenRef = useRef<string>('')
   const requestIdRef = useRef<number>(0)
