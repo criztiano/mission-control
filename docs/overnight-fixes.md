@@ -251,3 +251,31 @@
 - **Fix:** Combined `agentRows` and `countRows` into a single `Promise.all([...])` at the top of the handler. `total` is now derived from the parallel count result. The now-redundant sequential `countRows` query at the bottom was removed. Net: 1 serial round-trip eliminated per GET /api/agents request.
 - **Verify:** `pnpm build` passes ✓, GET /api/agents returns same shape with `agents`, `total`, pagination
 - **Commit:** bdf0a3e (develop)
+
+## Fix 35: Merge develop→main — ship fixes 21-34 to production
+- **Files:** 18 files changed (activities, agents, alerts, chat/messages/[id], gateways, inbox, notifications, notifications/deliver, pipelines, plans, plans/[id], tasks/[id], tasks/[id]/turns, tasks/[id]/update, tasks/[id]/comments, workflows, cc-db.ts)
+- **Issue:** Production (main) was 24 commits behind develop. Fixes 21-34 — `.returning()` eliminations (plans insert/update, agents POST, pipelines POST/PUT, notifications mark-delivered, workflows, alerts, gateways, chat/messages PATCH), parallelization (notifications/deliver 3→1, createTurn 3→2 parallel, getTweetStats/getGardenStats/getInboxCounts, activities/stats, inbox, tasks/[id]/turns & comments GET, tasks/[id]/update POST, agents list count, PUT tasks/[id]) — were live on develop but not in production.
+- **Fix:** `git merge develop --no-ff` into main and pushed. Vercel auto-deploys from main. 18 files changed, 285 insertions, 185 deletions.
+- **Verify:** `pnpm build` passes ✓ on develop before merge; all 24 commits now in production
+- **Commit:** fb0032a (main)
+
+## Fix 36: Eliminate redundant getIssue call after createTurn in POST /api/tasks/[id]/turns
+- **File:** `src/app/api/tasks/[id]/turns/route.ts`
+- **Issue:** After calling `createTurn(taskId, { assigned_to, ... })`, the route immediately called `await getIssue(taskId)` to retrieve `updatedIssue.assignee` for dispatch logic. But `createTurn` sets `issue.assignee = turn.assigned_to` — so the re-fetched value was always identical to the `assigned_to` already in scope. This is an unnecessary DB round-trip on the hottest path in the app (every agent handoff goes through POST /api/tasks/[id]/turns).
+- **Fix:** Replaced `const updatedIssue = await getIssue(taskId); const newAssignee = updatedIssue?.assignee || ''` with `const newAssignee = assigned_to` — `assigned_to` is authoritative since createTurn just persisted it. Net: 1 DB round-trip eliminated per turn creation.
+- **Verify:** `pnpm build` passes ✓, dispatch logic unchanged — `newAssignee` still the same value
+- **Commit:** 00f8094 (develop)
+
+## Fix 37: Parallelize setTaskPicked+getTurns in tasks/pick and tasks/[id]/pick
+- **Files:** `src/app/api/tasks/pick/route.ts`, `src/app/api/tasks/[id]/pick/route.ts`
+- **Issue:** Both pick routes called `await setTaskPicked(taskId, agent)` then `await getTurns(taskId)` sequentially. `getTurns` fetches from the `turns` table — completely independent of the `picked`/`picked_at`/`picked_by` update that `setTaskPicked` applies to `issues`. These are the two routes every agent hits on every task pickup cycle, making this a hot path.
+- **Fix:** Combined both into `Promise.all([setTaskPicked(taskId, agent), getTurns(taskId)])` in both routes. The `turns` result is destructured from index 1. Net: 1 serial round-trip eliminated per task pick in both endpoints.
+- **Verify:** `pnpm build` passes ✓, pick routes return same response shape
+- **Commit:** d016a10 (develop)
+
+## Fix 38: Merge 2 sequential issues updates into 1 in POST /api/tasks/[id]/update
+- **File:** `src/app/api/tasks/[id]/update/route.ts`
+- **Issue:** When an agent delivers work with `title` or `description` fields, the route made 2 sequential `db.update(issues)` calls to the same row: one for title/description, then one to reset `picked`/`picked_at`/`picked_by`. Two round-trips to update the same row — always. The picked reset ran unconditionally, but title/description only ran if provided. With title/description provided: 2 DB writes, always serial.
+- **Fix:** Merged both into a single `db.update(issues).set(updateFields)` call. The base `updateFields` always includes `{ picked: false, picked_at: null, picked_by: '', updated_at: now }`. `title` and `description` are conditionally added to the same object. One round-trip regardless of whether title/description are present. Removed the separate conditional update block.
+- **Verify:** `pnpm build` passes ✓, POST /api/tasks/[id]/update returns same shape
+- **Commit:** 9c0c15d (develop)

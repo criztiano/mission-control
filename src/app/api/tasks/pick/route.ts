@@ -66,9 +66,10 @@ export async function POST(request: NextRequest) {
 
     const taskId = issue.id as string;
 
-    await setTaskPicked(taskId, agent);
-
-    const turns = await getTurns(taskId);
+    const [, turns] = await Promise.all([
+      setTaskPicked(taskId, agent),
+      getTurns(taskId),
+    ]);
 
     const description = (issue.description as string) || '';
     const hasDescription = description.trim().length > 0;

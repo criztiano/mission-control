@@ -104,8 +104,8 @@ export async function POST(
     }
 
     // Dispatch on every turn
-    const updatedIssue = await getIssue(taskId);
-    const newAssignee = updatedIssue?.assignee || '';
+    // assigned_to is authoritative — createTurn just set issue.assignee = assigned_to
+    const newAssignee = assigned_to;
 
     if (newAssignee && newAssignee !== turnAuthor) {
       try {

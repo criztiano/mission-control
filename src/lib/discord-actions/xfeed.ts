@@ -33,13 +33,16 @@ export async function handleXFeedRating(
   rating: TweetRating,
   tweetId: string
 ): Promise<XFeedActionResult> {
-  const tweetRows = await db.select().from(tweets).where(eq(tweets.id, tweetId)).limit(1);
+  // Parallelize tweet + rating lookups (independent)
+  const [tweetRows, ratingRows] = await Promise.all([
+    db.select().from(tweets).where(eq(tweets.id, tweetId)).limit(1),
+    db.select().from(tweetRatings).where(eq(tweetRatings.tweet_id, tweetId)).limit(1),
+  ]);
   if (!tweetRows[0]) {
     return { success: false, ephemeralMessage: '❌ Tweet not found.' };
   }
 
   // Check current rating
-  const ratingRows = await db.select().from(tweetRatings).where(eq(tweetRatings.tweet_id, tweetId)).limit(1);
   const currentRating = ratingRows[0];
 
   if (currentRating?.rating === rating) {

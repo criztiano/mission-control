@@ -187,12 +187,15 @@ export async function GET(request: NextRequest) {
     const limit = Math.min(parseInt(searchParams.get('limit') || '10'), 200);
     const offset = parseInt(searchParams.get('offset') || '0');
 
-    const standupRows = await db
-      .select()
-      .from(standupReports)
-      .orderBy(desc(standupReports.created_at))
-      .limit(limit)
-      .offset(offset);
+    // Parallelize rows + count (independent queries)
+    const [standupRows, countRows] = await Promise.all([
+      db.select()
+        .from(standupReports)
+        .orderBy(desc(standupReports.created_at))
+        .limit(limit)
+        .offset(offset),
+      db.execute(sql`SELECT COUNT(*) as total FROM standup_reports`),
+    ]);
 
     const standupHistory = standupRows.map((row, index) => {
       const report = row.report ? JSON.parse(row.report) : {};
@@ -205,7 +208,6 @@ export async function GET(request: NextRequest) {
       };
     });
 
-    const countRows = await db.execute(sql`SELECT COUNT(*) as total FROM standup_reports`);
     const total = Number((countRows.rows[0] as any)?.total ?? 0);
 
     return NextResponse.json({ history: standupHistory, total, page: Math.floor(offset / limit) + 1, limit });

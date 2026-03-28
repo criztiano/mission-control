@@ -26,70 +26,70 @@ export async function GET(request: NextRequest) {
     const sinceNum = since ? parseInt(since) : null
     const agentFilter = agent ? agent : null
 
-    const msgRows = await db.execute(sql`
-      SELECT * FROM messages
-      WHERE to_agent IS NOT NULL
-        AND from_agent NOT IN ('human', 'system', 'operator')
-        AND to_agent NOT IN ('human', 'system', 'operator')
-        ${sinceNum ? sql`AND created_at > ${sinceNum}` : sql``}
-        ${agentFilter ? sql`AND (from_agent = ${agentFilter} OR to_agent = ${agentFilter})` : sql``}
-      ORDER BY created_at ASC, id ASC
-      LIMIT ${limit} OFFSET ${offset}
-    `)
-
-    // 2. Communication graph edges
-    const edgeRows = await db.execute(sql`
-      SELECT
-        from_agent, to_agent,
-        COUNT(*) as message_count,
-        MAX(created_at) as last_message_at
-      FROM messages
-      WHERE to_agent IS NOT NULL
-        AND from_agent NOT IN ('human', 'system', 'operator')
-        AND to_agent NOT IN ('human', 'system', 'operator')
-        ${sinceNum ? sql`AND created_at > ${sinceNum}` : sql``}
-      GROUP BY from_agent, to_agent ORDER BY message_count DESC
-    `)
-
-    // 3. Per-agent stats
-    const statsRows = await db.execute(sql`
-      SELECT agent, SUM(sent) as sent, SUM(received) as received FROM (
-        SELECT from_agent as agent, COUNT(*) as sent, 0 as received
-        FROM messages WHERE to_agent IS NOT NULL
+    // Parallelize all 5 independent queries
+    const [msgRows, edgeRows, statsRows, countRows, seededRows] = await Promise.all([
+      // 1. Get inter-agent messages
+      db.execute(sql`
+        SELECT * FROM messages
+        WHERE to_agent IS NOT NULL
           AND from_agent NOT IN ('human', 'system', 'operator')
           AND to_agent NOT IN ('human', 'system', 'operator')
-        GROUP BY from_agent
-        UNION ALL
-        SELECT to_agent as agent, 0 as sent, COUNT(*) as received
-        FROM messages WHERE to_agent IS NOT NULL
+          ${sinceNum ? sql`AND created_at > ${sinceNum}` : sql``}
+          ${agentFilter ? sql`AND (from_agent = ${agentFilter} OR to_agent = ${agentFilter})` : sql``}
+        ORDER BY created_at ASC, id ASC
+        LIMIT ${limit} OFFSET ${offset}
+      `),
+      // 2. Communication graph edges
+      db.execute(sql`
+        SELECT
+          from_agent, to_agent,
+          COUNT(*) as message_count,
+          MAX(created_at) as last_message_at
+        FROM messages
+        WHERE to_agent IS NOT NULL
           AND from_agent NOT IN ('human', 'system', 'operator')
           AND to_agent NOT IN ('human', 'system', 'operator')
-        GROUP BY to_agent
-      ) t GROUP BY agent ORDER BY (sent + received) DESC
-    `)
-
-    // 4. Total count
-    const countRows = await db.execute(sql`
-      SELECT COUNT(*) as total FROM messages
-      WHERE to_agent IS NOT NULL
-        AND from_agent NOT IN ('human', 'system', 'operator')
-        AND to_agent NOT IN ('human', 'system', 'operator')
-        ${sinceNum ? sql`AND created_at > ${sinceNum}` : sql``}
-        ${agentFilter ? sql`AND (from_agent = ${agentFilter} OR to_agent = ${agentFilter})` : sql``}
-    `)
+          ${sinceNum ? sql`AND created_at > ${sinceNum}` : sql``}
+        GROUP BY from_agent, to_agent ORDER BY message_count DESC
+      `),
+      // 3. Per-agent stats
+      db.execute(sql`
+        SELECT agent, SUM(sent) as sent, SUM(received) as received FROM (
+          SELECT from_agent as agent, COUNT(*) as sent, 0 as received
+          FROM messages WHERE to_agent IS NOT NULL
+            AND from_agent NOT IN ('human', 'system', 'operator')
+            AND to_agent NOT IN ('human', 'system', 'operator')
+          GROUP BY from_agent
+          UNION ALL
+          SELECT to_agent as agent, 0 as sent, COUNT(*) as received
+          FROM messages WHERE to_agent IS NOT NULL
+            AND from_agent NOT IN ('human', 'system', 'operator')
+            AND to_agent NOT IN ('human', 'system', 'operator')
+          GROUP BY to_agent
+        ) t GROUP BY agent ORDER BY (sent + received) DESC
+      `),
+      // 4. Total count
+      db.execute(sql`
+        SELECT COUNT(*) as total FROM messages
+        WHERE to_agent IS NOT NULL
+          AND from_agent NOT IN ('human', 'system', 'operator')
+          AND to_agent NOT IN ('human', 'system', 'operator')
+          ${sinceNum ? sql`AND created_at > ${sinceNum}` : sql``}
+          ${agentFilter ? sql`AND (from_agent = ${agentFilter} OR to_agent = ${agentFilter})` : sql``}
+      `),
+      // 5. Seeded count
+      db.execute(sql`
+        SELECT COUNT(*) as seeded FROM messages
+        WHERE to_agent IS NOT NULL
+          AND from_agent NOT IN ('human', 'system', 'operator')
+          AND to_agent NOT IN ('human', 'system', 'operator')
+          AND conversation_id LIKE 'conv-multi-%'
+          ${sinceNum ? sql`AND created_at > ${sinceNum}` : sql``}
+          ${agentFilter ? sql`AND (from_agent = ${agentFilter} OR to_agent = ${agentFilter})` : sql``}
+      `),
+    ])
 
     const total = Number((countRows.rows[0] as any)?.total ?? 0)
-
-    // 5. Seeded count
-    const seededRows = await db.execute(sql`
-      SELECT COUNT(*) as seeded FROM messages
-      WHERE to_agent IS NOT NULL
-        AND from_agent NOT IN ('human', 'system', 'operator')
-        AND to_agent NOT IN ('human', 'system', 'operator')
-        AND conversation_id LIKE 'conv-multi-%'
-        ${sinceNum ? sql`AND created_at > ${sinceNum}` : sql``}
-        ${agentFilter ? sql`AND (from_agent = ${agentFilter} OR to_agent = ${agentFilter})` : sql``}
-    `)
     const seededCount = Number((seededRows.rows[0] as any)?.seeded ?? 0)
     const liveCount = Math.max(0, total - seededCount)
     const source =
