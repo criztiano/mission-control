@@ -37,7 +37,9 @@ export async function POST(request: NextRequest) {
   const results: HealthResult[] = []
 
   for (const gw of gwRows) {
-    const probeUrl = "http://" + gw.host + ":" + gw.port + "/"
+    const protocol = gw.port === 443 ? "https" : "http"
+    const portSuffix = (gw.port === 443 || gw.port === 80) ? "" : ":" + gw.port
+    const probeUrl = protocol + "://" + gw.host + portSuffix + "/"
 
     if (isBlockedUrl(probeUrl)) {
       results.push({ id: gw.id, name: gw.name, status: 'error', latency: null, agents: [], sessions_count: 0, error: 'Blocked URL' })
