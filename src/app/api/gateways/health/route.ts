@@ -49,7 +49,7 @@ export async function POST(request: NextRequest) {
     const start = Date.now()
     try {
       const controller = new AbortController()
-      const timeout = setTimeout(() => controller.abort(), 5000)
+      const timeout = setTimeout(() => controller.abort(), 15000)
 
       const res = await fetch(probeUrl, { signal: controller.signal })
       clearTimeout(timeout)
