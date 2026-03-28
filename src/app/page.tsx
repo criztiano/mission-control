@@ -61,19 +61,14 @@ export default function Home() {
       .catch(() => {})
 
     // Auto-connect to gateway on mount
-    // Skip WS on Vercel deployments — SSE (/api/events) handles real-time updates.
-    // Gateway WS through Tailscale Funnel has handshake timing issues from browsers.
-    const isVercel = window.location.hostname.includes('vercel.app')
-    if (!isVercel) {
-      const wsToken = process.env.NEXT_PUBLIC_GATEWAY_TOKEN || process.env.NEXT_PUBLIC_WS_TOKEN || ''
-      const explicitWsUrl = process.env.NEXT_PUBLIC_GATEWAY_URL || ''
+    const wsToken = process.env.NEXT_PUBLIC_GATEWAY_TOKEN || process.env.NEXT_PUBLIC_WS_TOKEN || ''
+    const explicitWsUrl = process.env.NEXT_PUBLIC_GATEWAY_URL || ''
 
-      // Use /ws proxy on same origin (works for remote access via LAN/Tailscale)
-      // Fall back to direct gateway connection if explicit URL is set
-      const wsProto = window.location.protocol === 'https:' ? 'wss' : 'ws'
-      const wsUrl = explicitWsUrl || `${wsProto}://${window.location.host}/ws`
-      connect(wsUrl, wsToken)
-    }
+    // Use /ws proxy on same origin (works for remote access via LAN/Tailscale)
+    // Fall back to direct gateway connection if explicit URL is set
+    const wsProto = window.location.protocol === 'https:' ? 'wss' : 'ws'
+    const wsUrl = explicitWsUrl || `${wsProto}://${window.location.host}/ws`
+    connect(wsUrl, wsToken)
   }, [connect, setCurrentUser, setStoreAgents])
 
   if (!isClient) {
