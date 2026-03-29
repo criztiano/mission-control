@@ -76,7 +76,7 @@ export function ChatPanel() {
   }, [loadMessages])
 
   // Poll for new messages (visibility-aware, 5s interval)
-  useSmartPoll(loadMessages, 15000, {
+  useSmartPoll(loadMessages, 60000, {
     enabled: !!activeConversation && chatPanelOpen,
     pauseWhenSseConnected: true,
   })

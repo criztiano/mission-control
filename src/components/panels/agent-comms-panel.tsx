@@ -131,7 +131,7 @@ export function AgentCommsPanel() {
     }
   }, [filter])
 
-  useSmartPoll(fetchComms, 15000)
+  useSmartPoll(fetchComms, 60000, { pauseWhenSseConnected: true })
   useSmartPoll(async () => {
     try {
       const res = await fetch('/api/agents?limit=200')

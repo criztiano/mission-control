@@ -131,13 +131,13 @@ export function NavRail() {
 
   useEffect(() => {
     fetchInboxCount()
-    const interval = setInterval(fetchInboxCount, 30_000)
+    const interval = setInterval(fetchInboxCount, 300_000) // 5 min (was 30s — burned Neon quota)
     return () => clearInterval(interval)
   }, [fetchInboxCount])
 
   useEffect(() => {
     fetchRecentProjects()
-    const interval = setInterval(fetchRecentProjects, 60_000) // Refresh every minute
+    const interval = setInterval(fetchRecentProjects, 300_000) // 5 min (was 60s — burned Neon quota)
     return () => clearInterval(interval)
   }, [fetchRecentProjects])
 

@@ -167,7 +167,7 @@ export function SuperAdminPanel() {
 
   useEffect(() => {
     load()
-    const id = setInterval(load, 10000)
+    const id = setInterval(load, 120_000) // 2 min (was 10s — burned Neon quota)
     return () => clearInterval(id)
   }, [load])
 
