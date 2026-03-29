@@ -7,10 +7,6 @@ import { issues } from '@/db/schema'
 import { eq, and, ne, sql } from 'drizzle-orm'
 import { logger } from '@/lib/logger'
 
-const IS_VERCEL = !!process.env.VERCEL
-const DISPATCH_URL = process.env.DISPATCH_URL || 'https://macbook-pro.tail1840e7.ts.net/dispatch'
-const DISPATCH_TOKEN = process.env.DISPATCH_TOKEN || ''
-
 type DispatchParams = {
   taskId: string
   title: string
@@ -149,11 +145,6 @@ function scheduleDispatchWatchdog(taskId: string, agentId: string, turnCountAtDi
 
 /** Check if an agent has an active session (updated in last 5 min) */
 async function isSessionActive(agentId: string): Promise<boolean> {
-  if (IS_VERCEL) {
-    // On Vercel: can't check sessions directly — assume not active
-    // The dispatch webhook handles fire-and-forget spawns anyway
-    return false
-  }
   try {
     const out = await runOpenClaw(['sessions', '--agent', agentId, '--json'], {
       timeoutMs: 8000,
@@ -179,11 +170,6 @@ async function isLikelyBusy(assignee: string): Promise<boolean> {
   // Only guard persistent-session agents that might be mid-conversation
   if (a !== 'cody') return false
 
-  if (IS_VERCEL) {
-    // On Vercel: can't check sessions — assume not busy (don't block dispatch)
-    return false
-  }
-
   try {
     const out = await runOpenClaw(['sessions', '--agent', a, '--json'], {
       timeoutMs: 8000,
@@ -197,6 +183,7 @@ async function isLikelyBusy(assignee: string): Promise<boolean> {
     if (!updatedAt) return false
     return (Date.now() - updatedAt) < 5 * 60 * 1000
   } catch {
+    // if uncertain, assume not busy (don't block dispatch forever)
     return false
   }
 }
@@ -285,15 +272,25 @@ async function sendOne(payload: DispatchParams) {
 
 ### If this is a NEW task (no prior turns from ${builderTarget}):
 1. Read the task and write a proper plan with acceptance criteria
-2. Update the task description via PUT with your plan
-3. ${planNote} by posting a result turn:
+2. Create the plan via Eden Plans API:
+
+\`\`\`bash
+curl -s -X POST "https://eden-iota-one.vercel.app/api/plans" \\
+  -H "Content-Type: application/json" \\
+  -H "x-api-key: a2b6f6c96df5eba20ac83e7a4bf538adf7ea37701177c7eb430519986d4dc3a0" \\
+  -d '{"title":"<plan title>","content":"<full plan markdown>","task_id":"${payload.taskId}","author":"${agentId}"}'
+\`\`\`
+
+3. ${planNote} by posting a result turn that **references the plan** (do NOT put the plan content in the turn):
 
 \`\`\`bash
 curl -s -X POST "https://eden-iota-one.vercel.app/api/tasks/${payload.taskId}/turns" \\
   -H "Content-Type: application/json" \\
   -H "x-api-key: a2b6f6c96df5eba20ac83e7a4bf538adf7ea37701177c7eb430519986d4dc3a0" \\
-  -d '{"assigned_to":"${planTarget}","content":"Plan written. See task description for spec."}'
+  -d '{"assigned_to":"${planTarget}","content":"## 📋 Plan Ready\\n\\nWrote a plan for this task. See the plan link for full spec.","links":[{"url":"https://eden-iota-one.vercel.app/plans/<PLAN_ID>","title":"View Plan","type":"doc"}]}'
 \`\`\`
+
+**IMPORTANT:** The turn should be a SHORT summary (2-3 sentences) + a link to the plan. Do NOT paste the entire plan into the turn content.
 ${approvalBlock}
 
 ### If this is a REVIEW (${builderTarget} posted a result turn):
@@ -388,59 +385,43 @@ ${workflowBlock}
 - Use the **links** array in the JSON for any URLs (PRs, diffs, docs) — they render as clickable buttons in the UI. Format: \`"links":[{"url":"...","title":"Label","type":"pr|diff|doc"}]\`
 - NEVER paste raw URLs in the content text — always use the links array`
 
-    if (IS_VERCEL) {
-      // On Vercel: dispatch via local webhook through Tailscale Funnel
-      try {
-        const dispatchRes = await fetch(`${DISPATCH_URL}/dispatch`, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${DISPATCH_TOKEN}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ agentId, message: nudgeMsg }),
-        })
-        const dispatchData = await dispatchRes.json() as Record<string, unknown>
-        logger.info({ agentId, taskId: payload.taskId, status: dispatchRes.status, ok: dispatchData?.ok, pid: dispatchData?.pid }, 'Vercel dispatch via webhook')
-      } catch (e) {
-        logger.error({ err: e, agentId, taskId: payload.taskId }, 'Vercel dispatch failed')
-      }
-    } else {
-      // Local: use CLI directly
-      // Force truly fresh session: cleanup gateway memory + delete session files
-      const sessDir = `${process.env.HOME}/.openclaw/agents/${agentId}/sessions`
-      try {
-        execSync(`openclaw sessions cleanup --agent ${agentId} --enforce`, {
-          timeout: 5000, stdio: 'ignore', env: withOpenClawEnv() as any,
-        })
-      } catch { /* best-effort */ }
-      try {
-        for (const f of readdirSync(sessDir)) {
-          if (f.endsWith('.jsonl') || f.endsWith('.lock') || f === 'sessions.json') {
-            unlinkSync(`${sessDir}/${f}`)
-          }
-        }
-      } catch { /* dir may not exist yet */ }
-
-      // Record dispatch time for watchdog (detect dead sessions)
-      const dispatchRecord = { taskId: payload.taskId, agentId, dispatchedAt: Date.now(), turnCountAtDispatch: turns.length }
-      try {
-        const watchdogPath = `${process.env.HOME}/.openclaw/dispatch-watchdog.json`
-        const existing = existsSync(watchdogPath) ? JSON.parse(readFileSync(watchdogPath, 'utf8')) : []
-        existing.push(dispatchRecord)
-        writeFileSync(watchdogPath, JSON.stringify(existing.slice(-20), null, 2))
-      } catch { /* best-effort */ }
-
-      runOpenClawDetached([
-        'agent',
-        '--agent', agentId,
-        '--message', nudgeMsg,
-      ], {
-        env: withOpenClawEnv(),
+    // Force truly fresh session: cleanup gateway memory + delete session files
+    const sessDir = `${process.env.HOME}/.openclaw/agents/${agentId}/sessions`
+    try {
+      // 1. Tell gateway to drop in-memory session state
+      execSync(`openclaw sessions cleanup --agent ${agentId} --enforce`, {
+        timeout: 5000, stdio: 'ignore', env: withOpenClawEnv() as any,
       })
+    } catch { /* best-effort */ }
+    try {
+      // 2. Delete session transcript files
+      for (const f of readdirSync(sessDir)) {
+        if (f.endsWith('.jsonl') || f.endsWith('.lock') || f === 'sessions.json') {
+          unlinkSync(`${sessDir}/${f}`)
+        }
+      }
+    } catch { /* dir may not exist yet */ }
 
-      // Schedule inline watchdog — auto-retry if no turn arrives within 5 min
-      scheduleDispatchWatchdog(payload.taskId, agentId, turns.length)
-    }
+    // Record dispatch time for watchdog (detect dead sessions)
+    const dispatchRecord = { taskId: payload.taskId, agentId, dispatchedAt: Date.now(), turnCountAtDispatch: turns.length }
+    try {
+      const watchdogPath = `${process.env.HOME}/.openclaw/dispatch-watchdog.json`
+      const existing = existsSync(watchdogPath) ? JSON.parse(readFileSync(watchdogPath, 'utf8')) : []
+      existing.push(dispatchRecord)
+      // Keep only last 20
+      writeFileSync(watchdogPath, JSON.stringify(existing.slice(-20), null, 2))
+    } catch { /* best-effort */ }
+
+    runOpenClawDetached([
+      'agent',
+      '--agent', agentId,
+      '--message', nudgeMsg,
+    ], {
+      env: withOpenClawEnv(),
+    })
+
+    // Schedule inline watchdog — auto-retry if no turn arrives within 5 min
+    scheduleDispatchWatchdog(payload.taskId, agentId, turns.length)
   } else {
     // For persistent agents (main/cseno), skip CLI dispatch entirely.
     // Main agent checks tasks via heartbeats and direct Telegram messages.
