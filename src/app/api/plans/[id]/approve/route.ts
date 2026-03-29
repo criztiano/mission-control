@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { requireRole } from '@/lib/auth'
 import { type CCPlan, getIssue, createTurn } from '@/lib/cc-db'
+import { dispatchTaskNudge } from '@/lib/task-dispatch'
 import { logger } from '@/lib/logger'
 import { db } from '@/db/client'
 import { plans } from '@/db/schema'
@@ -51,6 +52,17 @@ export async function POST(
         })
 
         logger.info({ planId: id, taskId: plan.task_id, action, author: plan.author }, 'Plan decision posted as turn')
+
+        // Dispatch the task to the plan author (e.g. Piem gets dispatched after approval)
+        void dispatchTaskNudge({
+          taskId: plan.task_id,
+          title: issue.title,
+          assignee: plan.author,
+          reason: 'reassign',
+          content: turnContent,
+        }).catch(e => {
+          logger.warn({ err: e, taskId: plan.task_id }, 'dispatch after plan decision failed')
+        })
       }
     }
 
