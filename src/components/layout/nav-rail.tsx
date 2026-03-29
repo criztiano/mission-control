@@ -37,7 +37,7 @@ const navGroups: NavGroup[] = [
       { id: 'xfeed', label: 'Feed', icon: <XFeedIcon />, priority: true },
       { id: 'projects', label: 'Projects', icon: <ProjectsIcon />, priority: false },
       { id: 'team', label: 'Team', icon: <TeamIcon />, priority: false },
-      { id: 'canvas', label: 'Canvas', icon: <CanvasNavIcon />, priority: false },
+      // { id: 'canvas', label: 'Canvas', icon: <CanvasNavIcon />, priority: false }, // disabled — tldraw not ready
     ],
   },
   {
