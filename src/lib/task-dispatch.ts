@@ -271,9 +271,9 @@ async function sendOne(payload: DispatchParams) {
       `Delegate to ${builderTarget}:`,
       '',
       '```bash',
-      `curl -s -X POST "http://localhost:3333/api/tasks/${payload.taskId}/turns" \\`,
+      `curl -s -X POST "https://eden-iota-one.vercel.app/api/tasks/${payload.taskId}/turns" \\`,
       `  -H "Content-Type: application/json" \\`,
-      `  -H "x-api-key: mc-api-key-local-dev" \\`,
+      `  -H "x-api-key: a2b6f6c96df5eba20ac83e7a4bf538adf7ea37701177c7eb430519986d4dc3a0" \\`,
       `  -d '{"assigned_to":"${builderTarget}","content":"Plan approved by Cri. Implementing."}'`,
       '```',
     ].join('\n') : ''
@@ -289,9 +289,9 @@ async function sendOne(payload: DispatchParams) {
 3. ${planNote} by posting a result turn:
 
 \`\`\`bash
-curl -s -X POST "http://localhost:3333/api/tasks/${payload.taskId}/turns" \\
+curl -s -X POST "https://eden-iota-one.vercel.app/api/tasks/${payload.taskId}/turns" \\
   -H "Content-Type: application/json" \\
-  -H "x-api-key: mc-api-key-local-dev" \\
+  -H "x-api-key: a2b6f6c96df5eba20ac83e7a4bf538adf7ea37701177c7eb430519986d4dc3a0" \\
   -d '{"assigned_to":"${planTarget}","content":"Plan written. See task description for spec."}'
 \`\`\`
 ${approvalBlock}
@@ -309,18 +309,18 @@ gh pr create --base develop --head ${taskBranchPM} --title "${issue.title}" --bo
 
 Then post (include **links** array for clickable buttons in the UI):
 \`\`\`bash
-curl -s -X POST "http://localhost:3333/api/tasks/${payload.taskId}/turns" \\
+curl -s -X POST "https://eden-iota-one.vercel.app/api/tasks/${payload.taskId}/turns" \\
   -H "Content-Type: application/json" \\
-  -H "x-api-key: mc-api-key-local-dev" \\
+  -H "x-api-key: a2b6f6c96df5eba20ac83e7a4bf538adf7ea37701177c7eb430519986d4dc3a0" \\
   -d '{"assigned_to":"cri","content":"## ✅ Done\\n\\nReviewed and approved. Changes look clean.","links":[{"url":"<PR_URL>","title":"Pull Request","type":"pr"},{"url":"<DIFF_URL>","title":"View Diff","type":"diff"}]}'
 \`\`\`
 
 4. If it **fails**: send back with specific fixes (cite the diff):
 
 \`\`\`bash
-curl -s -X POST "http://localhost:3333/api/tasks/${payload.taskId}/turns" \\
+curl -s -X POST "https://eden-iota-one.vercel.app/api/tasks/${payload.taskId}/turns" \\
   -H "Content-Type: application/json" \\
-  -H "x-api-key: mc-api-key-local-dev" \\
+  -H "x-api-key: a2b6f6c96df5eba20ac83e7a4bf538adf7ea37701177c7eb430519986d4dc3a0" \\
   -d '{"assigned_to":"${builderTarget}","content":"## ❌ Review Failed\\n\\n**Issues:**\\n\\n1. ...\\n\\n2. ...\\n\\n**Fix these and re-push to the same branch.**"}'
 \`\`\``
     } else {
@@ -346,18 +346,18 @@ git push -u origin ${taskBranch}
 When done, post a turn (routes to **${resultTarget}**). Include the branch name and links:
 
 \`\`\`bash
-curl -s -X POST "http://localhost:3333/api/tasks/${payload.taskId}/turns" \\
+curl -s -X POST "https://eden-iota-one.vercel.app/api/tasks/${payload.taskId}/turns" \\
   -H "Content-Type: application/json" \\
-  -H "x-api-key: mc-api-key-local-dev" \\
+  -H "x-api-key: a2b6f6c96df5eba20ac83e7a4bf538adf7ea37701177c7eb430519986d4dc3a0" \\
   -d '{"assigned_to":"${resultTarget}","content":"## ✅ Done\\n\\n**Branch:** \\\`${taskBranch}\\\`\\n\\n**Changes:**\\n\\n- File1 — what changed\\n\\n- File2 — what changed\\n\\n**Build:** Passing","links":[{"url":"https://github.com/criztiano/mission-control/compare/develop...${taskBranch}","title":"View Diff","type":"diff"}]}'
 \`\`\`
 
 If you need clarification:
 
 \`\`\`bash
-curl -s -X POST "http://localhost:3333/api/tasks/${payload.taskId}/turns" \\
+curl -s -X POST "https://eden-iota-one.vercel.app/api/tasks/${payload.taskId}/turns" \\
   -H "Content-Type: application/json" \\
-  -H "x-api-key: mc-api-key-local-dev" \\
+  -H "x-api-key: a2b6f6c96df5eba20ac83e7a4bf538adf7ea37701177c7eb430519986d4dc3a0" \\
   -d '{"assigned_to":"cri","content":"## ❓ Need Clarification\\n\\n1. Question one\\n\\n2. Question two"}'
 \`\`\``
     }

@@ -510,7 +510,7 @@ export function buildTaskCard(data: TaskCardData): V2Container {
     });
   }
 
-  const appUrl = process.env.APP_URL || 'http://localhost:3333';
+  const appUrl = process.env.APP_URL || 'https://eden-iota-one.vercel.app';
 
   // Core action buttons
   actionButtons.push(
@@ -544,7 +544,7 @@ export function buildTaskCard(data: TaskCardData): V2Container {
       type: 2,
       style: 5, // Link
       label: 'View',
-      url: `${appUrl}/?tab=tasks`,
+      url: `${appUrl}/?tab=tasks&task=${data.taskId}`,
       emoji: { name: '↗' },
     });
   }
