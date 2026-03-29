@@ -165,11 +165,14 @@ export async function PUT(
     eventBus.broadcast('task.updated', task);
 
     // When a task is closed, cascade-dispatch any dependent tasks that are now unblocked
+    // MUST await — on Vercel, void/fire-and-forget gets killed before the webhook completes
     const becameClosed = status === 'closed' && currentIssue.status !== 'closed';
     if (becameClosed) {
-      void cascadeDispatchOnClose(issueId).catch(e => {
+      try {
+        await cascadeDispatchOnClose(issueId);
+      } catch (e) {
         logger.warn({ err: e, taskId: issueId }, 'cascade dispatch on close failed');
-      });
+      }
     }
 
     const assigneeChanged = assigned_to !== undefined && assigned_to !== currentIssue.assignee;
@@ -177,15 +180,17 @@ export async function PUT(
     const effectiveAssignee = assigned_to !== undefined ? assigned_to : currentIssue.assignee;
 
     if (effectiveAssignee && (assigneeChanged || becameOpen)) {
-      void dispatchTaskNudge({
-        taskId: issueId,
-        title: updatedIssue.title,
-        assignee: effectiveAssignee,
-        reason: assigneeChanged ? 'reassign' : 'create',
-        content: typeof description === 'string' ? description : (currentIssue.description || undefined),
-      }).catch((e) => {
+      try {
+        await dispatchTaskNudge({
+          taskId: issueId,
+          title: updatedIssue.title,
+          assignee: effectiveAssignee,
+          reason: assigneeChanged ? 'reassign' : 'create',
+          content: typeof description === 'string' ? description : (currentIssue.description || undefined),
+        });
+      } catch (e) {
         logger.warn({ err: e, taskId: issueId }, 'task dispatch nudge failed on update');
-      });
+      }
     }
 
     return NextResponse.json({ task });

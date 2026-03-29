@@ -185,15 +185,17 @@ export async function POST(request: NextRequest) {
 
     eventBus.broadcast('task.created', task);
 
-    void dispatchTaskNudge({
-      taskId: id,
-      title,
-      assignee: assigned_to,
-      reason: 'create',
-      content: description,
-    }).catch((e) => {
+    try {
+      await dispatchTaskNudge({
+        taskId: id,
+        title,
+        assignee: assigned_to,
+        reason: 'create',
+        content: description,
+      });
+    } catch (e) {
       logger.warn({ err: e, taskId: id }, 'task dispatch nudge failed on create');
-    });
+    }
 
     return NextResponse.json({ task }, { status: 201 });
   } catch (error) {

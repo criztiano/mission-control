@@ -118,9 +118,12 @@ export async function POST(
       await db.update(issues).set({ status: 'closed', updated_at: new Date().toISOString() }).where(eq(issues.id, taskId));
       logger.info({ taskId, pm: turnAuthor, parentId: issue.parent_id }, 'Auto-closed sub-task after PM review');
 
-      void cascadeDispatchOnClose(taskId).catch((e: Error) => {
+      // MUST await — on Vercel, void/fire-and-forget gets killed before the webhook completes
+      try {
+        await cascadeDispatchOnClose(taskId);
+      } catch (e: any) {
         logger.warn({ err: e, taskId }, 'cascade dispatch after auto-close failed');
-      });
+      }
     }
 
     // Dispatch on every turn
