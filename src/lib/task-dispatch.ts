@@ -8,8 +8,8 @@ import { eq, and, ne, sql } from 'drizzle-orm'
 import { logger } from '@/lib/logger'
 
 const IS_VERCEL = !!process.env.VERCEL
-const GATEWAY_URL = process.env.GATEWAY_DISPATCH_URL || 'https://macbook-pro.tail1840e7.ts.net'
-const GATEWAY_TOKEN = process.env.GATEWAY_DISPATCH_TOKEN || ''
+const DISPATCH_URL = process.env.DISPATCH_URL || 'https://macbook-pro.tail1840e7.ts.net/dispatch'
+const DISPATCH_TOKEN = process.env.DISPATCH_TOKEN || ''
 
 type DispatchParams = {
   taskId: string
@@ -150,24 +150,9 @@ function scheduleDispatchWatchdog(taskId: string, agentId: string, turnCountAtDi
 /** Check if an agent has an active session (updated in last 5 min) */
 async function isSessionActive(agentId: string): Promise<boolean> {
   if (IS_VERCEL) {
-    // On Vercel: query gateway via Tailscale Funnel
-    try {
-      const res = await fetch(`${GATEWAY_URL}/tools/invoke`, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${GATEWAY_TOKEN}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tool: 'sessions_list', args: { limit: 50 } }),
-      })
-      const data = await res.json() as { ok?: boolean; result?: { content?: Array<{ text?: string }> } }
-      const text = data?.result?.content?.[0]?.text || '{}'
-      const parsed = JSON.parse(text)
-      const sessions = parsed?.sessions || []
-      const now = Date.now()
-      return sessions.some((s: any) => {
-        if (!s.key?.includes(agentId)) return false
-        const updatedAt = Number(s.updatedAt || 0)
-        return updatedAt > 0 && (now - updatedAt) < 5 * 60 * 1000
-      })
-    } catch { return false }
+    // On Vercel: can't check sessions directly — assume not active
+    // The dispatch webhook handles fire-and-forget spawns anyway
+    return false
   }
   try {
     const out = await runOpenClaw(['sessions', '--agent', agentId, '--json'], {
@@ -195,8 +180,8 @@ async function isLikelyBusy(assignee: string): Promise<boolean> {
   if (a !== 'cody') return false
 
   if (IS_VERCEL) {
-    // On Vercel: check via gateway
-    return isSessionActive(a)
+    // On Vercel: can't check sessions — assume not busy (don't block dispatch)
+    return false
   }
 
   try {
@@ -404,25 +389,18 @@ ${workflowBlock}
 - NEVER paste raw URLs in the content text — always use the links array`
 
     if (IS_VERCEL) {
-      // On Vercel: dispatch via Gateway /tools/invoke through Tailscale Funnel
+      // On Vercel: dispatch via local webhook through Tailscale Funnel
       try {
-        const spawnRes = await fetch(`${GATEWAY_URL}/tools/invoke`, {
+        const dispatchRes = await fetch(`${DISPATCH_URL}/dispatch`, {
           method: 'POST',
           headers: {
-            'Authorization': `Bearer ${GATEWAY_TOKEN}`,
+            'Authorization': `Bearer ${DISPATCH_TOKEN}`,
             'Content-Type': 'application/json',
           },
-          body: JSON.stringify({
-            tool: 'sessions_spawn',
-            args: {
-              agentId,
-              task: nudgeMsg,
-              mode: 'run',
-            },
-          }),
+          body: JSON.stringify({ agentId, message: nudgeMsg }),
         })
-        const spawnData = await spawnRes.json() as Record<string, unknown>
-        logger.info({ agentId, taskId: payload.taskId, status: spawnRes.status, ok: spawnData?.ok }, 'Vercel dispatch via gateway')
+        const dispatchData = await dispatchRes.json() as Record<string, unknown>
+        logger.info({ agentId, taskId: payload.taskId, status: dispatchRes.status, ok: dispatchData?.ok, pid: dispatchData?.pid }, 'Vercel dispatch via webhook')
       } catch (e) {
         logger.error({ err: e, agentId, taskId: payload.taskId }, 'Vercel dispatch failed')
       }
