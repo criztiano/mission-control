@@ -37,6 +37,7 @@ const navGroups: NavGroup[] = [
       { id: 'xfeed', label: 'Feed', icon: <XFeedIcon />, priority: true },
       { id: 'projects', label: 'Projects', icon: <ProjectsIcon />, priority: false },
       { id: 'team', label: 'Team', icon: <TeamIcon />, priority: false },
+      { id: 'canvas', label: 'Canvas', icon: <CanvasNavIcon />, priority: false },
     ],
   },
   {
@@ -835,6 +836,17 @@ function TeamIcon() {
       <circle cx="3.5" cy="10" r="1.75" />
       <circle cx="12.5" cy="10" r="1.75" />
       <path d="M8 5.5v2M6.5 8.5l-2 1.5M9.5 8.5l2 1.5" />
+    </svg>
+  )
+}
+
+function CanvasNavIcon() {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="1.5" y="1.5" width="5.5" height="5.5" rx="1" />
+      <rect x="9" y="1.5" width="5.5" height="5.5" rx="1" />
+      <rect x="1.5" y="9" width="5.5" height="5.5" rx="1" />
+      <rect x="9" y="9" width="5.5" height="5.5" rx="1" />
     </svg>
   )
 }
