@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { requireRole } from '@/lib/auth'
-import { createIssue } from '@/lib/cc-db'
+import { db } from '@/db/client'
+import { issues } from '@/db/schema'
+import { getProject, mapIssueToTask } from '@/lib/cc-db'
+import type { IssueStatus } from '@/lib/cc-db'
 import { logger } from '@/lib/logger'
+import { randomUUID } from 'crypto'
 
 /**
  * POST /api/tasks/create-from-prompt
@@ -64,11 +68,11 @@ function parseProjectSlash(
   return null
 }
 
-function derivePriority(prompt: string): 'low' | 'medium' | 'high' | 'urgent' {
+function derivePriority(prompt: string): 'low' | 'normal' | 'high' {
   const lower = prompt.toLowerCase()
-  if (/\b(urgent|asap|blocking|blocked|broken in prod|critical)\b/.test(lower)) return 'urgent'
+  if (/\b(urgent|asap|blocking|broken in prod|critical)\b/.test(lower)) return 'high'
   if (/\b(high|important|priority)\b/.test(lower)) return 'high'
-  return 'medium'
+  return 'normal'
 }
 
 export async function POST(request: NextRequest) {
@@ -88,20 +92,56 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Could not derive title from prompt' }, { status: 400 })
     }
 
-    const assigned_to = parseAgentMention(prompt, agents)
+    const assignee = parseAgentMention(prompt, agents)
     const project_id = parseProjectSlash(prompt, projects, active_project_filter)
     const priority = derivePriority(prompt)
+    const now = new Date().toISOString()
+    const id = randomUUID()
+    const creator = (auth as any).user?.username || 'cri'
 
-    // Create the task
-    const task = await createIssue({
+    await db.insert(issues).values({
+      id,
       title,
       description: prompt.trim(),
-      status: 'open',
+      status: 'open' as IssueStatus,
+      assignee,
+      creator,
       priority,
-      assignee: assigned_to,
-      created_by: 'cri',
-      project_id: project_id || undefined,
+      project_id: project_id || null,
+      created_at: now,
+      updated_at: now,
+      archived: false,
+      blocked_by: '[]',
+      schedule: '',
     })
+
+    const projectTitle = project_id ? (await getProject(project_id))?.title : undefined
+
+    const task = mapIssueToTask({
+      id,
+      title,
+      description: prompt.trim(),
+      status: 'open' as IssueStatus,
+      assignee,
+      creator,
+      priority,
+      project_id: project_id || null,
+      created_at: now,
+      updated_at: now,
+      archived: false,
+      blocked_by: '[]',
+      schedule: '',
+      parent_id: null,
+      notion_id: '',
+      plan_path: null,
+      plan_id: null,
+      last_turn_at: null,
+      seen_at: null,
+      picked: false,
+      picked_at: null,
+      picked_by: '',
+      last_comment_at: null,
+    }, projectTitle)
 
     return NextResponse.json({ task })
   } catch (err: any) {
