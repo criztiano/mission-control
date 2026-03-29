@@ -4,8 +4,8 @@ import { randomUUID } from 'node:crypto'
 import { runOpenClaw, runOpenClawDetached } from '@/lib/command'
 import { getIssue, getTurns, setTaskPicked } from '@/lib/cc-db'
 import { db } from '@/db/client'
-import { issues, dispatchQueue } from '@/db/schema'
-import { eq, and, ne, sql, desc } from 'drizzle-orm'
+import { issues, dispatchQueue, issueDependencies } from '@/db/schema'
+import { eq, and, ne, sql, desc, inArray } from 'drizzle-orm'
 import { logger } from '@/lib/logger'
 
 type DispatchParams = {
@@ -46,6 +46,75 @@ function resolveAgentId(assignee: string): string | null {
 /** Check if an assignee name maps to a known agent (for UI purposes) */
 export function isAgentAssignee(assignee: string): boolean {
   return resolveAgentId(assignee) !== null
+}
+
+/**
+ * Check if all dependencies of a task are closed.
+ * Returns true if the task has NO unresolved dependencies (i.e. safe to dispatch).
+ */
+async function areDependenciesMet(taskId: string): Promise<boolean> {
+  // Check the issue_dependencies table
+  const deps = await db
+    .select({ depends_on: issueDependencies.depends_on })
+    .from(issueDependencies)
+    .where(eq(issueDependencies.issue_id, taskId))
+
+  if (deps.length === 0) return true // no dependencies
+
+  // Check if all depended-on tasks are closed
+  const depIds = deps.map(d => d.depends_on)
+  const openBlockers = await db
+    .select({ id: issues.id, status: issues.status })
+    .from(issues)
+    .where(and(
+      inArray(issues.id, depIds),
+      ne(issues.status, 'closed')
+    ))
+    .limit(1)
+
+  if (openBlockers.length > 0) {
+    logger.info({ taskId, blockedBy: openBlockers[0].id }, 'Task blocked by open dependency')
+    return false
+  }
+
+  return true
+}
+
+/**
+ * When a task is closed, find any tasks that depend on it and
+ * dispatch them if all their dependencies are now met.
+ */
+export async function cascadeDispatchOnClose(closedTaskId: string) {
+  // Find tasks that depend on the just-closed task
+  const dependents = await db
+    .select({ issue_id: issueDependencies.issue_id })
+    .from(issueDependencies)
+    .where(eq(issueDependencies.depends_on, closedTaskId))
+
+  if (dependents.length === 0) return
+
+  logger.info({ closedTaskId, dependentCount: dependents.length }, 'Checking dependents after task close')
+
+  for (const dep of dependents) {
+    const task = await getIssue(dep.issue_id)
+    if (!task || task.status !== 'open' || !task.assignee) continue
+
+    // Check if ALL dependencies are now met (not just this one)
+    const ready = await areDependenciesMet(dep.issue_id)
+    if (!ready) continue
+
+    logger.info({ taskId: dep.issue_id, assignee: task.assignee }, 'Dependency met — dispatching unblocked task')
+
+    void dispatchTaskNudge({
+      taskId: dep.issue_id,
+      title: task.title,
+      assignee: task.assignee,
+      reason: 'create',
+      content: task.description || undefined,
+    }).catch(e => {
+      logger.warn({ err: e, taskId: dep.issue_id }, 'Failed to dispatch unblocked task')
+    })
+  }
 }
 
 function withOpenClawEnv() {
@@ -310,6 +379,12 @@ async function sendOne(payload: DispatchParams) {
   const assignee = (payload.assignee || '').trim()
   const agentId = resolveAgentId(assignee)
   if (!agentId) return { sent: false as const, reason: 'no-agent' as const }
+
+  // Dependency guard: skip if task has unmet dependencies
+  if (!(await areDependenciesMet(payload.taskId))) {
+    logger.info({ taskId: payload.taskId, agentId }, 'Skipping dispatch — blocked by dependencies')
+    return { sent: false as const, reason: 'blocked' as const }
+  }
 
   // Dedup guard: skip if same task+agent was dispatched in last 60s
   if (await wasRecentlyDispatched(payload.taskId, agentId)) {

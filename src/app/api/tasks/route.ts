@@ -100,6 +100,8 @@ export async function POST(request: NextRequest) {
       assigned_to = '',
       creator = user?.username || 'system',
       metadata = {},
+      parent_id = null,
+      depends_on = [],
     } = body;
 
     if ((!title || typeof title !== 'string' || title.trim().length === 0) && description.trim().length > 0) {
@@ -127,6 +129,7 @@ export async function POST(request: NextRequest) {
     await db.insert(issues).values({
       id,
       project_id: projectId || null,
+      parent_id: parent_id || null,
       title,
       description,
       status: status as IssueStatus,
@@ -138,6 +141,14 @@ export async function POST(request: NextRequest) {
       archived: false,
       blocked_by: blockedBy,
     });
+
+    // Insert dependency records if provided
+    if (Array.isArray(depends_on) && depends_on.length > 0) {
+      const { issueDependencies } = await import('@/db/schema');
+      await db.insert(issueDependencies).values(
+        depends_on.map((depId: string) => ({ issue_id: id, depends_on: depId }))
+      );
+    }
 
     const projectTitle = projectId ? (await getProject(projectId))?.title : undefined;
     const task = mapIssueToTask(
@@ -154,7 +165,7 @@ export async function POST(request: NextRequest) {
         updated_at: now,
         archived: false,
         schedule: '',
-        parent_id: null,
+        parent_id: parent_id || null,
         notion_id: '',
         plan_path: null,
         plan_id: null,

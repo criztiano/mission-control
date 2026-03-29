@@ -15,7 +15,7 @@ import {
 import { db } from '@/db/client';
 import { issues } from '@/db/schema';
 import { eq } from 'drizzle-orm';
-import { dispatchTaskNudge } from '@/lib/task-dispatch';
+import { dispatchTaskNudge, cascadeDispatchOnClose } from '@/lib/task-dispatch';
 
 const VALID_STATUSES: Set<string> = new Set(['draft', 'open', 'closed']);
 
@@ -163,6 +163,14 @@ export async function PUT(
     const task = mapIssueToTask(updatedIssue, projectRow?.title);
 
     eventBus.broadcast('task.updated', task);
+
+    // When a task is closed, cascade-dispatch any dependent tasks that are now unblocked
+    const becameClosed = status === 'closed' && currentIssue.status !== 'closed';
+    if (becameClosed) {
+      void cascadeDispatchOnClose(issueId).catch(e => {
+        logger.warn({ err: e, taskId: issueId }, 'cascade dispatch on close failed');
+      });
+    }
 
     const assigneeChanged = assigned_to !== undefined && assigned_to !== currentIssue.assignee;
     const becameOpen = status === 'open' && currentIssue.status !== 'open';
