@@ -59,6 +59,8 @@ export default function PlanPage({ params }: { params: Promise<{ id: string }> }
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
+  const [reviseMode, setReviseMode] = useState(false)
+  const [reviseNote, setReviseNote] = useState('')
   const [submitted, setSubmitted] = useState(false)
 
   const { responses, handleChange } = usePlanResponses()
@@ -244,25 +246,70 @@ export default function PlanPage({ params }: { params: Promise<{ id: string }> }
                 )}
               </div>
               <div className="flex items-center gap-2">
-                <Button
-                  onClick={async () => {
-                    setSubmitting(true)
-                    try {
-                      const res = await fetch(`/api/plans/${id}/approve`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ action: 'revise' }),
-                      })
-                      if (res.ok) setPlan(p => p ? { ...p, status: 'rejected' } : p)
-                    } finally { setSubmitting(false) }
-                  }}
-                  disabled={submitting}
-                  variant="outline"
-                  size="sm"
-                  className="border-red-800 text-red-400 hover:bg-red-900/30"
-                >
-                  🔄 Revise
-                </Button>
+                {reviseMode ? (
+                  <div className="flex items-center gap-2 flex-1">
+                    <input
+                      type="text"
+                      value={reviseNote}
+                      onChange={(e) => setReviseNote(e.target.value)}
+                      placeholder="What needs to change?"
+                      autoFocus
+                      onKeyDown={async (e) => {
+                        if (e.key === 'Enter' && reviseNote.trim()) {
+                          setSubmitting(true)
+                          try {
+                            const res = await fetch(`/api/plans/${id}/approve`, {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ action: 'revise', comment: reviseNote.trim() }),
+                            })
+                            if (res.ok) setPlan(p => p ? { ...p, status: 'rejected' } : p)
+                          } finally { setSubmitting(false); setReviseMode(false) }
+                        }
+                        if (e.key === 'Escape') { setReviseMode(false); setReviseNote('') }
+                      }}
+                      className="flex-1 text-sm bg-secondary border border-red-800/50 rounded px-3 py-1.5 text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-red-600"
+                    />
+                    <Button
+                      onClick={async () => {
+                        if (!reviseNote.trim()) return
+                        setSubmitting(true)
+                        try {
+                          const res = await fetch(`/api/plans/${id}/approve`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ action: 'revise', comment: reviseNote.trim() }),
+                          })
+                          if (res.ok) setPlan(p => p ? { ...p, status: 'rejected' } : p)
+                        } finally { setSubmitting(false); setReviseMode(false) }
+                      }}
+                      disabled={submitting || !reviseNote.trim()}
+                      size="sm"
+                      className="border-red-800 text-red-400 hover:bg-red-900/30"
+                      variant="outline"
+                    >
+                      Send
+                    </Button>
+                    <Button
+                      onClick={() => { setReviseMode(false); setReviseNote('') }}
+                      size="sm"
+                      variant="ghost"
+                      className="text-muted-foreground"
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                ) : (
+                  <Button
+                    onClick={() => setReviseMode(true)}
+                    disabled={submitting}
+                    variant="outline"
+                    size="sm"
+                    className="border-red-800 text-red-400 hover:bg-red-900/30"
+                  >
+                    🔄 Revise
+                  </Button>
+                )}
                 <Button
                   onClick={async () => {
                     setSubmitting(true)
