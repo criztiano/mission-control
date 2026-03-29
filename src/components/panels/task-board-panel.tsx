@@ -814,7 +814,8 @@ function TaskDetailModal({
   }, [task.id])
 
   useEffect(() => { fetchTurns() }, [fetchTurns])
-  useSmartPoll(fetchTurns, 15000)
+  // Load turns once when task detail opens — no polling needed
+  // useSmartPoll(fetchTurns, 15000)  // DISABLED — was burning Neon quota
 
   // Mark as seen when modal opens
   useEffect(() => {

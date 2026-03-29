@@ -129,17 +129,9 @@ export function NavRail() {
     } catch {}
   }, [])
 
-  useEffect(() => {
-    fetchInboxCount()
-    const interval = setInterval(fetchInboxCount, 300_000) // 5 min (was 30s — burned Neon quota)
-    return () => clearInterval(interval)
-  }, [fetchInboxCount])
-
-  useEffect(() => {
-    fetchRecentProjects()
-    const interval = setInterval(fetchRecentProjects, 300_000) // 5 min (was 60s — burned Neon quota)
-    return () => clearInterval(interval)
-  }, [fetchRecentProjects])
+  // Load once on mount — no polling. SSE handles real-time updates.
+  useEffect(() => { fetchInboxCount() }, [fetchInboxCount])
+  useEffect(() => { fetchRecentProjects() }, [fetchRecentProjects])
 
   // Inject badge into inbox nav item
   const navGroupsWithBadge = navGroups.map(group => ({
