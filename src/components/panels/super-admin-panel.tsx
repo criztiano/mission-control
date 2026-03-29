@@ -167,7 +167,7 @@ export function SuperAdminPanel() {
 
   useEffect(() => {
     load()
-    const id = setInterval(load, 10000)
+    const id = setInterval(load, 300_000) // 5 min — admin panel rarely needs real-time
     return () => clearInterval(id)
   }, [load])
 

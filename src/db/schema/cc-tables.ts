@@ -247,3 +247,19 @@ export const plans = pgTable('plans', {
   updated_at: text('updated_at').$defaultFn(() => new Date().toISOString()),
 });
 export type Plan = InferSelectModel<typeof plans>;
+
+// --- dispatch_queue ---
+// Replaces filesystem-based dispatch-pending.json and dispatch-watchdog.json
+// Tracks dispatched tasks and pending dispatches — works on Vercel (no filesystem needed)
+export const dispatchQueue = pgTable('dispatch_queue', {
+  id: text('id').primaryKey(), // random UUID
+  task_id: text('task_id').notNull().references(() => issues.id),
+  agent_id: text('agent_id').notNull(),
+  status: text('status').notNull().default('pending'), // 'pending' | 'dispatched' | 'completed' | 'failed'
+  turn_count_at_dispatch: integer('turn_count_at_dispatch').default(0),
+  retry_count: integer('retry_count').default(0),
+  dispatched_at: text('dispatched_at'),
+  completed_at: text('completed_at'),
+  created_at: text('created_at').$defaultFn(() => new Date().toISOString()),
+});
+export type DispatchQueueEntry = InferSelectModel<typeof dispatchQueue>;
