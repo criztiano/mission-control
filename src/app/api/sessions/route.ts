@@ -9,6 +9,12 @@ export async function GET(request: NextRequest) {
   try {
     const gatewaySessions = getAllGatewaySessions()
 
+    // On Vercel, OPENCLAW_HOME is not set — getAllGatewaySessions returns [].
+    // Return a clear source signal so the client can distinguish "no sessions"
+    // from "session data unavailable".
+    const source = process.env.OPENCLAW_HOME ? 'filesystem' : 'none'
+    const reason = source === 'none' ? 'OPENCLAW_HOME not available — sessions stream via Gateway WS' : undefined
+
     const sessions = gatewaySessions.map((s) => {
       const total = s.totalTokens || 0
       const context = s.contextTokens || 35000
@@ -29,10 +35,10 @@ export async function GET(request: NextRequest) {
       }
     })
 
-    return NextResponse.json({ sessions })
+    return NextResponse.json({ sessions, source, ...(reason ? { reason } : {}) })
   } catch (error) {
     console.error('Sessions API error:', error)
-    return NextResponse.json({ sessions: [] })
+    return NextResponse.json({ sessions: [], source: 'error' })
   }
 }
 
