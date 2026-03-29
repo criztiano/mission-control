@@ -28,6 +28,7 @@ import { MultiGatewayPanel } from '@/components/panels/multi-gateway-panel'
 import { SuperAdminPanel } from '@/components/panels/super-admin-panel'
 import { XFeedPanel } from '@/components/panels/xfeed-panel'
 import { GardenPanel } from '@/components/panels/garden-panel'
+import { GardenCanvasPanel } from '@/components/panels/garden-canvas-panel'
 import { InboxPanel } from '@/components/panels/inbox-panel'
 import { ProjectsPanel } from '@/components/panels/projects-panel'
 import { TeamPanel } from '@/components/panels/team-panel'
@@ -182,6 +183,12 @@ function ContentRouter({ tab }: { tab: string }) {
       return <XFeedPanel />
     case 'garden':
       return <GardenPanel />
+    case 'canvas':
+      return (
+        <ErrorBoundary name="GardenCanvas">
+          <GardenCanvasPanel />
+        </ErrorBoundary>
+      )
     case 'projects':
       return <ProjectsPanel />
     case 'team':
