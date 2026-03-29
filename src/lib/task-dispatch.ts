@@ -1,10 +1,11 @@
 import { readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync } from 'node:fs'
 import { execSync } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { runOpenClaw, runOpenClawDetached } from '@/lib/command'
 import { getIssue, getTurns, setTaskPicked } from '@/lib/cc-db'
 import { db } from '@/db/client'
-import { issues } from '@/db/schema'
-import { eq, and, ne, sql } from 'drizzle-orm'
+import { issues, dispatchQueue } from '@/db/schema'
+import { eq, and, ne, sql, desc } from 'drizzle-orm'
 import { logger } from '@/lib/logger'
 
 type DispatchParams = {
@@ -16,11 +17,13 @@ type DispatchParams = {
 }
 
 const IS_SERVERLESS = !!process.env.VERCEL || !!process.env.AWS_LAMBDA_FUNCTION_NAME
-const PENDING_PATH = `${process.env.HOME || '/tmp'}/.openclaw/dispatch-pending.json`
-const retryTimers = new Map<string, NodeJS.Timeout>()
-const dispatchWatchdogs = new Map<string, NodeJS.Timeout>()
 const DISPATCH_TIMEOUT_MS = 5 * 60 * 1000 // 5 min to post a turn or we auto-retry
 const MAX_RETRIES = 3
+const DEDUP_WINDOW_MS = 60_000 // ignore duplicate dispatch for same task+agent within 60s
+
+// In-memory timers (local only — die on Vercel)
+const retryTimers = new Map<string, NodeJS.Timeout>()
+const dispatchWatchdogs = new Map<string, NodeJS.Timeout>()
 const dispatchRetryCount = new Map<string, number>()
 
 // Known agent IDs that can receive dispatches.
@@ -28,6 +31,9 @@ const dispatchRetryCount = new Map<string, number>()
 const KNOWN_AGENTS = new Set([
   'main', 'cseno', 'cody', 'worm', 'ops', 'piem', 'ralph', 'pinball', 'uze', 'dumbo',
 ])
+
+// Agents that use spawn (no persistent main session)
+const SPAWN_AGENTS = new Set(['dumbo', 'uze', 'ralph', 'piem', 'cody'])
 
 function resolveAgentId(assignee: string): string | null {
   const a = (assignee || '').trim().toLowerCase()
@@ -50,47 +56,144 @@ function withOpenClawEnv() {
   }
 }
 
-function readPending(): Record<string, DispatchParams[]> {
+// ─── DB-based dispatch queue (replaces filesystem pending/watchdog) ───
+
+async function enqueuePending(agentId: string, payload: DispatchParams) {
   try {
-    if (!existsSync(PENDING_PATH)) return {}
-    return JSON.parse(readFileSync(PENDING_PATH, 'utf-8')) || {}
-  } catch {
-    return {}
+    // Upsert: one pending entry per task+agent (dedup)
+    const existing = await db.select({ id: dispatchQueue.id })
+      .from(dispatchQueue)
+      .where(and(
+        eq(dispatchQueue.task_id, payload.taskId),
+        eq(dispatchQueue.agent_id, agentId),
+        eq(dispatchQueue.status, 'pending'),
+      ))
+      .limit(1)
+
+    if (existing.length > 0) {
+      // Already queued — skip
+      return
+    }
+
+    await db.insert(dispatchQueue).values({
+      id: randomUUID(),
+      task_id: payload.taskId,
+      agent_id: agentId,
+      status: 'pending',
+      turn_count_at_dispatch: 0,
+      retry_count: 0,
+      created_at: new Date().toISOString(),
+    })
+  } catch (e) {
+    logger.warn({ err: e, taskId: payload.taskId, agentId }, 'Failed to enqueue pending dispatch')
   }
 }
 
-function writePending(data: Record<string, DispatchParams[]>) {
+async function popPending(agentId: string): Promise<DispatchParams[]> {
   try {
-    writeFileSync(PENDING_PATH, JSON.stringify(data, null, 2))
+    const rows = await db.select()
+      .from(dispatchQueue)
+      .where(and(
+        eq(dispatchQueue.agent_id, agentId),
+        eq(dispatchQueue.status, 'pending'),
+      ))
+
+    if (rows.length === 0) return []
+
+    // Delete them
+    const ids = rows.map(r => r.id)
+    for (const id of ids) {
+      await db.delete(dispatchQueue).where(eq(dispatchQueue.id, id))
+    }
+
+    return rows.map(r => ({
+      taskId: r.task_id,
+      title: '',
+      assignee: r.agent_id,
+      reason: 'reassign' as const,
+    }))
+  } catch (e) {
+    logger.warn({ err: e, agentId }, 'Failed to pop pending dispatches')
+    return []
+  }
+}
+
+async function recordDispatch(taskId: string, agentId: string, turnCount: number) {
+  try {
+    const now = new Date().toISOString()
+    // Upsert: update if exists for this task+agent, otherwise insert
+    const existing = await db.select({ id: dispatchQueue.id })
+      .from(dispatchQueue)
+      .where(and(
+        eq(dispatchQueue.task_id, taskId),
+        eq(dispatchQueue.agent_id, agentId),
+        sql`${dispatchQueue.status} IN ('dispatched', 'pending')`,
+      ))
+      .limit(1)
+
+    if (existing.length > 0) {
+      await db.update(dispatchQueue)
+        .set({ status: 'dispatched', dispatched_at: now, turn_count_at_dispatch: turnCount })
+        .where(eq(dispatchQueue.id, existing[0].id))
+    } else {
+      await db.insert(dispatchQueue).values({
+        id: randomUUID(),
+        task_id: taskId,
+        agent_id: agentId,
+        status: 'dispatched',
+        turn_count_at_dispatch: turnCount,
+        dispatched_at: now,
+        created_at: now,
+      })
+    }
+  } catch (e) {
+    logger.warn({ err: e, taskId, agentId }, 'Failed to record dispatch')
+  }
+}
+
+/** Check if this task+agent was dispatched very recently (dedup guard) */
+async function wasRecentlyDispatched(taskId: string, agentId: string): Promise<boolean> {
+  try {
+    const rows = await db.select({ dispatched_at: dispatchQueue.dispatched_at })
+      .from(dispatchQueue)
+      .where(and(
+        eq(dispatchQueue.task_id, taskId),
+        eq(dispatchQueue.agent_id, agentId),
+        eq(dispatchQueue.status, 'dispatched'),
+      ))
+      .orderBy(desc(dispatchQueue.dispatched_at))
+      .limit(1)
+
+    if (rows.length === 0) return false
+    const dispatchedAt = rows[0].dispatched_at
+    if (!dispatchedAt) return false
+    const age = Date.now() - new Date(dispatchedAt).getTime()
+    return age < DEDUP_WINDOW_MS
   } catch {
-    // best effort
+    return false
   }
 }
 
-function enqueuePending(assignee: string, payload: DispatchParams) {
-  if (IS_SERVERLESS) return  // no persistent filesystem on Vercel
-  const data = readPending()
-  const key = assignee.toLowerCase()
-  const list = data[key] || []
-  // keep one latest nudge per task id to avoid spam
-  const deduped = list.filter((x) => x.taskId !== payload.taskId)
-  deduped.push(payload)
-  data[key] = deduped
-  writePending(data)
+/** Mark dispatch as completed (called when agent posts a turn) */
+export async function markDispatchCompleted(taskId: string, agentId: string) {
+  try {
+    await db.update(dispatchQueue)
+      .set({ status: 'completed', completed_at: new Date().toISOString() })
+      .where(and(
+        eq(dispatchQueue.task_id, taskId),
+        eq(dispatchQueue.agent_id, agentId),
+        eq(dispatchQueue.status, 'dispatched'),
+      ))
+  } catch (e) {
+    logger.warn({ err: e, taskId, agentId }, 'Failed to mark dispatch completed')
+  }
 }
 
-function popPending(assignee: string): DispatchParams[] {
-  const data = readPending()
-  const key = assignee.toLowerCase()
-  const list = data[key] || []
-  if (data[key]) {
-    delete data[key]
-    writePending(data)
-  }
-  return list
-}
+// ─── Watchdog (works on both local and Vercel) ───
 
 function scheduleDispatchWatchdog(taskId: string, agentId: string, turnCountAtDispatch: number) {
+  if (IS_SERVERLESS) return  // timers don't survive serverless invocations
+
   const key = `${taskId}:${agentId}`
 
   // Clear any existing watchdog for this task
@@ -106,6 +209,7 @@ function scheduleDispatchWatchdog(taskId: string, agentId: string, turnCountAtDi
       if (currentTurns.length > turnCountAtDispatch) {
         logger.info({ taskId, agentId }, 'dispatch-watchdog: agent posted turn — healthy')
         dispatchRetryCount.delete(key)
+        await markDispatchCompleted(taskId, agentId)
         return
       }
 
@@ -120,15 +224,23 @@ function scheduleDispatchWatchdog(taskId: string, agentId: string, turnCountAtDi
       // No turn AND no active session — agent is dead
       const retries = dispatchRetryCount.get(key) || 0
       if (retries >= MAX_RETRIES) {
-        logger.warn({ taskId, agentId, retries }, 'dispatch-watchdog: max retries reached — resetting picked, will be caught by periodic scan')
+        logger.warn({ taskId, agentId, retries }, 'dispatch-watchdog: max retries reached — resetting picked')
         dispatchRetryCount.delete(key)
         // Reset picked so periodic scan can re-dispatch
         await db.update(issues).set({ picked: false, picked_at: null }).where(eq(issues.id, taskId))
+        await db.update(dispatchQueue)
+          .set({ status: 'failed' })
+          .where(and(eq(dispatchQueue.task_id, taskId), eq(dispatchQueue.agent_id, agentId), eq(dispatchQueue.status, 'dispatched')))
         return
       }
 
       logger.warn({ taskId, agentId, retries: retries + 1 }, 'dispatch-watchdog: no turn after 5min — auto-retrying')
       dispatchRetryCount.set(key, retries + 1)
+
+      // Increment retry count in DB
+      await db.update(dispatchQueue)
+        .set({ retry_count: retries + 1 })
+        .where(and(eq(dispatchQueue.task_id, taskId), eq(dispatchQueue.agent_id, agentId), eq(dispatchQueue.status, 'dispatched')))
 
       // Re-dispatch
       await dispatchTaskNudge({
@@ -147,6 +259,7 @@ function scheduleDispatchWatchdog(taskId: string, agentId: string, turnCountAtDi
 
 /** Check if an agent has an active session (updated in last 5 min) */
 async function isSessionActive(agentId: string): Promise<boolean> {
+  if (IS_SERVERLESS) return false  // can't check local sessions from Vercel
   try {
     const out = await runOpenClaw(['sessions', '--agent', agentId, '--json'], {
       timeoutMs: 8000,
@@ -166,6 +279,7 @@ async function isSessionActive(agentId: string): Promise<boolean> {
 }
 
 async function isLikelyBusy(assignee: string): Promise<boolean> {
+  if (IS_SERVERLESS) return false  // can't check local sessions from Vercel
   // Spawn agents always get fresh sessions — never considered busy
   const a = assignee.toLowerCase()
   if (SPAWN_AGENTS.has(a)) return false
@@ -190,13 +304,18 @@ async function isLikelyBusy(assignee: string): Promise<boolean> {
   }
 }
 
-// Agents that use spawn (no persistent main session)
-const SPAWN_AGENTS = new Set(['dumbo', 'uze', 'ralph', 'piem', 'cody'])
+// ─── Core dispatch logic ───
 
 async function sendOne(payload: DispatchParams) {
   const assignee = (payload.assignee || '').trim()
   const agentId = resolveAgentId(assignee)
   if (!agentId) return { sent: false as const, reason: 'no-agent' as const }
+
+  // Dedup guard: skip if same task+agent was dispatched in last 60s
+  if (await wasRecentlyDispatched(payload.taskId, agentId)) {
+    logger.info({ taskId: payload.taskId, agentId }, 'Skipping dispatch — dedup (dispatched <60s ago)')
+    return { sent: false as const, reason: 'dedup' as const }
+  }
 
   const compactContext = (payload.content || '').replace(/\s+/g, ' ').trim().slice(0, 240)
 
@@ -218,6 +337,13 @@ async function sendOne(payload: DispatchParams) {
     if (!issue) {
       return { sent: false as const, reason: 'no-task' as const }
     }
+
+    // Dedup guard #2: if task is already picked by this agent, skip
+    if (issue.picked && issue.picked_by?.toLowerCase() === agentId) {
+      logger.info({ taskId: payload.taskId, agentId }, 'Skipping dispatch — task already picked by this agent')
+      return { sent: false as const, reason: 'already-picked' as const }
+    }
+
     await setTaskPicked(payload.taskId, agentId)
     const turns = await getTurns(payload.taskId)
 
@@ -449,13 +575,11 @@ ${workflowBlock}
       // Force truly fresh session: cleanup gateway memory + delete session files
       const sessDir = `${process.env.HOME}/.openclaw/agents/${agentId}/sessions`
       try {
-        // 1. Tell gateway to drop in-memory session state
         execSync(`openclaw sessions cleanup --agent ${agentId} --enforce`, {
           timeout: 5000, stdio: 'ignore', env: withOpenClawEnv() as any,
         })
       } catch { /* best-effort */ }
       try {
-        // 2. Delete session transcript files
         for (const f of readdirSync(sessDir)) {
           if (f.endsWith('.jsonl') || f.endsWith('.lock') || f === 'sessions.json') {
             unlinkSync(`${sessDir}/${f}`)
@@ -471,29 +595,17 @@ ${workflowBlock}
         env: withOpenClawEnv(),
       })
 
-      // Schedule inline watchdog — auto-retry if no turn arrives within 5 min
-      // (only works for local dispatch where we can check session state)
+      // Schedule inline watchdog (local only — timers die on Vercel)
       scheduleDispatchWatchdog(payload.taskId, agentId, turns.length)
     }
 
-    // Record dispatch time for watchdog (detect dead sessions)
-    // Skip on Vercel — no persistent filesystem across invocations
-    if (!IS_SERVERLESS) {
-    const dispatchRecord = { taskId: payload.taskId, agentId, dispatchedAt: Date.now(), turnCountAtDispatch: turns.length }
-    try {
-      const watchdogPath = `${process.env.HOME}/.openclaw/dispatch-watchdog.json`
-      const existing = existsSync(watchdogPath) ? JSON.parse(readFileSync(watchdogPath, 'utf8')) : []
-      existing.push(dispatchRecord)
-      // Keep only last 20
-      writeFileSync(watchdogPath, JSON.stringify(existing.slice(-20), null, 2))
-    } catch { /* best-effort */ }
-    } // end IS_SERVERLESS guard
+    // Record dispatch in DB (works on both local and Vercel)
+    await recordDispatch(payload.taskId, agentId, turns.length)
+
   } else {
     // For persistent agents (main/cseno), skip CLI dispatch entirely.
-    // Main agent checks tasks via heartbeats and direct Telegram messages.
-    // CLI dispatch conflicts with active sessions and times out.
+    // Main agent checks tasks via heartbeats and direct messages.
     logger.info({ agentId, taskId: payload.taskId }, 'Persistent agent — task marked, skipping CLI dispatch (checked via heartbeat)')
-    // Just mark it picked so the agent finds it on next check
     await db.update(issues).set({ picked: true, picked_at: new Date().toISOString(), picked_by: agentId }).where(eq(issues.id, payload.taskId))
   }
 
@@ -512,7 +624,7 @@ function scheduleDrain(assignee: string) {
         scheduleDrain(key)
         return
       }
-      const queued = popPending(key)
+      const queued = await popPending(key)
       for (const item of queued) {
         await sendOne(item)
       }
@@ -528,16 +640,20 @@ export async function dispatchTaskNudge(params: DispatchParams) {
   const assignee = (params.assignee || '').trim()
   if (!assignee) return { sent: false, reason: 'no-assignee' as const }
 
+  const agentId = resolveAgentId(assignee)
+
   if (await isLikelyBusy(assignee)) {
-    enqueuePending(assignee, params)
+    if (agentId) await enqueuePending(agentId, params)
     scheduleDrain(assignee)
     return { sent: false, reason: 'busy-queued' as const }
   }
 
   // Drain any previous queued nudges first, then send the current one
-  const queued = popPending(assignee)
-  for (const item of queued) {
-    await sendOne(item)
+  if (agentId) {
+    const queued = await popPending(agentId)
+    for (const item of queued) {
+      await sendOne(item)
+    }
   }
 
   return sendOne(params)

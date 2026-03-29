@@ -3,7 +3,7 @@ import { requireRole } from '@/lib/auth';
 import { mutationLimiter } from '@/lib/rate-limit';
 import { logger } from '@/lib/logger';
 import { getIssue, getTurns, createTurn, getProject, type TurnType } from '@/lib/cc-db';
-import { dispatchTaskNudge } from '@/lib/task-dispatch';
+import { dispatchTaskNudge, markDispatchCompleted } from '@/lib/task-dispatch';
 import { postTaskCard } from '@/lib/discord-cards';
 import { db } from '@/db/client';
 import { issues } from '@/db/schema';
@@ -67,6 +67,11 @@ export async function POST(
 
     const turnAuthor = author || issue.assignee || auth.user?.username || 'system';
     const turnType: TurnType = type || 'result';
+
+    // Mark dispatch as completed when an agent posts a turn
+    if (SPAWN_AGENTS.has(turnAuthor.toLowerCase())) {
+      void markDispatchCompleted(taskId, turnAuthor.toLowerCase()).catch(() => {})
+    }
 
     const turn = await createTurn(taskId, {
       assigned_to,

@@ -1,19 +1,19 @@
 import { NextResponse } from 'next/server'
 import { requireRole } from '@/lib/auth'
 import { getTurns } from '@/lib/cc-db'
-import { readFileSync, writeFileSync, existsSync } from 'node:fs'
-import { dispatchTaskNudge, isAgentAssignee } from '@/lib/task-dispatch'
+import { dispatchTaskNudge, isAgentAssignee, markDispatchCompleted } from '@/lib/task-dispatch'
 import { logger } from '@/lib/logger'
 import { db } from '@/db/client'
-import { issues } from '@/db/schema'
-import { eq, and, ne, isNull, or } from 'drizzle-orm'
-import { sql } from 'drizzle-orm'
+import { issues, dispatchQueue } from '@/db/schema'
+import { eq, and, sql } from 'drizzle-orm'
 
-const WATCHDOG_PATH = `${process.env.HOME}/.openclaw/dispatch-watchdog.json`
 const STALE_THRESHOLD_MS = 5 * 60 * 1000 // 5 minutes
+const MAX_RETRIES = 3
 
 /**
  * GET /api/tasks/watchdog — Check for stale dispatches and optionally auto-retry
+ * 
+ * Now uses dispatch_queue table (works on Vercel) instead of filesystem JSON.
  */
 export async function GET(req: Request) {
   const authResult = await requireRole(req, 'viewer')
@@ -23,53 +23,78 @@ export async function GET(req: Request) {
   const autoRetry = url.searchParams.get('auto-retry') === 'true'
   const threshold = parseInt(url.searchParams.get('threshold') || '') || STALE_THRESHOLD_MS
 
-  if (!existsSync(WATCHDOG_PATH)) {
-    return NextResponse.json({ stale: [], message: 'No dispatches recorded' })
-  }
-
-  const records: Array<{
-    taskId: string
-    agentId: string
-    dispatchedAt: number
-    turnCountAtDispatch: number
-  }> = JSON.parse(readFileSync(WATCHDOG_PATH, 'utf8'))
-
   const now = Date.now()
-  const stale: typeof records = []
-  const healthy: typeof records = []
 
-  for (const rec of records) {
-    const age = now - rec.dispatchedAt
+  // 1. Check dispatched entries for staleness
+  const dispatched = await db.select()
+    .from(dispatchQueue)
+    .where(eq(dispatchQueue.status, 'dispatched'))
+
+  const stale: Array<{ taskId: string; agentId: string; ageMinutes: number; retried: boolean }> = []
+  const healthy: string[] = []
+  const completed: string[] = []
+
+  for (const rec of dispatched) {
+    const dispatchedAt = rec.dispatched_at ? new Date(rec.dispatched_at).getTime() : 0
+    const age = now - dispatchedAt
+
+    // Check if agent posted a turn since dispatch
+    const currentTurns = await getTurns(rec.task_id)
+    if (currentTurns.length > (rec.turn_count_at_dispatch || 0)) {
+      // Agent completed — mark as done
+      await markDispatchCompleted(rec.task_id, rec.agent_id)
+      completed.push(rec.task_id)
+      continue
+    }
+
     if (age < threshold) {
-      healthy.push(rec)
+      healthy.push(rec.task_id)
       continue
     }
 
-    const currentTurns = await getTurns(rec.taskId)
-    if (currentTurns.length > rec.turnCountAtDispatch) {
-      continue
-    }
+    // Stale dispatch
+    const retried = autoRetry && (rec.retry_count || 0) < MAX_RETRIES
+    stale.push({
+      taskId: rec.task_id,
+      agentId: rec.agent_id,
+      ageMinutes: Math.round(age / 60000),
+      retried,
+    })
 
-    stale.push(rec)
-  }
-
-  const retried: string[] = []
-  if (autoRetry) {
-    for (const rec of stale) {
+    if (retried) {
       try {
+        // Increment retry count
+        await db.update(dispatchQueue)
+          .set({ retry_count: (rec.retry_count || 0) + 1 })
+          .where(eq(dispatchQueue.id, rec.id))
+
+        // Reset picked so dispatch can re-pick
+        await db.update(issues)
+          .set({ picked: false, picked_at: null })
+          .where(eq(issues.id, rec.task_id))
+
         await dispatchTaskNudge({
-          taskId: rec.taskId,
+          taskId: rec.task_id,
           title: '',
-          assignee: rec.agentId,
+          assignee: rec.agent_id,
           reason: 'reassign',
         })
-        retried.push(rec.taskId)
-      } catch { /* best-effort */ }
+      } catch (e) {
+        logger.warn({ err: e, taskId: rec.task_id }, 'watchdog: retry failed')
+      }
+    } else if (autoRetry && (rec.retry_count || 0) >= MAX_RETRIES) {
+      // Max retries hit — mark as failed, reset picked
+      await db.update(dispatchQueue)
+        .set({ status: 'failed' })
+        .where(eq(dispatchQueue.id, rec.id))
+      await db.update(issues)
+        .set({ picked: false, picked_at: null })
+        .where(eq(issues.id, rec.task_id))
+      logger.warn({ taskId: rec.task_id, agentId: rec.agent_id }, 'watchdog: max retries — marked failed')
     }
   }
 
-  writeFileSync(WATCHDOG_PATH, JSON.stringify(healthy, null, 2))
-
+  // 2. Orphan scan: open tasks assigned to agents that aren't picked and aren't tracked
   const orphanDispatched: string[] = []
   if (autoRetry) {
     try {
@@ -84,10 +109,14 @@ export async function GET(req: Request) {
 
       const orphans = orphanRows.rows as { id: string; title: string; assignee: string }[]
 
+      // Get all currently tracked task IDs
+      const trackedIds = new Set(dispatched.map(d => d.task_id))
+
       for (const orphan of orphans) {
         if (!isAgentAssignee(orphan.assignee)) continue
-        const isTracked = healthy.some(h => h.taskId === orphan.id)
-        if (isTracked) continue
+        if (trackedIds.has(orphan.id)) continue
+        // Also skip if in completed list
+        if (completed.includes(orphan.id)) continue
 
         logger.info({ taskId: orphan.id, assignee: orphan.assignee }, 'watchdog: orphaned task found, dispatching')
         try {
@@ -105,14 +134,19 @@ export async function GET(req: Request) {
     }
   }
 
+  // 3. Cleanup old completed/failed entries (>24h)
+  try {
+    await db.execute(sql`
+      DELETE FROM dispatch_queue
+      WHERE status IN ('completed', 'failed')
+        AND created_at < ${new Date(now - 24 * 60 * 60 * 1000).toISOString()}
+    `)
+  } catch { /* best-effort */ }
+
   return NextResponse.json({
-    stale: stale.map(s => ({
-      taskId: s.taskId,
-      agentId: s.agentId,
-      ageMinutes: Math.round((now - s.dispatchedAt) / 60000),
-      retried: retried.includes(s.taskId),
-    })),
+    stale,
     healthy: healthy.length,
+    completed: completed.length,
     orphansDispatched: orphanDispatched.length,
     message: stale.length === 0 && orphanDispatched.length === 0
       ? 'All dispatches healthy'
