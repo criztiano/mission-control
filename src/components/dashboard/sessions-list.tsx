@@ -2,6 +2,7 @@
 
 import { Session } from '@/types'
 import { formatAge, parseTokenUsage, getStatusBadgeColor } from '@/lib/utils'
+import { useMissionControl } from '@/store'
 
 interface SessionsListProps {
   sessions: Session[]
@@ -150,6 +151,7 @@ function SessionCard({ session }: SessionCardProps) {
 export function SessionsList({ sessions }: SessionsListProps) {
   const activeSessions = sessions.filter(s => s.active)
   const idleSessions = sessions.filter(s => !s.active)
+  const { connection } = useMissionControl()
 
   return (
     <div className="bg-card rounded-lg border border-border">
@@ -163,9 +165,19 @@ export function SessionsList({ sessions }: SessionsListProps) {
       <div className="p-4">
         {sessions.length === 0 ? (
           <div className="text-center py-8 text-muted-foreground">
-            <div className="text-4xl mb-2">🤖</div>
-            <p>No sessions active</p>
-            <p className="text-xs">Sessions will appear here when agents start</p>
+            {!connection.isConnected ? (
+              <>
+                <div className="text-4xl mb-2">🔌</div>
+                <p className="text-sm font-medium text-foreground">Connect Gateway to see sessions</p>
+                <p className="text-xs mt-1">Sessions stream live from your Gateway</p>
+              </>
+            ) : (
+              <>
+                <div className="text-4xl mb-2">😴</div>
+                <p className="text-sm font-medium text-foreground">No active sessions</p>
+                <p className="text-xs mt-1">Sessions appear here when agents start working</p>
+              </>
+            )}
           </div>
         ) : (
           <div className="space-y-3">

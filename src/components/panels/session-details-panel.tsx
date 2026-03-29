@@ -10,7 +10,8 @@ export function SessionDetailsPanel() {
     selectedSession, 
     setSelectedSession,
     setSessions,
-    availableModels 
+    availableModels,
+    connection,
   } = useMissionControl()
 
   // Smart polling for sessions (30s, visibility-aware)
@@ -189,9 +190,23 @@ export function SessionDetailsPanel() {
         <div className="lg:col-span-2 space-y-4">
           {sortedSessions.length === 0 ? (
             <div className="bg-card border border-border rounded-lg p-12 text-center">
-              <div className="text-muted-foreground">
-                No sessions match the current filter
-              </div>
+              {sessions.length === 0 && !connection.isConnected ? (
+                <>
+                  <div className="text-4xl mb-3">🔌</div>
+                  <p className="text-sm font-medium text-foreground mb-1">Connect Gateway to see sessions</p>
+                  <p className="text-xs text-muted-foreground">Sessions stream live from your Gateway. Connect it from the sidebar to see active agents.</p>
+                </>
+              ) : sessions.length === 0 ? (
+                <>
+                  <div className="text-4xl mb-3">😴</div>
+                  <p className="text-sm font-medium text-foreground mb-1">No active sessions</p>
+                  <p className="text-xs text-muted-foreground">All agents are idle. Sessions appear here when agents start working.</p>
+                </>
+              ) : (
+                <div className="text-muted-foreground text-sm">
+                  No sessions match the current filter
+                </div>
+              )}
             </div>
           ) : (
             sortedSessions.map((session) => {
