@@ -886,19 +886,19 @@ function TaskDetailModal({
   })
 
   const renderTurnContent = (turn: Turn) => (
-    <div className="text-sm text-muted-foreground mt-1 prose prose-sm prose-invert max-w-none
-      prose-headings:text-foreground prose-headings:font-semibold prose-headings:mt-3 prose-headings:mb-1.5
-      prose-h1:text-base prose-h2:text-sm prose-h3:text-xs
-      prose-p:my-1 prose-p:leading-relaxed
+    <div className="text-sm text-foreground/80 mt-2 prose prose-sm prose-invert max-w-none
+      prose-headings:text-foreground prose-headings:font-semibold prose-headings:mt-4 prose-headings:mb-2
+      prose-h1:text-base prose-h2:text-sm prose-h2:mt-5 prose-h3:text-sm prose-h3:text-foreground/70
+      prose-p:my-2 prose-p:leading-relaxed
       prose-a:text-primary prose-a:no-underline hover:prose-a:underline
       prose-strong:text-foreground prose-strong:font-semibold
-      prose-code:text-primary prose-code:bg-surface-1 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:text-xs prose-code:before:content-[''] prose-code:after:content-['']
-      prose-pre:bg-surface-1 prose-pre:text-foreground prose-pre:border prose-pre:border-border prose-pre:rounded prose-pre:p-2 prose-pre:text-xs prose-pre:overflow-x-auto
-      prose-ul:my-1 prose-ul:list-disc prose-ul:pl-4
-      prose-ol:my-1 prose-ol:list-decimal prose-ol:pl-4
-      prose-li:my-0.5
-      prose-blockquote:border-l-2 prose-blockquote:border-border prose-blockquote:pl-3 prose-blockquote:italic prose-blockquote:text-muted-foreground
-      prose-hr:border-border prose-hr:my-2">
+      prose-code:text-primary prose-code:bg-surface-1 prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-code:text-xs prose-code:before:content-[''] prose-code:after:content-['']
+      prose-pre:bg-surface-1 prose-pre:text-foreground prose-pre:border prose-pre:border-border prose-pre:rounded-lg prose-pre:p-3 prose-pre:text-xs prose-pre:overflow-x-auto
+      prose-ul:my-2 prose-ul:list-disc prose-ul:pl-5 prose-ul:space-y-1
+      prose-ol:my-2 prose-ol:list-decimal prose-ol:pl-5 prose-ol:space-y-1
+      prose-li:my-1 prose-li:leading-relaxed
+      prose-blockquote:border-l-2 prose-blockquote:border-primary/40 prose-blockquote:pl-4 prose-blockquote:italic prose-blockquote:text-muted-foreground
+      prose-hr:border-border prose-hr:my-4">
       <ReactMarkdown remarkPlugins={[remarkGfm]}>
         {turn.content}
       </ReactMarkdown>
