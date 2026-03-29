@@ -72,10 +72,30 @@ export async function POST(request: NextRequest) {
 
     logger.info({ digestId: digest.id, label: body.label }, 'Digest created');
 
-    // Step 2: Update each tweet's summary and digest_id
+    // Step 2: Upsert each tweet — insert if not in Neon, update if exists
     for (const ts of body.tweet_summaries) {
       if (!ts.id || typeof ts.summary !== 'string') continue;
-      await db.update(tweets).set({ summary: ts.summary, digest_id: digest.id }).where(eq(tweets.id, ts.id));
+      const now = new Date().toISOString();
+      await db
+        .insert(tweets)
+        .values({
+          id: ts.id,
+          author: ts.author || '',
+          content: ts.content || '',
+          summary: ts.summary,
+          digest_id: digest.id,
+          tweet_link: ts.tweet_link || '',
+          theme: ts.theme || '',
+          retweet_count: ts.retweet_count || 0,
+          reply_count: ts.reply_count || 0,
+          like_count: ts.like_count || 0,
+          created_at: now,
+          scraped_at: now,
+        })
+        .onConflictDoUpdate({
+          target: tweets.id,
+          set: { summary: ts.summary, digest_id: digest.id },
+        });
     }
 
     logger.info({ digestId: digest.id, tweetCount: body.tweet_summaries.length }, 'Tweet summaries updated');
