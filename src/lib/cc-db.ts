@@ -877,7 +877,7 @@ export async function getGardenItem(id: string): Promise<CCGardenItem | undefine
   return { ...rows[0], enriched: Boolean(rows[0].enriched) } as CCGardenItem;
 }
 
-export async function updateGardenItem(id: string, fields: Partial<Pick<CCGardenItem, 'content' | 'interest' | 'type' | 'temporal' | 'tags' | 'note' | 'original_source' | 'instance_type'>>): Promise<void> {
+export async function updateGardenItem(id: string, fields: Partial<Pick<CCGardenItem, 'content' | 'interest' | 'type' | 'temporal' | 'tags' | 'note' | 'original_source' | 'instance_type' | 'metadata'>>): Promise<void> {
   if (Object.keys(fields).length === 0) return;
   await db.update(garden).set(fields as any).where(eq(garden.id, id));
 }

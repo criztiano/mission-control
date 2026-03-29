@@ -294,26 +294,50 @@ curl -s -X POST "https://eden-iota-one.vercel.app/api/tasks/${payload.taskId}/tu
 ${approvalBlock}
 
 ### If this is a REVIEW (${builderTarget} posted a result turn):
-1. cd into the project path and review the Git diff:
-   \`git diff develop..${taskBranchPM}\`
-2. Run the build, run tests, verify against spec
-3. If it **passes**: create a PR, then deliver to Cri with the PR link:
 
+**Step 1: Code review**
 \`\`\`bash
 cd <project_path>
-gh pr create --base develop --head ${taskBranchPM} --title "${issue.title}" --body "Task: ${payload.taskId}"
+git fetch origin
+git diff main..${taskBranchPM}
 \`\`\`
 
-Then post (include **links** array for clickable buttons in the UI):
+**Step 2: Build check**
+\`\`\`bash
+npx next build
+\`\`\`
+
+**Step 3: Browser testing (MANDATORY — do NOT skip)**
+Use \`agent-browser\` to verify the feature works like a real user would:
+\`\`\`bash
+agent-browser open https://eden-iota-one.vercel.app/<relevant-page>
+agent-browser screenshot
+agent-browser snapshot -i
+\`\`\`
+- Navigate to the affected page/panel
+- Verify the UI renders correctly (not empty, no errors)
+- Check that new features/data are visible
+- If you can't verify visually, the review FAILS
+
+**Step 4a: If review PASSES → merge to develop and deliver:**
+\`\`\`bash
+cd <project_path>
+git checkout develop && git pull origin develop
+git merge ${taskBranchPM} --no-edit
+git push origin develop
+\`\`\`
+
+Then post delivery turn:
 \`\`\`bash
 curl -s -X POST "https://eden-iota-one.vercel.app/api/tasks/${payload.taskId}/turns" \\
   -H "Content-Type: application/json" \\
   -H "x-api-key: a2b6f6c96df5eba20ac83e7a4bf538adf7ea37701177c7eb430519986d4dc3a0" \\
-  -d '{"assigned_to":"cri","content":"## ✅ Done\\n\\nReviewed and approved. Changes look clean.","links":[{"url":"<PR_URL>","title":"Pull Request","type":"pr"},{"url":"<DIFF_URL>","title":"View Diff","type":"diff"}]}'
+  -d '{"assigned_to":"cri","content":"## ✅ Done\\n\\nReviewed, browser-tested, merged to develop.","links":[{"url":"https://github.com/criztiano/mission-control/compare/main...develop","title":"View Changes","type":"diff"}]}'
 \`\`\`
 
-4. If it **fails**: send back with specific fixes (cite the diff):
+**⚠️ A task is NOT done until code is on \`develop\` and pushed. Never leave it on a task branch.**
 
+**Step 4b: If review FAILS → send back with specific issues:**
 \`\`\`bash
 curl -s -X POST "https://eden-iota-one.vercel.app/api/tasks/${payload.taskId}/turns" \\
   -H "Content-Type: application/json" \\
@@ -337,6 +361,12 @@ git add -A && git commit -m "feat: <short description>"
 git push -u origin ${taskBranch}
 \`\`\`
 5. Run the build to verify — fix any errors before reporting
+6. **Self-test with chrome-devtools-mcp (MANDATORY):**
+   - Start dev server if needed: \`npx next dev &\`
+   - Use MCP tools to navigate to the affected page
+   - Verify your changes render correctly (not empty, no console errors)
+   - If something's broken, fix it before reporting done
+   - "Build passes" ≠ "feature works" — you MUST verify visually
 
 ## How to report back
 
