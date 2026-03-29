@@ -3,7 +3,7 @@ import { requireRole } from '@/lib/auth';
 import { mutationLimiter } from '@/lib/rate-limit';
 import { logger } from '@/lib/logger';
 import { getIssue, getTurns, createTurn, getProject, type TurnType } from '@/lib/cc-db';
-import { dispatchTaskNudge, markDispatchCompleted } from '@/lib/task-dispatch';
+import { dispatchTaskNudge, markDispatchCompleted, cascadeDispatchOnClose } from '@/lib/task-dispatch';
 import { postTaskCard } from '@/lib/discord-cards';
 import { db } from '@/db/client';
 import { issues } from '@/db/schema';
@@ -106,6 +106,21 @@ export async function POST(
           logger.warn({ err: e, taskId }, 'Discord task card notification failed');
         }
       })();
+    }
+
+    // Auto-close: when a PM posts a "Done" review turn on a sub-task, close it and cascade
+    const PM_AGENTS = new Set(['piem', 'ralph']);
+    const isDoneTurn = (content || '').includes('✅ Done') || (content || '').toLowerCase().startsWith('## done');
+    const isPMAuthor = PM_AGENTS.has(turnAuthor.toLowerCase());
+    const isSubTask = !!issue.parent_id;
+
+    if (isPMAuthor && isDoneTurn && isSubTask && issue.status === 'open') {
+      await db.update(issues).set({ status: 'closed', updated_at: new Date().toISOString() }).where(eq(issues.id, taskId));
+      logger.info({ taskId, pm: turnAuthor, parentId: issue.parent_id }, 'Auto-closed sub-task after PM review');
+
+      void cascadeDispatchOnClose(taskId).catch((e: Error) => {
+        logger.warn({ err: e, taskId }, 'cascade dispatch after auto-close failed');
+      });
     }
 
     // Dispatch on every turn
