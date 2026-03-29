@@ -456,18 +456,50 @@ async function sendOne(payload: DispatchParams) {
       ? `Delegate to ${builderTarget}`
       : `Send to Cri for approval (Main Crew policy)`
 
-    const approvalBlock = !isAutonomous ? [
-      '',
-      `### If Cri APPROVED your plan (turn from Cri):`,
-      `Delegate to ${builderTarget}:`,
-      '',
-      '```bash',
-      `curl -s -X POST "https://eden-iota-one.vercel.app/api/tasks/${payload.taskId}/turns" \\`,
-      `  -H "Content-Type: application/json" \\`,
-      `  -H "x-api-key: a2b6f6c96df5eba20ac83e7a4bf538adf7ea37701177c7eb430519986d4dc3a0" \\`,
-      `  -d '{"assigned_to":"${builderTarget}","content":"Plan approved by Cri. Implementing."}'`,
-      '```',
-    ].join('\n') : ''
+    const approvalBlock = !isAutonomous ? `
+
+### If Cri APPROVED your plan (turn from Cri):
+
+**Check your plan: does it have 3+ phases?**
+
+**YES (multi-phase) → Create sub-tasks with dependencies:**
+
+Create one task per phase. Each depends on the previous. Only Phase 1 dispatches immediately — the rest auto-dispatch when their dependency closes.
+
+\`\`\`bash
+# Phase 1 (no dependencies — dispatches immediately)
+curl -s -X POST "https://eden-iota-one.vercel.app/api/tasks" \\
+  -H "Content-Type: application/json" \\
+  -H "x-api-key: a2b6f6c96df5eba20ac83e7a4bf538adf7ea37701177c7eb430519986d4dc3a0" \\
+  -d '{"title":"Phase 1: ...","description":"<FULL spec for this phase only — files, acceptance criteria, browser test>","assigned_to":"${builderTarget}","parent_id":"${payload.taskId}","depends_on":[],"metadata":{"project_id":"<PROJECT_ID>"}}'
+
+# Phase 2 (depends on Phase 1 — auto-dispatches when P1 closes)
+curl -s -X POST "https://eden-iota-one.vercel.app/api/tasks" \\
+  -H "Content-Type: application/json" \\
+  -H "x-api-key: a2b6f6c96df5eba20ac83e7a4bf538adf7ea37701177c7eb430519986d4dc3a0" \\
+  -d '{"title":"Phase 2: ...","description":"<FULL spec for this phase>","assigned_to":"${builderTarget}","parent_id":"${payload.taskId}","depends_on":["<PHASE_1_TASK_ID>"],"metadata":{"project_id":"<PROJECT_ID>"}}'
+
+# Phase 3 depends on Phase 2, etc.
+\`\`\`
+
+⚠️ **CRITICAL:** You MUST include \`depends_on\` with the previous phase's task ID. Without it, ALL phases dispatch at once and ${builderTarget} works on them out of order.
+
+After creating all sub-tasks, post a summary turn on the PARENT task:
+\`\`\`bash
+curl -s -X POST "https://eden-iota-one.vercel.app/api/tasks/${payload.taskId}/turns" \\
+  -H "Content-Type: application/json" \\
+  -H "x-api-key: a2b6f6c96df5eba20ac83e7a4bf538adf7ea37701177c7eb430519986d4dc3a0" \\
+  -d '{"assigned_to":"cri","content":"## 📋 Sub-tasks Created\\n\\nBroke the plan into N phases with dependency chain. Phase 1 dispatched to ${builderTarget}."}'
+\`\`\`
+
+**NO (simple task, 1-2 phases) → Direct delegation:**
+\`\`\`bash
+curl -s -X POST "https://eden-iota-one.vercel.app/api/tasks/${payload.taskId}/turns" \\
+  -H "Content-Type: application/json" \\
+  -H "x-api-key: a2b6f6c96df5eba20ac83e7a4bf538adf7ea37701177c7eb430519986d4dc3a0" \\
+  -d '{"assigned_to":"${builderTarget}","content":"Plan approved by Cri. Implementing."}'
+\`\`\`
+` : ''
 
     let workflowBlock: string
     if (isPM) {
