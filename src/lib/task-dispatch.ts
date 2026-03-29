@@ -15,7 +15,8 @@ type DispatchParams = {
   content?: string
 }
 
-const PENDING_PATH = `${process.env.HOME}/.openclaw/dispatch-pending.json`
+const IS_SERVERLESS = !!process.env.VERCEL || !!process.env.AWS_LAMBDA_FUNCTION_NAME
+const PENDING_PATH = `${process.env.HOME || '/tmp'}/.openclaw/dispatch-pending.json`
 const retryTimers = new Map<string, NodeJS.Timeout>()
 const dispatchWatchdogs = new Map<string, NodeJS.Timeout>()
 const DISPATCH_TIMEOUT_MS = 5 * 60 * 1000 // 5 min to post a turn or we auto-retry
@@ -67,6 +68,7 @@ function writePending(data: Record<string, DispatchParams[]>) {
 }
 
 function enqueuePending(assignee: string, payload: DispatchParams) {
+  if (IS_SERVERLESS) return  // no persistent filesystem on Vercel
   const data = readPending()
   const key = assignee.toLowerCase()
   const list = data[key] || []
@@ -200,11 +202,12 @@ async function sendOne(payload: DispatchParams) {
 
   if (SPAWN_AGENTS.has(agentId)) {
     // Check if agent already has a picked task (busy) — queue drain will handle it later
+    // Query both the original assignee name AND the resolved agentId since DB might store either
     const { projects } = await import('@/db/schema')
     const busyRows = await db
       .select({ id: issues.id })
       .from(issues)
-      .where(sql`LOWER(${issues.assignee}) = LOWER(${agentId}) AND ${issues.status} = 'open' AND ${issues.picked} = true AND ${issues.id} != ${payload.taskId}`)
+      .where(sql`(LOWER(${issues.assignee}) = LOWER(${assignee}) OR LOWER(${issues.assignee}) = LOWER(${agentId})) AND ${issues.status} = 'open' AND ${issues.picked} = true AND ${issues.id} != ${payload.taskId}`)
       .limit(1)
     if (busyRows.length > 0) {
       return { sent: false as const, reason: 'agent-busy' as const }
@@ -474,6 +477,8 @@ ${workflowBlock}
     }
 
     // Record dispatch time for watchdog (detect dead sessions)
+    // Skip on Vercel — no persistent filesystem across invocations
+    if (!IS_SERVERLESS) {
     const dispatchRecord = { taskId: payload.taskId, agentId, dispatchedAt: Date.now(), turnCountAtDispatch: turns.length }
     try {
       const watchdogPath = `${process.env.HOME}/.openclaw/dispatch-watchdog.json`
@@ -482,6 +487,7 @@ ${workflowBlock}
       // Keep only last 20
       writeFileSync(watchdogPath, JSON.stringify(existing.slice(-20), null, 2))
     } catch { /* best-effort */ }
+    } // end IS_SERVERLESS guard
   } else {
     // For persistent agents (main/cseno), skip CLI dispatch entirely.
     // Main agent checks tasks via heartbeats and direct Telegram messages.
@@ -495,6 +501,7 @@ ${workflowBlock}
 }
 
 function scheduleDrain(assignee: string) {
+  if (IS_SERVERLESS) return  // timers don't survive serverless invocations
   const key = assignee.toLowerCase()
   if (retryTimers.has(key)) return
 
