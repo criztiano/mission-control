@@ -15,6 +15,19 @@ const RATE_LIMIT_DELAY_MS = 600;
 interface TweetSummary {
   id: string;
   summary: string;
+  // Optional full tweet data — when provided, cards are posted from payload
+  // instead of querying Neon (supports local-SQLite → Vercel pipeline)
+  author?: string;
+  content?: string;
+  tweet_link?: string;
+  theme?: string;
+  verdict?: string;
+  created_at?: string;
+  scraped_at?: string;
+  media_urls?: string;
+  like_count?: number;
+  reply_count?: number;
+  retweet_count?: number;
 }
 
 interface DigestRequest {
@@ -113,19 +126,53 @@ export async function POST(request: NextRequest) {
     await updateDigestDiscordInfo(digest.id, discordMessageId, threadId);
 
     // Step 6: Post tweet cards inside the thread
-    const tweetRows = await db.execute(sql`
-      SELECT t.*, r.rating FROM tweets t
-      LEFT JOIN tweet_ratings r ON t.id = r.tweet_id
-      WHERE t.digest_id = ${digest.id}
-      ORDER BY t.pinned DESC, t.scraped_at DESC
-    `);
+    // Use payload data directly (supports local-SQLite pipeline where tweets aren't in Neon)
+    const hasPayloadData = body.tweet_summaries.some(ts => ts.author && ts.content);
+    let tweetCards: Array<{
+      id: string; title: string; author: string; theme: string; verdict: string;
+      action: string; source: string; tweet_link: string; digest: string; content: string;
+      created_at: string; scraped_at: string; pinned: boolean; media_urls: string;
+      triage_status: string; snooze_until: string | null; rating: 'fire' | 'meh' | 'noise' | null;
+      summary: string; digest_id: string; discord_message_id: string | null; discord_posted_at: string | null;
+    }> = [];
 
-    const tweetList = tweetRows.rows as Array<Record<string, unknown>>;
-    let postedCount = 0;
-    const errors: string[] = [];
-
-    for (const tweet of tweetList) {
-      const cctweet = {
+    if (hasPayloadData) {
+      // Build cards from payload — no Neon query needed
+      tweetCards = body.tweet_summaries
+        .filter(ts => ts.author && ts.content)
+        .map(ts => ({
+          id: ts.id,
+          title: '',
+          author: ts.author || '',
+          theme: ts.theme || '',
+          verdict: ts.verdict || 'keep',
+          action: '',
+          source: '',
+          tweet_link: ts.tweet_link || '',
+          digest: body.label,
+          content: ts.content || '',
+          created_at: ts.created_at || '',
+          scraped_at: ts.scraped_at || '',
+          pinned: false,
+          media_urls: ts.media_urls || '[]',
+          triage_status: 'classified',
+          snooze_until: null,
+          rating: null,
+          summary: ts.summary,
+          digest_id: digest.id,
+          discord_message_id: null,
+          discord_posted_at: null,
+        }));
+      logger.info({ digestId: digest.id, source: 'payload', count: tweetCards.length }, 'Using payload tweet data for cards');
+    } else {
+      // Fallback: query Neon (works when tweets are in the DB)
+      const tweetRows = await db.execute(sql`
+        SELECT t.*, r.rating FROM tweets t
+        LEFT JOIN tweet_ratings r ON t.id = r.tweet_id
+        WHERE t.digest_id = ${digest.id}
+        ORDER BY t.pinned DESC, t.scraped_at DESC
+      `);
+      tweetCards = (tweetRows.rows as Array<Record<string, unknown>>).map(tweet => ({
         id: String(tweet.id),
         title: String(tweet.title || ''),
         author: String(tweet.author || ''),
@@ -147,32 +194,36 @@ export async function POST(request: NextRequest) {
         digest_id: String(tweet.digest_id || ''),
         discord_message_id: tweet.discord_message_id as string | null,
         discord_posted_at: tweet.discord_posted_at as string | null,
-      };
+      }));
+      logger.info({ digestId: digest.id, source: 'neon', count: tweetCards.length }, 'Using Neon tweet data for cards');
+    }
 
-      const highlighted = Boolean(tweet.highlighted);
-      const messageId = await postTweetCard(cctweet, threadId, cctweet.rating, highlighted);
+    let postedCount = 0;
+    const errors: string[] = [];
+
+    for (let i = 0; i < tweetCards.length; i++) {
+      const cctweet = tweetCards[i];
+      const messageId = await postTweetCard(cctweet, threadId, cctweet.rating, false);
 
       if (messageId) {
-        const now = new Date().toISOString();
-        await db.update(tweets).set({ discord_message_id: messageId, discord_posted_at: now }).where(eq(tweets.id, cctweet.id));
         postedCount++;
       } else {
-        errors.push(`Failed to post tweet ${tweet.id}`);
+        errors.push(`Failed to post tweet ${cctweet.id}`);
       }
 
-      if (tweetList.indexOf(tweet) < tweetList.length - 1) {
+      if (i < tweetCards.length - 1) {
         await new Promise(resolve => setTimeout(resolve, RATE_LIMIT_DELAY_MS));
       }
     }
 
-    logger.info({ digestId: digest.id, postedCount, total: tweetList.length }, 'Tweet cards posted to thread');
+    logger.info({ digestId: digest.id, postedCount, total: tweetCards.length }, 'Tweet cards posted to thread');
 
     return NextResponse.json({
       digest_id: digest.id,
       discord_message_id: discordMessageId,
       discord_thread_id: threadId,
       cards_posted: postedCount,
-      cards_total: tweetList.length,
+      cards_total: tweetCards.length,
       errors: errors.length > 0 ? errors : undefined,
     });
   } catch (error) {
