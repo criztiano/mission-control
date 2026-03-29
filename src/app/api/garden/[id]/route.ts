@@ -44,7 +44,7 @@ export async function PUT(
     const { id } = await params;
     const body = await request.json();
 
-    const allowed = ['content', 'interest', 'type', 'temporal', 'tags', 'note', 'original_source', 'instance_type'];
+    const allowed = ['title', 'content', 'interest', 'type', 'temporal', 'tags', 'note', 'original_source', 'instance_type', 'enriched', 'metadata'];
     const fields: Record<string, any> = {};
     for (const key of allowed) {
       if (key in body) fields[key] = body[key];

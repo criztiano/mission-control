@@ -47,10 +47,10 @@ export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
 
-    const { content, type, interest, temporal, tags, note, original_source, media_urls, metadata } = body;
+    const { title, content, type, interest, temporal, tags, note, original_source, media_urls, metadata } = body;
 
-    if (!content) {
-      return NextResponse.json({ error: 'content is required' }, { status: 400 });
+    if (!content && !title) {
+      return NextResponse.json({ error: 'title or content is required' }, { status: 400 });
     }
 
     const id = body.id || randomUUID();
@@ -58,7 +58,8 @@ export async function POST(request: NextRequest) {
 
     await db.insert(garden).values({
       id,
-      content,
+      title: title || '',
+      content: content || '',
       type: type || 'note',
       interest: interest || 'information',
       temporal: temporal || 'ever',

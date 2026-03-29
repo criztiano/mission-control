@@ -8,6 +8,7 @@ import { PixelLoader } from '@/components/ui/pixel-loader'
 
 interface GardenItem {
   id: string
+  title: string
   content: string
   type: string
   interest: string
@@ -150,7 +151,12 @@ function GardenCard({ item, onClick, focused, itemRef }: { item: GardenItem; onC
         />
       )}
 
-      <p className="text-sm text-foreground leading-relaxed line-clamp-3">{item.content}</p>
+      {item.title && (
+        <h3 className="text-sm font-semibold text-foreground leading-snug line-clamp-2">{item.title}</h3>
+      )}
+      {(!item.title || item.content !== item.title) && (
+        <p className="text-xs text-muted-foreground leading-relaxed line-clamp-2">{item.content?.slice(0, 120)}</p>
+      )}
 
       <div className="flex items-center gap-1.5 flex-wrap">
         <TypeBadge type={item.type} />
@@ -195,7 +201,7 @@ function GardenListRow({ item, onClick, focused, itemRef }: { item: GardenItem; 
       className={`flex items-center gap-3 px-4 py-2.5 bg-card border border-border rounded-lg hover:border-primary/30 transition-colors w-full text-left ${focused ? 'ring-2 ring-primary/50' : ''}`}
     >
       <div className="flex-1 min-w-0">
-        <p className="text-sm text-foreground truncate">{item.content}</p>
+        <p className="text-sm text-foreground truncate">{item.title || item.content}</p>
       </div>
       <TypeBadge type={item.type} />
       <InterestBadge interest={item.interest} />
@@ -222,6 +228,7 @@ function DetailSheet({
   onUpdate: () => void
   onDelete: () => void
 }) {
+  const [title, setTitle] = useState(item.title || '')
   const [content, setContent] = useState(item.content)
   const [itemType, setItemType] = useState(item.type)
   const [interest, setInterest] = useState(item.interest)
@@ -244,6 +251,7 @@ function DetailSheet({
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          title,
           content,
           type: itemType,
           interest,
@@ -291,6 +299,17 @@ function DetailSheet({
       </div>
 
       <div className="p-4 space-y-4">
+        {/* Title */}
+        <div>
+          <label className="text-xs font-medium text-muted-foreground block mb-1.5">Title</label>
+          <input
+            type="text"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder="Short label for this item..."
+            className="w-full text-sm bg-secondary border border-border rounded px-2 py-1.5 text-foreground"
+          />
+        </div>
         {/* Content */}
         <div>
           <label className="text-xs font-medium text-muted-foreground block mb-1.5">Content</label>

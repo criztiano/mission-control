@@ -163,6 +163,7 @@ export type TweetInteraction = InferSelectModel<typeof tweetInteractions>;
 // --- garden ---
 export const garden = pgTable('garden', {
   id: text('id').primaryKey(),
+  title: text('title').notNull().default(''),
   content: text('content').notNull(),
   type: text('type').notNull().default('tweet'),
   interest: text('interest').notNull().default('information'),

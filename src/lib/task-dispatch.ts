@@ -385,22 +385,63 @@ ${workflowBlock}
 - Use the **links** array in the JSON for any URLs (PRs, diffs, docs) — they render as clickable buttons in the UI. Format: \`"links":[{"url":"...","title":"Label","type":"pr|diff|doc"}]\`
 - NEVER paste raw URLs in the content text — always use the links array`
 
-    // Force truly fresh session: cleanup gateway memory + delete session files
-    const sessDir = `${process.env.HOME}/.openclaw/agents/${agentId}/sessions`
-    try {
-      // 1. Tell gateway to drop in-memory session state
-      execSync(`openclaw sessions cleanup --agent ${agentId} --enforce`, {
-        timeout: 5000, stdio: 'ignore', env: withOpenClawEnv() as any,
-      })
-    } catch { /* best-effort */ }
-    try {
-      // 2. Delete session transcript files
-      for (const f of readdirSync(sessDir)) {
-        if (f.endsWith('.jsonl') || f.endsWith('.lock') || f === 'sessions.json') {
-          unlinkSync(`${sessDir}/${f}`)
+    // Dispatch via webhook (Vercel) or local CLI
+    const dispatchUrl = process.env.DISPATCH_URL
+    const dispatchToken = process.env.DISPATCH_TOKEN
+
+    if (dispatchUrl) {
+      // Running on Vercel — no local openclaw binary, use webhook
+      logger.info({ agentId, taskId: payload.taskId, dispatchUrl }, 'Dispatching via webhook (Vercel)')
+      try {
+        const resp = await fetch(dispatchUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(dispatchToken ? { 'Authorization': `Bearer ${dispatchToken}` } : {}),
+          },
+          body: JSON.stringify({ agentId, message: nudgeMsg }),
+        })
+        if (!resp.ok) {
+          const body = await resp.text().catch(() => '')
+          logger.error({ agentId, taskId: payload.taskId, status: resp.status, body }, 'Dispatch webhook failed')
+          return { sent: false as const, reason: 'webhook-error' as const }
         }
+        logger.info({ agentId, taskId: payload.taskId }, 'Dispatch webhook succeeded')
+      } catch (e) {
+        logger.error({ err: e, agentId, taskId: payload.taskId }, 'Dispatch webhook fetch error')
+        return { sent: false as const, reason: 'webhook-error' as const }
       }
-    } catch { /* dir may not exist yet */ }
+    } else {
+      // Running locally — use CLI directly
+      // Force truly fresh session: cleanup gateway memory + delete session files
+      const sessDir = `${process.env.HOME}/.openclaw/agents/${agentId}/sessions`
+      try {
+        // 1. Tell gateway to drop in-memory session state
+        execSync(`openclaw sessions cleanup --agent ${agentId} --enforce`, {
+          timeout: 5000, stdio: 'ignore', env: withOpenClawEnv() as any,
+        })
+      } catch { /* best-effort */ }
+      try {
+        // 2. Delete session transcript files
+        for (const f of readdirSync(sessDir)) {
+          if (f.endsWith('.jsonl') || f.endsWith('.lock') || f === 'sessions.json') {
+            unlinkSync(`${sessDir}/${f}`)
+          }
+        }
+      } catch { /* dir may not exist yet */ }
+
+      runOpenClawDetached([
+        'agent',
+        '--agent', agentId,
+        '--message', nudgeMsg,
+      ], {
+        env: withOpenClawEnv(),
+      })
+
+      // Schedule inline watchdog — auto-retry if no turn arrives within 5 min
+      // (only works for local dispatch where we can check session state)
+      scheduleDispatchWatchdog(payload.taskId, agentId, turns.length)
+    }
 
     // Record dispatch time for watchdog (detect dead sessions)
     const dispatchRecord = { taskId: payload.taskId, agentId, dispatchedAt: Date.now(), turnCountAtDispatch: turns.length }
@@ -411,17 +452,6 @@ ${workflowBlock}
       // Keep only last 20
       writeFileSync(watchdogPath, JSON.stringify(existing.slice(-20), null, 2))
     } catch { /* best-effort */ }
-
-    runOpenClawDetached([
-      'agent',
-      '--agent', agentId,
-      '--message', nudgeMsg,
-    ], {
-      env: withOpenClawEnv(),
-    })
-
-    // Schedule inline watchdog — auto-retry if no turn arrives within 5 min
-    scheduleDispatchWatchdog(payload.taskId, agentId, turns.length)
   } else {
     // For persistent agents (main/cseno), skip CLI dispatch entirely.
     // Main agent checks tasks via heartbeats and direct Telegram messages.
