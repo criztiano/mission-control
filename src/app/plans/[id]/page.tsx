@@ -141,7 +141,7 @@ export default function PlanPage({ params }: { params: Promise<{ id: string }> }
   }
 
   return (
-    <div className="min-h-screen bg-background text-foreground">
+    <div className="h-screen overflow-y-auto bg-background text-foreground">
       {/* Header */}
       <div className="sticky top-0 z-10 border-b border-border bg-card/80 backdrop-blur-sm">
         <div className="mx-auto max-w-3xl px-6 py-4">
