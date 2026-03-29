@@ -7,6 +7,10 @@ import { issues } from '@/db/schema'
 import { eq, and, ne, sql } from 'drizzle-orm'
 import { logger } from '@/lib/logger'
 
+const IS_VERCEL = !!process.env.VERCEL
+const GATEWAY_URL = process.env.GATEWAY_DISPATCH_URL || 'https://macbook-pro.tail1840e7.ts.net'
+const GATEWAY_TOKEN = process.env.GATEWAY_DISPATCH_TOKEN || ''
+
 type DispatchParams = {
   taskId: string
   title: string
@@ -145,6 +149,26 @@ function scheduleDispatchWatchdog(taskId: string, agentId: string, turnCountAtDi
 
 /** Check if an agent has an active session (updated in last 5 min) */
 async function isSessionActive(agentId: string): Promise<boolean> {
+  if (IS_VERCEL) {
+    // On Vercel: query gateway via Tailscale Funnel
+    try {
+      const res = await fetch(`${GATEWAY_URL}/tools/invoke`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${GATEWAY_TOKEN}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tool: 'sessions_list', args: { limit: 50 } }),
+      })
+      const data = await res.json() as { ok?: boolean; result?: { content?: Array<{ text?: string }> } }
+      const text = data?.result?.content?.[0]?.text || '{}'
+      const parsed = JSON.parse(text)
+      const sessions = parsed?.sessions || []
+      const now = Date.now()
+      return sessions.some((s: any) => {
+        if (!s.key?.includes(agentId)) return false
+        const updatedAt = Number(s.updatedAt || 0)
+        return updatedAt > 0 && (now - updatedAt) < 5 * 60 * 1000
+      })
+    } catch { return false }
+  }
   try {
     const out = await runOpenClaw(['sessions', '--agent', agentId, '--json'], {
       timeoutMs: 8000,
@@ -170,6 +194,11 @@ async function isLikelyBusy(assignee: string): Promise<boolean> {
   // Only guard persistent-session agents that might be mid-conversation
   if (a !== 'cody') return false
 
+  if (IS_VERCEL) {
+    // On Vercel: check via gateway
+    return isSessionActive(a)
+  }
+
   try {
     const out = await runOpenClaw(['sessions', '--agent', a, '--json'], {
       timeoutMs: 8000,
@@ -183,7 +212,6 @@ async function isLikelyBusy(assignee: string): Promise<boolean> {
     if (!updatedAt) return false
     return (Date.now() - updatedAt) < 5 * 60 * 1000
   } catch {
-    // if uncertain, assume not busy (don't block dispatch forever)
     return false
   }
 }
@@ -375,43 +403,66 @@ ${workflowBlock}
 - Use the **links** array in the JSON for any URLs (PRs, diffs, docs) — they render as clickable buttons in the UI. Format: \`"links":[{"url":"...","title":"Label","type":"pr|diff|doc"}]\`
 - NEVER paste raw URLs in the content text — always use the links array`
 
-    // Force truly fresh session: cleanup gateway memory + delete session files
-    const sessDir = `${process.env.HOME}/.openclaw/agents/${agentId}/sessions`
-    try {
-      // 1. Tell gateway to drop in-memory session state
-      execSync(`openclaw sessions cleanup --agent ${agentId} --enforce`, {
-        timeout: 5000, stdio: 'ignore', env: withOpenClawEnv() as any,
-      })
-    } catch { /* best-effort */ }
-    try {
-      // 2. Delete session transcript files
-      for (const f of readdirSync(sessDir)) {
-        if (f.endsWith('.jsonl') || f.endsWith('.lock') || f === 'sessions.json') {
-          unlinkSync(`${sessDir}/${f}`)
-        }
+    if (IS_VERCEL) {
+      // On Vercel: dispatch via Gateway /tools/invoke through Tailscale Funnel
+      try {
+        const spawnRes = await fetch(`${GATEWAY_URL}/tools/invoke`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${GATEWAY_TOKEN}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            tool: 'sessions_spawn',
+            args: {
+              agentId,
+              task: nudgeMsg,
+              mode: 'run',
+            },
+          }),
+        })
+        const spawnData = await spawnRes.json() as Record<string, unknown>
+        logger.info({ agentId, taskId: payload.taskId, status: spawnRes.status, ok: spawnData?.ok }, 'Vercel dispatch via gateway')
+      } catch (e) {
+        logger.error({ err: e, agentId, taskId: payload.taskId }, 'Vercel dispatch failed')
       }
-    } catch { /* dir may not exist yet */ }
+    } else {
+      // Local: use CLI directly
+      // Force truly fresh session: cleanup gateway memory + delete session files
+      const sessDir = `${process.env.HOME}/.openclaw/agents/${agentId}/sessions`
+      try {
+        execSync(`openclaw sessions cleanup --agent ${agentId} --enforce`, {
+          timeout: 5000, stdio: 'ignore', env: withOpenClawEnv() as any,
+        })
+      } catch { /* best-effort */ }
+      try {
+        for (const f of readdirSync(sessDir)) {
+          if (f.endsWith('.jsonl') || f.endsWith('.lock') || f === 'sessions.json') {
+            unlinkSync(`${sessDir}/${f}`)
+          }
+        }
+      } catch { /* dir may not exist yet */ }
 
-    // Record dispatch time for watchdog (detect dead sessions)
-    const dispatchRecord = { taskId: payload.taskId, agentId, dispatchedAt: Date.now(), turnCountAtDispatch: turns.length }
-    try {
-      const watchdogPath = `${process.env.HOME}/.openclaw/dispatch-watchdog.json`
-      const existing = existsSync(watchdogPath) ? JSON.parse(readFileSync(watchdogPath, 'utf8')) : []
-      existing.push(dispatchRecord)
-      // Keep only last 20
-      writeFileSync(watchdogPath, JSON.stringify(existing.slice(-20), null, 2))
-    } catch { /* best-effort */ }
+      // Record dispatch time for watchdog (detect dead sessions)
+      const dispatchRecord = { taskId: payload.taskId, agentId, dispatchedAt: Date.now(), turnCountAtDispatch: turns.length }
+      try {
+        const watchdogPath = `${process.env.HOME}/.openclaw/dispatch-watchdog.json`
+        const existing = existsSync(watchdogPath) ? JSON.parse(readFileSync(watchdogPath, 'utf8')) : []
+        existing.push(dispatchRecord)
+        writeFileSync(watchdogPath, JSON.stringify(existing.slice(-20), null, 2))
+      } catch { /* best-effort */ }
 
-    runOpenClawDetached([
-      'agent',
-      '--agent', agentId,
-      '--message', nudgeMsg,
-    ], {
-      env: withOpenClawEnv(),
-    })
+      runOpenClawDetached([
+        'agent',
+        '--agent', agentId,
+        '--message', nudgeMsg,
+      ], {
+        env: withOpenClawEnv(),
+      })
 
-    // Schedule inline watchdog — auto-retry if no turn arrives within 5 min
-    scheduleDispatchWatchdog(payload.taskId, agentId, turns.length)
+      // Schedule inline watchdog — auto-retry if no turn arrives within 5 min
+      scheduleDispatchWatchdog(payload.taskId, agentId, turns.length)
+    }
   } else {
     // For persistent agents (main/cseno), skip CLI dispatch entirely.
     // Main agent checks tasks via heartbeats and direct Telegram messages.
