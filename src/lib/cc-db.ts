@@ -317,6 +317,8 @@ type IssueWithExtras = CCIssue & { last_comment_at?: string | null; last_turn_ty
 export async function getIssues(opts?: {
   status?: string;
   assigned_to?: string;
+  /** Exclude tasks assigned to this person — supports `assigned_to=!cri` negation */
+  assigned_to_not?: string;
   priority?: string;
   column?: KanbanColumn;
   limit?: number;
@@ -337,6 +339,9 @@ export async function getIssues(opts?: {
   }
   if (opts?.assigned_to) {
     whereClause = sql`${whereClause} AND LOWER(i.assignee) = LOWER(${opts.assigned_to})`;
+  }
+  if (opts?.assigned_to_not) {
+    whereClause = sql`${whereClause} AND LOWER(i.assignee) != LOWER(${opts.assigned_to_not})`;
   }
   if (opts?.priority) {
     const ccPriority = PRIORITY_FROM_MC[opts.priority] || opts.priority;

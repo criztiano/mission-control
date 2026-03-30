@@ -34,13 +34,18 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
 
     const status = searchParams.get('status') || undefined;
-    const assigned_to = searchParams.get('assigned_to') || undefined;
+    const assigned_to_raw = searchParams.get('assigned_to') || undefined;
     const priority = searchParams.get('priority') || undefined;
     const column = (searchParams.get('column') || undefined) as KanbanColumn | undefined;
     const limit = Math.min(parseInt(searchParams.get('limit') || '200'), 500);
     const offset = parseInt(searchParams.get('offset') || '0');
 
-    const { issues: issueList, total } = await getIssues({ status, assigned_to, priority, column, limit, offset });
+    // Support negation: assigned_to=!cri means "NOT assigned to cri"
+    const isNegation = assigned_to_raw?.startsWith('!') ?? false
+    const assigned_to = isNegation ? undefined : assigned_to_raw
+    const assigned_to_not = isNegation && assigned_to_raw ? assigned_to_raw.slice(1) : undefined
+
+    const { issues: issueList, total } = await getIssues({ status, assigned_to, assigned_to_not, priority, column, limit, offset });
 
     const projectIds = [...new Set(issueList.map(i => i.project_id).filter(Boolean))] as string[];
     const projectRows = await getProjectsByIds(projectIds);

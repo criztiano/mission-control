@@ -59,6 +59,30 @@ export async function GET(request: NextRequest) {
         })
     );
 
+    // Batch Q3: open task count for Cri's tasks only (for with_counts=true filter chip badges)
+    const { searchParams } = new URL(request.url);
+    const withCounts = searchParams.get('with_counts') === 'true';
+
+    const criOpenCountMap = new Map<string, number>();
+    if (withCounts) {
+      const criOpenRows = await db
+        .select({
+          project_id: issues.project_id,
+          count: sql<number>`COUNT(*)::int`,
+        })
+        .from(issues)
+        .where(and(
+          eq(issues.archived, false),
+          eq(issues.status, 'open'),
+          sql`LOWER(${issues.assignee}) = 'cri'`,
+        ))
+        .groupBy(issues.project_id);
+
+      for (const r of criOpenRows) {
+        if (r.project_id != null) criOpenCountMap.set(r.project_id, r.count);
+      }
+    }
+
     const projectsWithStats = projectList.map(p => ({
       id: p.id,
       title: p.title,
@@ -68,7 +92,13 @@ export async function GET(request: NextRequest) {
       local_path: p.local_path,
       taskCount: taskCountMap.get(p.id) ?? 0,
       lastActivity: lastActivityMap.get(p.id) ?? 0,
+      ...(withCounts ? { open_task_count: criOpenCountMap.get(p.id) ?? 0 } : {}),
     }));
+
+    // Sort by last activity descending when with_counts requested (for filter chips)
+    if (withCounts) {
+      projectsWithStats.sort((a, b) => b.lastActivity - a.lastActivity);
+    }
 
     return NextResponse.json({ projects: projectsWithStats });
   } catch (error) {
