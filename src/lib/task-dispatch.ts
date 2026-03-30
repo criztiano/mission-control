@@ -21,6 +21,25 @@ const DISPATCH_TIMEOUT_MS = 5 * 60 * 1000 // 5 min to post a turn or we auto-ret
 const MAX_RETRIES = 3
 const DEDUP_WINDOW_MS = 60_000 // ignore duplicate dispatch for same task+agent within 60s
 
+// Derive dispatch URL from explicit env or fall back to gateway env vars.
+// On Vercel: set DISPATCH_URL=https://<tailscale-funnel>/hooks/agent
+// On local: falls back to the local gateway automatically.
+function getDispatchUrl(): string | null {
+  if (process.env.DISPATCH_URL) return process.env.DISPATCH_URL
+  // Fall back to gateway env vars (works locally, and on Vercel if DISPATCH_URL is set correctly)
+  const host = process.env.OPENCLAW_GATEWAY_HOST || '127.0.0.1'
+  const port = process.env.OPENCLAW_GATEWAY_PORT || '18789'
+  if (IS_SERVERLESS) {
+    // On serverless without explicit DISPATCH_URL, we can't reach local gateway
+    return null
+  }
+  return `http://${host}:${port}/hooks/agent`
+}
+
+function getDispatchToken(): string {
+  return process.env.DISPATCH_TOKEN || process.env.OPENCLAW_GATEWAY_TOKEN || ''
+}
+
 // In-memory timers (local only — die on Vercel)
 const retryTimers = new Map<string, NodeJS.Timeout>()
 const dispatchWatchdogs = new Map<string, NodeJS.Timeout>()
@@ -344,7 +363,14 @@ async function sendOne(payload: DispatchParams) {
       return { sent: false as const, reason: 'already-picked' as const }
     }
 
-    await setTaskPicked(payload.taskId, agentId)
+    // Mark task as picked — wrap so failures are surfaced not swallowed
+    try {
+      await setTaskPicked(payload.taskId, agentId)
+    } catch (pickErr) {
+      logger.error({ err: pickErr, taskId: payload.taskId, agentId }, 'setTaskPicked failed')
+      return { sent: false as const, reason: 'pick-failed' as const }
+    }
+
     const turns = await getTurns(payload.taskId)
 
     const turnsBlock = turns.length > 0
@@ -545,12 +571,12 @@ ${workflowBlock}
 - NEVER paste raw URLs in the content text — always use the links array`
 
     // Dispatch via webhook (Vercel) or local CLI
-    const dispatchUrl = process.env.DISPATCH_URL
-    const dispatchToken = process.env.DISPATCH_TOKEN
+    const dispatchUrl = getDispatchUrl()
+    const dispatchToken = getDispatchToken()
 
     if (dispatchUrl) {
-      // Running on Vercel — no local openclaw binary, use webhook
-      logger.info({ agentId, taskId: payload.taskId, dispatchUrl }, 'Dispatching via webhook (Vercel)')
+      // Webhook path: used on Vercel (DISPATCH_URL env var) and locally via gateway
+      logger.info({ agentId, taskId: payload.taskId, dispatchUrl }, 'Dispatching via webhook')
       try {
         const resp = await fetch(dispatchUrl, {
           method: 'POST',
@@ -562,14 +588,22 @@ ${workflowBlock}
         })
         if (!resp.ok) {
           const body = await resp.text().catch(() => '')
-          logger.error({ agentId, taskId: payload.taskId, status: resp.status, body }, 'Dispatch webhook failed')
+          logger.error({ agentId, taskId: payload.taskId, status: resp.status, body }, 'Dispatch webhook failed — task picked but not delivered')
+          // Unmark picked so the task can be retried
+          await db.update(issues).set({ picked: false, picked_at: null, picked_by: null }).where(eq(issues.id, payload.taskId)).catch(() => {})
           return { sent: false as const, reason: 'webhook-error' as const }
         }
         logger.info({ agentId, taskId: payload.taskId }, 'Dispatch webhook succeeded')
       } catch (e) {
-        logger.error({ err: e, agentId, taskId: payload.taskId }, 'Dispatch webhook fetch error')
+        logger.error({ err: e, agentId, taskId: payload.taskId }, 'Dispatch webhook fetch error — task picked but not delivered')
+        await db.update(issues).set({ picked: false, picked_at: null, picked_by: null }).where(eq(issues.id, payload.taskId)).catch(() => {})
         return { sent: false as const, reason: 'webhook-error' as const }
       }
+    } else if (IS_SERVERLESS) {
+      // Serverless with no DISPATCH_URL configured — can't deliver, unmark picked
+      logger.error({ agentId, taskId: payload.taskId }, 'Dispatch skipped: running serverless but DISPATCH_URL is not configured. Set DISPATCH_URL=https://<gateway-funnel>/hooks/agent on Vercel.')
+      await db.update(issues).set({ picked: false, picked_at: null, picked_by: null }).where(eq(issues.id, payload.taskId)).catch(() => {})
+      return { sent: false as const, reason: 'no-dispatch-url' as const }
     } else {
       // Running locally — use CLI directly
       // Force truly fresh session: cleanup gateway memory + delete session files
