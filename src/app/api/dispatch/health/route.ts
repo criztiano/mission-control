@@ -83,8 +83,10 @@ export async function GET(request: NextRequest) {
     let webhookReachable: boolean | null = null
     if (dispatchUrl) {
       try {
-        const pingUrl = dispatchUrl.replace('/hooks/agent', '/health')
-        const resp = await fetch(pingUrl, { signal: AbortSignal.timeout(3000) })
+        // Build health URL: replace last path segment with /health
+        const pingUrl = new URL(dispatchUrl)
+        pingUrl.pathname = '/health'
+        const resp = await fetch(pingUrl.toString(), { signal: AbortSignal.timeout(5000) })
         webhookReachable = resp.ok
       } catch {
         webhookReachable = false
