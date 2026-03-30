@@ -11,7 +11,8 @@ import { CronManagementPanel } from '@/components/panels/cron-management-panel'
 import { MemoryBrowserPanel } from '@/components/panels/memory-browser-panel'
 import { TokenDashboardPanel } from '@/components/panels/token-dashboard-panel'
 import { SessionDetailsPanel } from '@/components/panels/session-details-panel'
-import { TaskBoardPanel } from '@/components/panels/task-board-panel'
+import { TaskBoardPanel } from '@/components/panels/task-board-panel' // rollback: swap case 'tasks' below
+import { TaskViewPanel } from '@/components/panels/task-view/task-view-panel'
 import { ActivityFeedPanel } from '@/components/panels/activity-feed-panel'
 import { AgentDetailPage } from '@/components/panels/agent-detail-page'
 import { StandupPanel } from '@/components/panels/standup-panel'
@@ -135,7 +136,7 @@ function ContentRouter({ tab }: { tab: string }) {
     case 'overview':
       return <Dashboard />
     case 'tasks':
-      return <TaskBoardPanel />
+      return <TaskViewPanel /> // rollback: <TaskBoardPanel />
     case 'activity':
       return <ActivityFeedPanel />
     case 'notifications':
