@@ -1,14 +1,20 @@
 'use client'
 
-import { useState, useEffect, useCallback, useRef } from 'react'
-import { Badge } from '@/components/ui/badge'
-import { PixelLoader } from '@/components/ui/pixel-loader'
+import { useState, useEffect, useCallback, useMemo } from 'react'
+import { motion, AnimatePresence } from 'motion/react'
+import ReactMarkdown from 'react-markdown'
+import { ScrollArea } from '@/components/ui/scroll-area'
+import { Button } from '@/components/ui/button'
+import { Refresh, Leaf, ViewGrid, List, Xmark, OpenNewWindow, Check, Circle, FloppyDisk } from 'iconoir-react'
+import { useSmartPoll } from '@/lib/use-smart-poll'
+import { cn } from '@/lib/utils'
 
-// --- Types ---
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
 
 interface GardenItem {
   id: string
-  title: string
   content: string
   type: string
   interest: string
@@ -18,7 +24,7 @@ interface GardenItem {
   original_source: string | null
   media_urls: string
   metadata: string
-  enriched: number
+  enriched: boolean | number
   instance_type: string
   snooze_until: string | null
   expires_at: string | null
@@ -26,40 +32,28 @@ interface GardenItem {
   saved_at: string
 }
 
-interface GardenStats {
-  byInterest: Record<string, number>
-  byType: Record<string, number>
-  total: number
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+const INTEREST_OPTIONS = ['information', 'inspiration', 'instrument', 'ingredient', 'idea'] as const
+const TYPE_OPTIONS = ['tweet', 'link', 'article', 'repo', 'note', 'image', 'video', 'pdf'] as const
+const TEMPORAL_OPTIONS = ['now', 'soon', 'later', 'ever'] as const
+
+const INTEREST_STYLES: Record<string, { bg: string; text: string; border: string; icon: string }> = {
+  information: { bg: 'bg-blue-500/15',   text: 'text-blue-300',   border: 'border-blue-500/25',   icon: '🔬' },
+  inspiration: { bg: 'bg-purple-500/15', text: 'text-purple-300', border: 'border-purple-500/25', icon: '✨' },
+  instrument:  { bg: 'bg-green-500/15',  text: 'text-green-300',  border: 'border-green-500/25',  icon: '🔧' },
+  ingredient:  { bg: 'bg-orange-500/15', text: 'text-orange-300', border: 'border-orange-500/25', icon: '🧱' },
+  idea:        { bg: 'bg-yellow-500/15', text: 'text-yellow-300', border: 'border-yellow-500/25', icon: '💡' },
 }
 
-// --- i5 classification colors & icons ---
-
-const INTEREST_COLORS: Record<string, string> = {
-  information: 'bg-blue-500/20 text-blue-400',
-  inspiration: 'bg-purple-500/20 text-purple-400',
-  instrument: 'bg-green-500/20 text-green-400',
-  ingredient: 'bg-orange-500/20 text-orange-400',
-  idea: 'bg-yellow-500/20 text-yellow-400',
-}
-
-const INTEREST_ICONS: Record<string, string> = {
-  information: '\u{1f52c}',
-  inspiration: '\u{2728}',
-  instrument: '\u{1f527}',
-  ingredient: '\u{1f9f1}',
-  idea: '\u{1f4a1}',
-}
-
-const TYPE_OPTIONS = ['tweet', 'link', 'article', 'repo', 'note', 'image', 'video', 'pdf']
-const INTEREST_OPTIONS = ['information', 'inspiration', 'instrument', 'ingredient', 'idea']
-const TEMPORAL_OPTIONS = ['now', 'soon', 'later', 'ever']
-
-// --- Helpers ---
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 function relativeTime(dateStr: string): string {
-  const now = Date.now()
-  const then = new Date(dateStr).getTime()
-  const diff = now - then
+  const diff = Date.now() - new Date(dateStr).getTime()
   const mins = Math.floor(diff / 60000)
   if (mins < 1) return 'now'
   if (mins < 60) return `${mins}m ago`
@@ -75,174 +69,301 @@ function parseTags(raw: string): string[] {
 }
 
 function parseMediaUrls(raw: string): string[] {
-  try { return JSON.parse(raw) } catch { return [] }
+  try {
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed) ? parsed : []
+  } catch { return [] }
 }
 
-// --- Sub-components ---
+function sourceDomain(url: string | null): string | null {
+  if (!url) return null
+  try { return new URL(url).hostname.replace(/^www\./, '') } catch { return null }
+}
 
-function FilterSelect({ value, onChange, options, placeholder }: {
-  value: string
-  onChange: (v: string) => void
-  options: { value: string; label: string }[]
-  placeholder: string
+function isVideoUrl(url: string): boolean {
+  return /\.(mp4|webm|ogg|mov)(\?|$)/i.test(url) || url.includes('video')
+}
+
+// ---------------------------------------------------------------------------
+// Interest Badge
+// ---------------------------------------------------------------------------
+
+function InterestBadge({ interest, size = 'sm' }: { interest: string; size?: 'sm' | 'xs' }) {
+  const s = INTEREST_STYLES[interest] ?? INTEREST_STYLES.information
+  return (
+    <span className={cn(
+      'inline-flex items-center gap-1 rounded-full border font-medium',
+      s.bg, s.text, s.border,
+      size === 'xs' ? 'text-[9px] px-1.5 py-0' : 'text-[10px] px-2 py-0.5',
+    )}>
+      {s.icon} {interest}
+    </span>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Filter Bar
+// ---------------------------------------------------------------------------
+
+interface Filters {
+  interest: string
+  type: string
+  temporal: string
+  search: string
+}
+
+type ViewMode = 'grid' | 'list'
+
+function FilterBar({
+  filters,
+  onChange,
+  viewMode,
+  onViewMode,
+  onRefresh,
+  loading,
+}: {
+  filters: Filters
+  onChange: (f: Partial<Filters>) => void
+  viewMode: ViewMode
+  onViewMode: (v: ViewMode) => void
+  onRefresh: () => void
+  loading: boolean
 }) {
   return (
-    <select
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      className="bg-secondary text-foreground text-xs rounded-md px-2 py-1.5 border border-border focus:outline-none focus:ring-1 focus:ring-primary appearance-none cursor-pointer"
-    >
-      <option value="">{placeholder}</option>
-      {options.map((o) => (
-        <option key={o.value} value={o.value}>{o.label}</option>
-      ))}
-    </select>
+    <div className="flex-shrink-0 border-b border-border px-4 py-2.5 space-y-2">
+      {/* Row 1: interest chips + view toggle + refresh */}
+      <div className="flex items-center gap-1.5 flex-wrap">
+        <button
+          onClick={() => onChange({ interest: '' })}
+          className={cn(
+            'px-2 py-0.5 rounded-full text-[10px] font-medium transition-colors border',
+            !filters.interest
+              ? 'bg-primary/15 text-primary border-primary/30'
+              : 'bg-secondary text-muted-foreground border-border hover:text-foreground',
+          )}
+        >
+          All
+        </button>
+        {INTEREST_OPTIONS.map((i5) => {
+          const s = INTEREST_STYLES[i5]
+          const active = filters.interest === i5
+          return (
+            <button
+              key={i5}
+              onClick={() => onChange({ interest: active ? '' : i5 })}
+              className={cn(
+                'px-2 py-0.5 rounded-full text-[10px] font-medium transition-colors border',
+                active ? `${s.bg} ${s.text} ${s.border}` : 'bg-secondary text-muted-foreground border-border hover:text-foreground',
+              )}
+            >
+              {s.icon} {i5}
+            </button>
+          )
+        })}
+
+        <div className="ml-auto flex items-center gap-1">
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            onClick={() => onViewMode('grid')}
+            title="Grid view"
+            className={viewMode === 'grid' ? 'bg-secondary text-foreground' : ''}
+          >
+            <ViewGrid className="w-3.5 h-3.5" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            onClick={() => onViewMode('list')}
+            title="List view"
+            className={viewMode === 'list' ? 'bg-secondary text-foreground' : ''}
+          >
+            <List className="w-3.5 h-3.5" />
+          </Button>
+          <Button variant="ghost" size="icon-sm" onClick={onRefresh} disabled={loading} title="Refresh">
+            <Refresh className={cn('w-3.5 h-3.5', loading && 'animate-spin')} />
+          </Button>
+        </div>
+      </div>
+
+      {/* Row 2: type + temporal dropdowns + search */}
+      <div className="flex items-center gap-2">
+        <select
+          value={filters.type}
+          onChange={(e) => onChange({ type: e.target.value })}
+          className="bg-secondary text-foreground text-xs rounded-md px-2 py-1 border border-border focus:outline-none focus:ring-1 focus:ring-primary cursor-pointer"
+        >
+          <option value="">All types</option>
+          {TYPE_OPTIONS.map((t) => <option key={t} value={t}>{t}</option>)}
+        </select>
+
+        <select
+          value={filters.temporal}
+          onChange={(e) => onChange({ temporal: e.target.value })}
+          className="bg-secondary text-foreground text-xs rounded-md px-2 py-1 border border-border focus:outline-none focus:ring-1 focus:ring-primary cursor-pointer"
+        >
+          <option value="">All time</option>
+          {TEMPORAL_OPTIONS.map((t) => <option key={t} value={t}>{t}</option>)}
+        </select>
+
+        <input
+          type="text"
+          placeholder="Search…"
+          value={filters.search}
+          onChange={(e) => onChange({ search: e.target.value })}
+          className="flex-1 bg-secondary text-foreground text-xs rounded-md px-2 py-1 border border-border focus:outline-none focus:ring-1 focus:ring-primary placeholder:text-muted-foreground/50"
+        />
+      </div>
+    </div>
   )
 }
 
-function InterestBadge({ interest }: { interest: string }) {
-  const icon = INTEREST_ICONS[interest] || ''
+// ---------------------------------------------------------------------------
+// Garden Card (masonry)
+// ---------------------------------------------------------------------------
 
-  // Map interest colors to Badge variants
-  const variantMap: Record<string, 'info' | 'success' | 'warning' | 'secondary'> = {
-    information: 'info',
-    inspiration: 'secondary',
-    instrument: 'success',
-    ingredient: 'warning',
-    idea: 'warning',
-  }
-
-  const variant = variantMap[interest] || 'secondary'
-
-  return (
-    <Badge variant={variant} size="sm">
-      {icon} {interest}
-    </Badge>
-  )
-}
-
-function TypeBadge({ type }: { type: string }) {
-  return (
-    <Badge variant="secondary" size="sm">
-      {type}
-    </Badge>
-  )
-}
-
-// --- Card View ---
-
-function GardenCard({ item, onClick, focused, itemRef }: { item: GardenItem; onClick: () => void; focused?: boolean; itemRef?: (el: HTMLButtonElement | null) => void }) {
+function GardenCard({ item, index, onClick }: { item: GardenItem; index: number; onClick: () => void }) {
   const tags = parseTags(item.tags)
   const mediaUrls = parseMediaUrls(item.media_urls)
+  const firstMedia = mediaUrls[0]
+  const domain = sourceDomain(item.original_source)
+  const isVideo = firstMedia ? isVideoUrl(firstMedia) : false
 
   return (
-    <button
-      ref={itemRef}
+    <motion.button
+      initial={{ opacity: 0, y: 6 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.15, delay: Math.min(index * 0.02, 0.3) }}
       onClick={onClick}
-      className={`w-full text-left bg-card border border-border rounded-lg p-4 hover:border-primary/30 transition-colors space-y-2.5 ${focused ? 'ring-2 ring-primary/50' : ''}`}
+      className="w-full text-left bg-card border border-border rounded-xl overflow-hidden hover:border-primary/30 transition-colors break-inside-avoid mb-3 block"
+      style={{ breakInside: 'avoid' }}
     >
-      {mediaUrls.length > 0 && (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img
-          src={mediaUrls[0]}
-          alt=""
-          className="w-full h-24 rounded object-cover border border-border"
-          loading="lazy"
-        />
+      {/* Media */}
+      {firstMedia && (
+        <div className="w-full overflow-hidden">
+          {isVideo ? (
+            <video
+              src={firstMedia}
+              className="w-full object-cover max-h-48"
+              muted
+              playsInline
+              preload="metadata"
+            />
+          ) : (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={firstMedia}
+              alt=""
+              className="w-full object-cover max-h-48"
+              loading="lazy"
+              onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
+            />
+          )}
+        </div>
       )}
 
-      {item.title && (
-        <h3 className="text-sm font-semibold text-foreground leading-snug line-clamp-2">{item.title}</h3>
-      )}
-      {(!item.title || item.content !== item.title) && (
-        <p className="text-xs text-muted-foreground leading-relaxed line-clamp-2">{item.content?.slice(0, 120)}</p>
-      )}
-
-      <div className="flex items-center gap-1.5 flex-wrap">
-        <TypeBadge type={item.type} />
-        <InterestBadge interest={item.interest} />
-        {item.enriched ? (
-          <span className="text-green-400 text-[10px]">{'\u2713'}</span>
-        ) : (
-          <span className="text-muted-foreground/30 text-[10px]">{'\u25CB'}</span>
+      <div className="p-3 space-y-2">
+        {/* Title / content */}
+        {item.content && (
+          <p className={cn(
+            'text-sm leading-snug',
+            item.content.length > 100 ? 'font-medium line-clamp-2' : 'font-semibold',
+            'text-foreground',
+          )}>
+            {item.content.split('\n')[0] || item.content}
+          </p>
         )}
+
+        {/* Badges row */}
+        <div className="flex items-center gap-1 flex-wrap">
+          <span className="text-[10px] px-1.5 py-0.5 rounded bg-secondary text-muted-foreground border border-border">
+            {item.type}
+          </span>
+          <InterestBadge interest={item.interest} size="xs" />
+          {item.enriched ? (
+            <Check className="w-3 h-3 text-green-400 shrink-0" />
+          ) : (
+            <Circle className="w-3 h-3 text-muted-foreground/30 shrink-0" />
+          )}
+        </div>
+
+        {/* Tags */}
+        {tags.length > 0 && (
+          <div className="flex flex-wrap gap-1">
+            {tags.slice(0, 5).map((t) => (
+              <span key={t} className="text-[9px] px-1 py-0.5 rounded-full bg-secondary text-muted-foreground border border-border">
+                {t}
+              </span>
+            ))}
+          </div>
+        )}
+
+        {/* Footer: domain + time */}
+        <div className="flex items-center justify-between gap-2 text-[10px] text-muted-foreground/60">
+          {domain && <span className="truncate">{domain}</span>}
+          <span className="shrink-0 ml-auto">{relativeTime(item.saved_at || item.created_at)}</span>
+        </div>
       </div>
-
-      {tags.length > 0 && (
-        <div className="flex flex-wrap gap-1">
-          {tags.map((t) => (
-            <span key={t} className="text-[10px] px-1.5 py-0.5 rounded-full bg-secondary text-muted-foreground border border-border">
-              {t}
-            </span>
-          ))}
-        </div>
-      )}
-
-      {item.original_source && (
-        <div className="flex items-center gap-1 text-[10px] text-muted-foreground truncate">
-          {'\u2197\uFE0F'} {item.original_source}
-        </div>
-      )}
-
-      <p className="text-[10px] text-muted-foreground/60">
-        {relativeTime(item.saved_at)}
-      </p>
-    </button>
+    </motion.button>
   )
 }
 
-// --- List View ---
+// ---------------------------------------------------------------------------
+// Garden List Row
+// ---------------------------------------------------------------------------
 
-function GardenListRow({ item, onClick, focused, itemRef }: { item: GardenItem; onClick: () => void; focused?: boolean; itemRef?: (el: HTMLButtonElement | null) => void }) {
+function GardenListRow({ item, index, onClick }: { item: GardenItem; index: number; onClick: () => void }) {
+  const tags = parseTags(item.tags)
+  const domain = sourceDomain(item.original_source)
+
   return (
-    <button
-      ref={itemRef}
+    <motion.button
+      initial={{ opacity: 0, x: -4 }}
+      animate={{ opacity: 1, x: 0 }}
+      transition={{ duration: 0.12, delay: Math.min(index * 0.015, 0.25) }}
       onClick={onClick}
-      className={`flex items-center gap-3 px-4 py-2.5 bg-card border border-border rounded-lg hover:border-primary/30 transition-colors w-full text-left ${focused ? 'ring-2 ring-primary/50' : ''}`}
+      className="w-full text-left flex items-center gap-3 px-4 py-2.5 bg-card border border-border rounded-lg hover:border-primary/30 transition-colors"
     >
       <div className="flex-1 min-w-0">
-        <p className="text-sm text-foreground truncate">{item.title || item.content}</p>
+        <p className="text-sm text-foreground truncate font-medium">
+          {item.content.split('\n')[0] || item.content}
+        </p>
+        {tags.length > 0 && (
+          <div className="flex gap-1 mt-0.5">
+            {tags.slice(0, 3).map((t) => (
+              <span key={t} className="text-[9px] px-1 py-0 rounded-full bg-secondary text-muted-foreground border border-border">
+                {t}
+              </span>
+            ))}
+          </div>
+        )}
       </div>
-      <TypeBadge type={item.type} />
-      <InterestBadge interest={item.interest} />
-      {item.original_source && (
-        <span className="text-muted-foreground text-xs shrink-0">{'\u2197\uFE0F'}</span>
-      )}
-      <span className="text-[10px] text-muted-foreground whitespace-nowrap">
-        {relativeTime(item.saved_at)}
+      <span className="text-[10px] px-1.5 py-0.5 rounded bg-secondary text-muted-foreground border border-border shrink-0">
+        {item.type}
       </span>
-    </button>
+      <InterestBadge interest={item.interest} size="xs" />
+      {domain && <span className="text-[10px] text-muted-foreground/60 shrink-0 hidden sm:block">{domain}</span>}
+      <span className="text-[10px] text-muted-foreground/60 shrink-0">{relativeTime(item.saved_at || item.created_at)}</span>
+    </motion.button>
   )
 }
 
-// --- Detail Sheet ---
+// ---------------------------------------------------------------------------
+// Detail Sheet
+// ---------------------------------------------------------------------------
 
-function DetailSheet({
-  item,
-  onClose,
-  onUpdate,
-  onDelete,
-}: {
-  item: GardenItem
-  onClose: () => void
-  onUpdate: () => void
-  onDelete: () => void
-}) {
-  const [title, setTitle] = useState(item.title || '')
-  const [content, setContent] = useState(item.content)
+function DetailSheet({ item, onClose, onUpdate }: { item: GardenItem; onClose: () => void; onUpdate: () => void }) {
   const [itemType, setItemType] = useState(item.type)
   const [interest, setInterest] = useState(item.interest)
   const [temporal, setTemporal] = useState(item.temporal)
   const [note, setNote] = useState(item.note || '')
-  const [sourceUrl, setSourceUrl] = useState(item.original_source || '')
   const [tags, setTags] = useState<string[]>(() => parseTags(item.tags))
   const [tagInput, setTagInput] = useState('')
   const [saving, setSaving] = useState(false)
-  const [deleting, setDeleting] = useState(false)
+  const [dirty, setDirty] = useState(false)
 
   const mediaUrls = parseMediaUrls(item.media_urls)
-  let metadata: Record<string, unknown> = {}
-  try { metadata = JSON.parse(item.metadata) } catch {}
+  const domain = sourceDomain(item.original_source)
 
   const handleSave = async () => {
     setSaving(true)
@@ -250,490 +371,365 @@ function DetailSheet({
       await fetch(`/api/garden/${item.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          title,
-          content,
-          type: itemType,
-          interest,
-          temporal,
-          note,
-          original_source: sourceUrl || null,
-          tags: JSON.stringify(tags),
-        }),
+        body: JSON.stringify({ type: itemType, interest, temporal, note, tags: JSON.stringify(tags) }),
       })
+      setDirty(false)
       onUpdate()
     } finally {
       setSaving(false)
     }
   }
 
-  const handleDelete = async () => {
-    setDeleting(true)
-    try {
-      await fetch(`/api/garden/${item.id}`, { method: 'DELETE' })
-      onDelete()
-    } catch {
-      setDeleting(false)
-    }
-  }
+  const markDirty = (fn: () => void) => { fn(); setDirty(true) }
 
   const handleTagKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && tagInput.trim()) {
       e.preventDefault()
       const t = tagInput.trim().toLowerCase()
-      if (!tags.includes(t)) setTags([...tags, t])
+      if (!tags.includes(t)) markDirty(() => setTags([...tags, t]))
       setTagInput('')
     }
   }
 
+  const interestStyle = INTEREST_STYLES[interest] ?? INTEREST_STYLES.information
+
   return (
-    <div className="w-[420px] border-l border-border bg-card h-full overflow-y-auto shrink-0">
+    <motion.div
+      initial={{ x: 60, opacity: 0 }}
+      animate={{ x: 0, opacity: 1 }}
+      exit={{ x: 60, opacity: 0 }}
+      transition={{ duration: 0.2, ease: 'easeOut' }}
+      className="w-[400px] shrink-0 border-l border-border bg-card h-full flex flex-col overflow-hidden"
+    >
       {/* Header */}
-      <div className="flex items-center justify-between p-4 border-b border-border sticky top-0 bg-card z-10">
-        <span className="text-xs text-muted-foreground font-mono">{item.id.slice(0, 8)}</span>
-        <button onClick={onClose} className="text-muted-foreground hover:text-foreground" aria-label="Close detail sheet">
-          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" className="w-4 h-4">
-            <path d="M4 4l8 8M12 4l-8 8" />
-          </svg>
-        </button>
+      <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
+        <div className="flex items-center gap-2">
+          <span className={cn('text-[10px] px-2 py-0.5 rounded-full border font-medium', interestStyle.bg, interestStyle.text, interestStyle.border)}>
+            {interestStyle.icon} {interest}
+          </span>
+          <span className="text-[10px] text-muted-foreground font-mono">{item.id.slice(0, 8)}</span>
+        </div>
+        <div className="flex items-center gap-1">
+          {dirty && (
+            <Button size="icon-sm" onClick={handleSave} disabled={saving} title="Save">
+              <FloppyDisk className="w-3.5 h-3.5" />
+            </Button>
+          )}
+          <Button variant="ghost" size="icon-sm" onClick={onClose}>
+            <Xmark className="w-4 h-4" />
+          </Button>
+        </div>
       </div>
 
-      <div className="p-4 space-y-4">
-        {/* Title */}
-        <div>
-          <label className="text-xs font-medium text-muted-foreground block mb-1.5">Title</label>
-          <input
-            type="text"
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            placeholder="Short label for this item..."
-            className="w-full text-sm bg-secondary border border-border rounded px-2 py-1.5 text-foreground"
-          />
-        </div>
-        {/* Content */}
-        <div>
-          <label className="text-xs font-medium text-muted-foreground block mb-1.5">Content</label>
-          <textarea
-            value={content}
-            onChange={(e) => setContent(e.target.value)}
-            rows={4}
-            className="w-full text-sm bg-secondary border border-border rounded px-2 py-1.5 text-foreground resize-y"
-          />
-        </div>
-
-        {/* Type + Interest + Temporal grid */}
-        <div className="grid grid-cols-3 gap-2">
-          <div>
-            <label className="text-xs font-medium text-muted-foreground block mb-1.5">Type</label>
-            <select
-              value={itemType}
-              onChange={(e) => setItemType(e.target.value)}
-              className="w-full text-xs bg-secondary border border-border rounded px-2 py-1.5 text-foreground"
-            >
-              {TYPE_OPTIONS.map((t) => (
-                <option key={t} value={t}>{t}</option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className="text-xs font-medium text-muted-foreground block mb-1.5">Interest</label>
-            <select
-              value={interest}
-              onChange={(e) => setInterest(e.target.value)}
-              className="w-full text-xs bg-secondary border border-border rounded px-2 py-1.5 text-foreground"
-            >
-              {INTEREST_OPTIONS.map((i) => (
-                <option key={i} value={i}>{INTEREST_ICONS[i]} {i}</option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className="text-xs font-medium text-muted-foreground block mb-1.5">Temporal</label>
-            <select
-              value={temporal}
-              onChange={(e) => setTemporal(e.target.value)}
-              className="w-full text-xs bg-secondary border border-border rounded px-2 py-1.5 text-foreground"
-            >
-              {TEMPORAL_OPTIONS.map((t) => (
-                <option key={t} value={t}>{t}</option>
-              ))}
-            </select>
-          </div>
-        </div>
-
-        {/* Tags */}
-        <div>
-          <label className="text-xs font-medium text-muted-foreground block mb-1.5">Tags</label>
-          <div className="flex flex-wrap gap-1 mb-1">
-            {tags.map((t) => (
-              <span key={t} className="text-xs px-2 py-0.5 rounded-full bg-secondary border border-border text-foreground flex items-center gap-1">
-                {t}
-                <button onClick={() => setTags(tags.filter((x) => x !== t))} className="text-muted-foreground hover:text-red-400" aria-label={`Remove tag ${t}`}>
-                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" className="w-2.5 h-2.5">
-                    <path d="M4 4l8 8M12 4l-8 8" />
-                  </svg>
-                </button>
-              </span>
-            ))}
-          </div>
-          <input
-            type="text"
-            value={tagInput}
-            onChange={(e) => setTagInput(e.target.value)}
-            onKeyDown={handleTagKeyDown}
-            placeholder="Type + Enter"
-            className="w-full text-xs bg-secondary border border-border rounded px-2 py-1.5 text-foreground"
-          />
-        </div>
-
-        {/* Note */}
-        <div>
-          <label className="text-xs font-medium text-muted-foreground block mb-1.5">Note</label>
-          <textarea
-            value={note}
-            onChange={(e) => setNote(e.target.value)}
-            rows={2}
-            className="w-full text-xs bg-secondary border border-border rounded px-2 py-1.5 text-foreground resize-y"
-          />
-        </div>
-
-        {/* Source URL */}
-        <div>
-          <label className="text-xs font-medium text-muted-foreground block mb-1.5">Source URL</label>
-          <input
-            type="url"
-            value={sourceUrl}
-            onChange={(e) => setSourceUrl(e.target.value)}
-            className="w-full text-xs bg-secondary border border-border rounded px-2 py-1.5 text-foreground"
-          />
-        </div>
-
-        {/* Media gallery */}
-        {mediaUrls.length > 0 && (
-          <div>
-            <label className="text-xs font-medium text-muted-foreground block mb-1.5">Media</label>
-            <div className="flex gap-2 flex-wrap">
+      <ScrollArea className="flex-1">
+        <div className="p-4 space-y-4">
+          {/* Media gallery */}
+          {mediaUrls.length > 0 && (
+            <div className="space-y-2">
               {mediaUrls.map((url, i) => (
-                <a key={i} href={url} target="_blank" rel="noopener noreferrer">
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={url} alt="" className="h-16 w-auto rounded border border-border object-cover hover:border-primary/50 transition-colors" />
-                </a>
+                isVideoUrl(url) ? (
+                  <video key={i} src={url} controls className="w-full rounded-lg border border-border max-h-48" />
+                ) : (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img key={i} src={url} alt="" className="w-full rounded-lg border border-border object-cover" loading="lazy" />
+                )
               ))}
             </div>
-          </div>
-        )}
+          )}
 
-        {/* Metadata */}
-        {Object.keys(metadata).length > 0 && (
-          <div>
-            <label className="text-xs font-medium text-muted-foreground block mb-1.5">Metadata</label>
-            <pre className="text-[10px] bg-secondary border border-border rounded p-2 text-muted-foreground overflow-x-auto">
-              {JSON.stringify(metadata, null, 2)}
-            </pre>
+          {/* Content — markdown rendered */}
+          <div className="prose prose-sm prose-invert max-w-none">
+            <ReactMarkdown>{item.content}</ReactMarkdown>
           </div>
-        )}
 
-        {/* Save + Delete */}
-        <div className="flex gap-2 pt-2 border-t border-border">
-          <button
-            onClick={handleSave}
-            disabled={saving}
-            className="flex-1 text-xs py-1.5 rounded bg-primary text-primary-foreground hover:bg-primary/80 disabled:opacity-50 transition-colors"
-          >
-            {saving ? 'Saving...' : 'Save Changes'}
-          </button>
-          <button
-            onClick={handleDelete}
-            disabled={deleting}
-            className="text-xs px-3 py-1.5 rounded border border-red-500/30 text-red-400 hover:bg-red-500/10 disabled:opacity-50 transition-colors"
-            aria-label="Delete item"
-          >
-            {'\uD83D\uDDD1\uFE0F'}
-          </button>
+          {/* Source link */}
+          {item.original_source && (
+            <a
+              href={item.original_source}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-1.5 text-xs text-blue-400 hover:text-blue-300 transition-colors break-all"
+            >
+              <OpenNewWindow className="w-3 h-3 shrink-0" />
+              {domain || item.original_source}
+            </a>
+          )}
+
+          {/* Editable fields */}
+          <div className="space-y-3">
+            {/* Type */}
+            <div>
+              <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider block mb-1">Type</label>
+              <select
+                value={itemType}
+                onChange={(e) => markDirty(() => setItemType(e.target.value))}
+                className="w-full bg-secondary text-foreground text-xs rounded px-2 py-1.5 border border-border focus:outline-none focus:ring-1 focus:ring-primary"
+              >
+                {TYPE_OPTIONS.map((t) => <option key={t} value={t}>{t}</option>)}
+              </select>
+            </div>
+
+            {/* Interest */}
+            <div>
+              <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider block mb-1">Interest</label>
+              <div className="flex flex-wrap gap-1.5">
+                {INTEREST_OPTIONS.map((i5) => {
+                  const s = INTEREST_STYLES[i5]
+                  return (
+                    <button
+                      key={i5}
+                      onClick={() => markDirty(() => setInterest(i5))}
+                      className={cn(
+                        'text-[10px] px-2 py-0.5 rounded-full border font-medium transition-colors',
+                        interest === i5 ? `${s.bg} ${s.text} ${s.border}` : 'bg-secondary text-muted-foreground border-border hover:text-foreground',
+                      )}
+                    >
+                      {s.icon} {i5}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+
+            {/* Temporal */}
+            <div>
+              <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider block mb-1">Temporal</label>
+              <div className="flex gap-1.5">
+                {TEMPORAL_OPTIONS.map((t) => (
+                  <button
+                    key={t}
+                    onClick={() => markDirty(() => setTemporal(t))}
+                    className={cn(
+                      'text-[10px] px-2 py-0.5 rounded-full border font-medium transition-colors',
+                      temporal === t
+                        ? 'bg-primary/15 text-primary border-primary/30'
+                        : 'bg-secondary text-muted-foreground border-border hover:text-foreground',
+                    )}
+                  >
+                    {t}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Tags */}
+            <div>
+              <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider block mb-1">Tags</label>
+              <div className="flex flex-wrap gap-1 mb-1.5">
+                {tags.map((t) => (
+                  <span key={t} className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full bg-secondary text-muted-foreground border border-border">
+                    {t}
+                    <button
+                      onClick={() => markDirty(() => setTags(tags.filter((x) => x !== t)))}
+                      className="hover:text-red-400 leading-none"
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))}
+              </div>
+              <input
+                type="text"
+                value={tagInput}
+                onChange={(e) => setTagInput(e.target.value)}
+                onKeyDown={handleTagKeyDown}
+                placeholder="Add tag + Enter"
+                className="w-full text-xs bg-secondary border border-border rounded px-2 py-1 text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary"
+              />
+            </div>
+
+            {/* Note */}
+            <div>
+              <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider block mb-1">Note</label>
+              <textarea
+                value={note}
+                onChange={(e) => markDirty(() => setNote(e.target.value))}
+                rows={3}
+                placeholder="Personal note…"
+                className="w-full text-xs bg-secondary border border-border rounded px-2 py-1.5 text-foreground resize-y placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary"
+              />
+            </div>
+          </div>
+
+          {/* Meta */}
+          <div className="text-[10px] text-muted-foreground/50 space-y-0.5">
+            <p>Saved {relativeTime(item.saved_at || item.created_at)}</p>
+            {item.enriched ? (
+              <p className="flex items-center gap-1 text-green-400"><Check className="w-3 h-3" /> Enriched</p>
+            ) : null}
+          </div>
         </div>
-      </div>
-    </div>
+      </ScrollArea>
+
+      {/* Save footer */}
+      {dirty && (
+        <div className="shrink-0 p-3 border-t border-border">
+          <Button onClick={handleSave} disabled={saving} className="w-full gap-2" size="sm">
+            <FloppyDisk className="w-3.5 h-3.5" />
+            {saving ? 'Saving…' : 'Save Changes'}
+          </Button>
+        </div>
+      )}
+    </motion.div>
   )
 }
 
-// --- Main Panel ---
+// ---------------------------------------------------------------------------
+// Main Panel
+// ---------------------------------------------------------------------------
 
 export function GardenPanel() {
   const [items, setItems] = useState<GardenItem[]>([])
-  const [total, setTotal] = useState(0)
-  const [stats, setStats] = useState<GardenStats | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [filters, setFilters] = useState<Filters>({ interest: '', type: '', temporal: '', search: '' })
+  const [viewMode, setViewMode] = useState<ViewMode>('grid')
   const [selectedItem, setSelectedItem] = useState<GardenItem | null>(null)
-  const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid')
-  const [focusedIndex, setFocusedIndex] = useState<number | null>(null)
-  const itemRefs = useRef<(HTMLButtonElement | null)[]>([])
 
-  // Filters
-  const [typeFilter, setTypeFilter] = useState('')
-  const [interestFilter, setInterestFilter] = useState('')
-  const [search, setSearch] = useState('')
-  const searchTimeoutRef = useRef<NodeJS.Timeout>(null)
-
-  const fetchItems = useCallback(async () => {
-    setLoading(true)
-    setError(null)
+  const fetchItems = useCallback(async (silent?: boolean) => {
+    if (!silent) setLoading(true)
     try {
       const params = new URLSearchParams()
-      if (typeFilter) params.set('type', typeFilter)
-      if (interestFilter) params.set('interest', interestFilter)
-      if (search) params.set('search', search)
+      if (filters.interest) params.set('interest', filters.interest)
+      if (filters.type) params.set('type', filters.type)
+      if (filters.temporal) params.set('temporal', filters.temporal)
+      if (filters.search) params.set('search', filters.search)
       params.set('limit', '200')
-
       const res = await fetch(`/api/garden?${params}`)
-      if (!res.ok) throw new Error(`${res.status}`)
+      if (!res.ok) throw new Error('Failed to load')
       const data = await res.json()
-      setItems(data.items)
-      setTotal(data.total)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to load garden')
+      setItems(data.items || [])
+      setError(null)
+    } catch (e: any) {
+      setError(e.message)
     } finally {
       setLoading(false)
     }
-  }, [typeFilter, interestFilter, search])
+  }, [filters])
 
-  const fetchStats = useCallback(async () => {
-    try {
-      const res = await fetch('/api/garden/stats')
-      if (res.ok) {
-        const data = await res.json()
-        setStats(data)
-      }
-    } catch {}
+  useEffect(() => { fetchItems() }, [fetchItems])
+  useSmartPoll(() => fetchItems(true), 60000)
+
+  // Local search filter (client-side for speed)
+  const filtered = useMemo(() => {
+    if (!filters.search.trim()) return items
+    const q = filters.search.toLowerCase()
+    return items.filter((item) => {
+      const tags = parseTags(item.tags).join(' ')
+      return item.content.toLowerCase().includes(q) || tags.includes(q)
+    })
+  }, [items, filters.search])
+
+  const updateFilters = useCallback((partial: Partial<Filters>) => {
+    setFilters((prev) => ({ ...prev, ...partial }))
   }, [])
 
-  useEffect(() => {
-    fetchItems()
-    fetchStats()
-  }, [fetchItems, fetchStats])
-
-  // Reset focused index when items change (new filter/search)
-  useEffect(() => {
-    setFocusedIndex(null)
-  }, [items])
-
-  // Scroll focused item into view
-  useEffect(() => {
-    if (focusedIndex !== null && itemRefs.current[focusedIndex]) {
-      itemRefs.current[focusedIndex]?.scrollIntoView({ block: 'nearest' })
-    }
-  }, [focusedIndex])
-
-  // Keyboard navigation
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      // Don't fire when detail sheet is open
-      if (selectedItem) return
-
-      // Don't fire when input/textarea/contenteditable is focused
-      const active = document.activeElement
-      if (active) {
-        const tag = active.tagName.toLowerCase()
-        if (tag === 'input' || tag === 'textarea' || tag === 'select') return
-        if ((active as HTMLElement).isContentEditable) return
-      }
-
-      const len = items.length
-      if (len === 0) return
-
-      if (e.key === 'ArrowDown') {
-        e.preventDefault()
-        setFocusedIndex((prev) => {
-          if (prev === null) return 0
-          return Math.min(prev + 1, len - 1)
-        })
-      } else if (e.key === 'ArrowUp') {
-        e.preventDefault()
-        setFocusedIndex((prev) => {
-          if (prev === null) return 0
-          return Math.max(prev - 1, 0)
-        })
-      } else if (e.key === 'Enter' && focusedIndex !== null) {
-        e.preventDefault()
-        const item = items[focusedIndex]
-        if (item) setSelectedItem(item)
-      } else if (e.key === 'Escape') {
-        e.preventDefault()
-        setFocusedIndex(null)
-      }
-    }
-
-    window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [items, selectedItem, focusedIndex])
-
-  const handleSearchInput = (value: string) => {
-    if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current)
-    searchTimeoutRef.current = setTimeout(() => setSearch(value), 300)
-  }
-
-  const handleUpdate = () => {
-    fetchItems()
-    fetchStats()
-  }
-
-  const handleDelete = () => {
-    setSelectedItem(null)
-    fetchItems()
-    fetchStats()
+  if (loading && items.length === 0) {
+    return (
+      <div className="h-full flex items-center justify-center">
+        <div className="flex items-center gap-2">
+          <div className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />
+          <span className="text-sm text-muted-foreground">Loading garden…</span>
+        </div>
+      </div>
+    )
   }
 
   return (
-    <div className="flex h-full">
-      <div className="flex-1 flex flex-col overflow-hidden">
-        {/* Header */}
-        <div className="shrink-0 px-6 py-4 border-b border-border">
-          <div className="flex items-center justify-between mb-3">
-            <div className="flex items-center gap-3">
-              <h2 className="text-lg font-semibold text-foreground flex items-center gap-1.5">
-                {'\uD83C\uDF31'} Garden
-              </h2>
-              {total > 0 && (
-                <span className="text-xs text-muted-foreground bg-secondary px-2 py-0.5 rounded-full">
-                  {total}
-                </span>
-              )}
+    <div className="h-full flex flex-col overflow-hidden">
+      {/* Header */}
+      <div className="flex items-center gap-2 px-4 py-3 border-b border-border shrink-0">
+        <Leaf className="w-4 h-4 text-muted-foreground" />
+        <h2 className="text-sm font-semibold text-foreground">Garden</h2>
+        {filtered.length > 0 && (
+          <span className="text-xs text-muted-foreground font-mono">{filtered.length}</span>
+        )}
+      </div>
 
-              {/* Stats pills */}
-              {stats && (
-                <div className="flex gap-1.5">
-                  {Object.entries(stats.byInterest).map(([key, count]) => (
-                    <button
-                      key={key}
-                      onClick={() => setInterestFilter(interestFilter === key ? '' : key)}
-                      className={`text-[10px] px-1.5 py-0.5 rounded-full transition-colors ${
-                        interestFilter === key
-                          ? INTEREST_COLORS[key] + ' ring-1 ring-current'
-                          : INTEREST_COLORS[key] || 'bg-secondary text-muted-foreground'
-                      }`}
-                    >
-                      {INTEREST_ICONS[key]} {count}
-                    </button>
+      {/* Filter bar */}
+      <FilterBar
+        filters={filters}
+        onChange={updateFilters}
+        viewMode={viewMode}
+        onViewMode={setViewMode}
+        onRefresh={() => fetchItems()}
+        loading={loading}
+      />
+
+      {/* Content */}
+      <div className="flex-1 overflow-hidden flex">
+        {/* Main area */}
+        <div className="flex-1 overflow-hidden">
+          <ScrollArea className="h-full">
+            <div className="p-4">
+              {error ? (
+                <div className="flex flex-col items-center justify-center py-16 gap-2">
+                  <p className="text-sm text-red-400">{error}</p>
+                  <Button variant="outline" size="sm" onClick={() => fetchItems()}>Retry</Button>
+                </div>
+              ) : filtered.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-16 gap-2">
+                  <Leaf className="w-8 h-8 text-muted-foreground/30" />
+                  <p className="text-sm text-muted-foreground">
+                    {filters.interest || filters.type || filters.temporal || filters.search
+                      ? 'No items match the current filters'
+                      : 'Knowledge garden is empty'}
+                  </p>
+                </div>
+              ) : viewMode === 'grid' ? (
+                /* CSS Masonry grid */
+                <div
+                  style={{
+                    columns: 'var(--garden-cols, 2)',
+                    columnGap: '12px',
+                  }}
+                  className="[--garden-cols:2] sm:[--garden-cols:2] md:[--garden-cols:3] lg:[--garden-cols:4]"
+                >
+                  {filtered.map((item, i) => (
+                    <GardenCard
+                      key={item.id}
+                      item={item}
+                      index={i}
+                      onClick={() => setSelectedItem(item)}
+                    />
+                  ))}
+                </div>
+              ) : (
+                <div className="space-y-1.5">
+                  {filtered.map((item, i) => (
+                    <GardenListRow
+                      key={item.id}
+                      item={item}
+                      index={i}
+                      onClick={() => setSelectedItem(item)}
+                    />
                   ))}
                 </div>
               )}
             </div>
-
-            {/* View toggle */}
-            <div className="flex gap-0.5 bg-secondary border border-border rounded p-0.5">
-              <button
-                onClick={() => setViewMode('grid')}
-                className={`p-1 rounded transition-colors ${viewMode === 'grid' ? 'bg-primary/20 text-primary' : 'text-muted-foreground hover:text-foreground'}`}
-                aria-label="Grid view"
-              >
-                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-3.5 h-3.5">
-                  <rect x="1" y="1" width="6" height="6" rx="1" />
-                  <rect x="9" y="1" width="6" height="6" rx="1" />
-                  <rect x="1" y="9" width="6" height="6" rx="1" />
-                  <rect x="9" y="9" width="6" height="6" rx="1" />
-                </svg>
-              </button>
-              <button
-                onClick={() => setViewMode('list')}
-                className={`p-1 rounded transition-colors ${viewMode === 'list' ? 'bg-primary/20 text-primary' : 'text-muted-foreground hover:text-foreground'}`}
-                aria-label="List view"
-              >
-                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-3.5 h-3.5">
-                  <path d="M2 4h12M2 8h12M2 12h12" strokeLinecap="round" />
-                </svg>
-              </button>
-            </div>
-          </div>
-
-          {/* Filter bar */}
-          <div className="flex items-center gap-2 flex-wrap">
-            <FilterSelect
-              value={interestFilter}
-              onChange={setInterestFilter}
-              placeholder="All Interests"
-              options={INTEREST_OPTIONS.map((i) => ({
-                value: i,
-                label: `${INTEREST_ICONS[i]} ${i}`,
-              }))}
-            />
-            <FilterSelect
-              value={typeFilter}
-              onChange={setTypeFilter}
-              placeholder="All Types"
-              options={TYPE_OPTIONS.map((t) => ({ value: t, label: t }))}
-            />
-            <input
-              type="text"
-              placeholder="Search..."
-              onChange={(e) => handleSearchInput(e.target.value)}
-              className="bg-secondary text-foreground text-xs rounded-md px-3 py-1.5 border border-border focus:outline-none focus:ring-1 focus:ring-primary placeholder:text-muted-foreground/60 w-40"
-            />
-          </div>
+          </ScrollArea>
         </div>
 
-        {/* Content */}
-        <div className="flex-1 overflow-y-auto px-6 py-4">
-          {error && (
-            <div className="text-red-400 text-sm text-center py-8">
-              Failed to load garden: {error}
-            </div>
+        {/* Detail sheet */}
+        <AnimatePresence>
+          {selectedItem && (
+            <DetailSheet
+              key={selectedItem.id}
+              item={selectedItem}
+              onClose={() => setSelectedItem(null)}
+              onUpdate={() => {
+                fetchItems(true)
+                // Refresh selected item from the list
+                setSelectedItem((prev) => {
+                  if (!prev) return null
+                  const updated = items.find((i) => i.id === prev.id)
+                  return updated || prev
+                })
+              }}
+            />
           )}
-
-          {!loading && !error && items.length === 0 && (
-            <div className="text-muted-foreground text-sm text-center py-12">
-              Your garden is empty. Save items from X Feed to get started.
-            </div>
-          )}
-
-          {!loading && items.length > 0 && viewMode === 'grid' && (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-              {items.map((item, i) => (
-                <GardenCard
-                  key={item.id}
-                  item={item}
-                  onClick={() => setSelectedItem(item)}
-                  focused={focusedIndex === i}
-                  itemRef={(el) => { itemRefs.current[i] = el }}
-                />
-              ))}
-            </div>
-          )}
-
-          {!loading && items.length > 0 && viewMode === 'list' && (
-            <div className="space-y-1.5 max-w-4xl">
-              {items.map((item, i) => (
-                <GardenListRow
-                  key={item.id}
-                  item={item}
-                  onClick={() => setSelectedItem(item)}
-                  focused={focusedIndex === i}
-                  itemRef={(el) => { itemRefs.current[i] = el }}
-                />
-              ))}
-            </div>
-          )}
-
-          {loading && (
-            <div className="flex justify-center py-8">
-              <div className="flex items-center gap-2 text-muted-foreground text-sm">
-                <PixelLoader size={16} speed={150} />
-                Loading...
-              </div>
-            </div>
-          )}
-        </div>
+        </AnimatePresence>
       </div>
-
-      {/* Detail sheet */}
-      {selectedItem && (
-        <DetailSheet
-          key={selectedItem.id}
-          item={selectedItem}
-          onClose={() => setSelectedItem(null)}
-          onUpdate={handleUpdate}
-          onDelete={handleDelete}
-        />
-      )}
     </div>
   )
 }
